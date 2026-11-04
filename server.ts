@@ -1910,6 +1910,111 @@ app.get('/api/market/screener', async (_req: Request, res: Response) => {
   res.json(tickers);
 });
 
+// Diagnostic & Proof Endpoint: Real-time Bybit V5 synchronization audit
+app.get('/api/market/verify-bybit-sync', async (req: Request, res: Response) => {
+  const symbol = ((req.query.symbol as string) || 'BTCUSDT').toUpperCase();
+  const t0 = Date.now();
+
+  try {
+    const [bybitTimeRes, bybitBookRes, bybitTickersRes] = await Promise.all([
+      fetch('https://api.bybit.com/v5/market/time').catch(() => null),
+      fetch(`https://api.bybit.com/v5/market/orderbook?category=linear&symbol=${symbol}&limit=50`).catch(() => null),
+      fetch(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${symbol}`).catch(() => null),
+    ]);
+
+    const bybitRttMs = Date.now() - t0;
+    const timeData = bybitTimeRes?.ok ? await bybitTimeRes.json().catch(() => null) : null;
+    const bookData = bybitBookRes?.ok ? await bybitBookRes.json().catch(() => null) : null;
+    const tickerData = bybitTickersRes?.ok ? await bybitTickersRes.json().catch(() => null) : null;
+
+    const rawBybitTimeMs = timeData?.result?.timeNano
+      ? Math.round(Number(timeData.result.timeNano) / 1e6)
+      : timeData?.result?.timeSecond
+      ? Number(timeData.result.timeSecond) * 1000
+      : Date.now();
+    const localTimeMs = Date.now();
+    const clockDriftMs = localTimeMs - rawBybitTimeMs;
+
+    const rawBids: string[][] = bookData?.result?.b || [];
+    const rawAsks: string[][] = bookData?.result?.a || [];
+    const bestBid = rawBids[0] ? parseFloat(rawBids[0][0]) : 0;
+    const bestAsk = rawAsks[0] ? parseFloat(rawAsks[0][0]) : 0;
+    const spreadUsdt = bestAsk > 0 && bestBid > 0 ? Number((bestAsk - bestBid).toFixed(4)) : 0;
+    const spreadBps = bestBid > 0 ? Number(((spreadUsdt / bestBid) * 10000).toFixed(2)) : 0;
+
+    let bidVol = 0;
+    let askVol = 0;
+    for (const b of rawBids) bidVol += parseFloat(b[1]);
+    for (const a of rawAsks) askVol += parseFloat(a[1]);
+    const realObi = bidVol + askVol > 0 ? Number(((bidVol - askVol) / (bidVol + askVol)).toFixed(4)) : 0;
+
+    const tickerItem = tickerData?.result?.list?.[0];
+    const matchingPositions = systemState.activePositions.filter((p) => p.symbol === symbol);
+
+    res.json({
+      verified: true,
+      timestamp: localTimeMs,
+      symbol,
+      bybitAudit: {
+        apiEndpoint: 'https://api.bybit.com/v5',
+        bybitServerTimeMs: rawBybitTimeMs,
+        localServerTimeMs: localTimeMs,
+        clockDriftMs,
+        roundTripLatencyMs: bybitRttMs,
+        seqId: bookData?.result?.u ? parseInt(bookData.result.u, 10) : null,
+        orderbookTs: parseInt(bookData?.result?.ts || '0', 10),
+        rawBybitLastPrice: tickerItem?.lastPrice ? parseFloat(tickerItem.lastPrice) : bestBid,
+        rawBybit24hVolume: tickerItem?.volume24h ? parseFloat(tickerItem.volume24h) : 0,
+        rawBybitTurnover24h: tickerItem?.turnover24h ? parseFloat(tickerItem.turnover24h) : 0,
+        fundingRate: tickerItem?.fundingRate ? parseFloat(tickerItem.fundingRate) : 0.0001,
+        nextFundingTime: tickerItem?.nextFundingTime ? parseInt(tickerItem.nextFundingTime, 10) : 0,
+        bestBid,
+        bestAsk,
+        spreadUsdt,
+        spreadBps,
+        depth50BidsCount: rawBids.length,
+        depth50AsksCount: rawAsks.length,
+        top5Bids: rawBids.slice(0, 5).map((b) => ({ price: parseFloat(b[0]), qty: parseFloat(b[1]) })),
+        top5Asks: rawAsks.slice(0, 5).map((a) => ({ price: parseFloat(a[0]), qty: parseFloat(a[1]) })),
+        calculatedObi: realObi,
+      },
+      internalState: {
+        screenerPrice: systemState.screenerSymbols.find((s) => s.symbol === symbol)?.price || bestBid,
+        cachedPingBybit: systemState.pings.bybit,
+        activePositionsCount: matchingPositions.length,
+        activePositions: matchingPositions,
+        isKillSwitchActive: systemState.isKillSwitchActive,
+        botTradingEnabled: systemState.botTradingEnabled,
+        capitalUsdt: systemState.capitalUsdt,
+        rolling24hPnlUsdt: systemState.rolling24hPnlUsdt,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ verified: false, error: err.message });
+  }
+});
+
+// Direct script download endpoints for macOS verification
+app.get(['/verify-bybit-live.py', '/scripts/verify_bybit_live.py'], (_req: Request, res: Response) => {
+  const filePath = path.resolve(process.cwd(), 'scripts', 'verify_bybit_live.py');
+  if (fs.existsSync(filePath)) {
+    res.setHeader('Content-Type', 'text/x-python; charset=utf-8');
+    res.send(fs.readFileSync(filePath, 'utf-8'));
+  } else {
+    res.status(404).send('# Verification script not found');
+  }
+});
+
+app.get(['/verify.sh', '/scripts/verify_bybit.sh'], (_req: Request, res: Response) => {
+  const filePath = path.resolve(process.cwd(), 'scripts', 'verify_bybit.sh');
+  if (fs.existsSync(filePath)) {
+    res.setHeader('Content-Type', 'text/x-shellscript; charset=utf-8');
+    res.send(fs.readFileSync(filePath, 'utf-8'));
+  } else {
+    res.status(404).send('# Runner script not found');
+  }
+});
+
 app.get('/api/positions', (_req: Request, res: Response) => {
   res.json({
     positions: systemState.activePositions,
@@ -2548,7 +2653,7 @@ async function runBotEngineCycle() {
         // 3. Base configured symbols for the bot
         const baseAllowedSymbols: string[] =
           Array.isArray(actingBot.allowedSymbols) && actingBot.allowedSymbols.length > 0
-            ? actingBot.allowedSymbols.filter((s) => !noisyLowTierBlacklist.has(s))
+            ? actingBot.allowedSymbols.filter((s: string) => !noisyLowTierBlacklist.has(s))
             : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'HYPEUSDT', 'NEARUSDT', 'DOGEUSDT', 'SUIUSDT', 'AVAXUSDT'];
 
         // 4. Combine base symbols with top trending breakout pairs from Bybit L2 screener
@@ -5475,10 +5580,10 @@ app.post('/api/updates/hot-swap-weights', (req: Request, res: Response) => {
     if (targetAgent.brain) {
       targetAgent.brain.epochsTrained = (targetAgent.brain.epochsTrained || 3) + 12;
       targetAgent.brain.confidenceThreshold = Number(
-        clamp((targetAgent.brain.confidenceThreshold || 0.24) + 0.01, 0.22, 0.36).toFixed(3)
+        Math.min(0.36, Math.max(0.22, (targetAgent.brain.confidenceThreshold || 0.24) + 0.01)).toFixed(3)
       );
       targetAgent.brain.atrMultiplier = Number(
-        clamp(Math.max(targetAgent.brain.atrMultiplier || 1.55, 1.6), 1.4, 2.4).toFixed(2)
+        Math.min(2.4, Math.max(1.4, Math.max(targetAgent.brain.atrMultiplier || 1.55, 1.6))).toFixed(2)
       );
       targetAgent.brain.maxSpreadBps = Math.min(targetAgent.brain.maxSpreadBps || 14.0, 12.0);
       targetAgent.brain.lastTrainedAt = Date.now();
