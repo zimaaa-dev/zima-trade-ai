@@ -78,6 +78,30 @@ function loadEnvFromFiles() {
   if (!isKeyValid(process.env.BYBIT_API_SECRET)) {
     delete process.env.BYBIT_API_SECRET;
   }
+
+  // Force Ollama Cloud to https://ollama.com if lingering localhost from old templates
+  if (
+    !process.env.OLLAMA_HOST ||
+    process.env.OLLAMA_HOST.includes('localhost') ||
+    process.env.OLLAMA_HOST.includes('127.0.0.1') ||
+    !process.env.OLLAMA_HOST.startsWith('http')
+  ) {
+    process.env.OLLAMA_HOST = 'https://ollama.com';
+  }
+
+  // Ensure default model is one of the valid cloud models
+  const validModels = [
+    'nemotron-3-nano:30b',
+    'gpt-oss:20b',
+    'gemma4:31b',
+    'nemotron-3-super',
+    'gpt-oss:120b',
+    'nemotron-3-ultra',
+    'beam',
+  ];
+  if (!process.env.OLLAMA_MODEL || !validModels.includes(process.env.OLLAMA_MODEL.trim())) {
+    process.env.OLLAMA_MODEL = 'nemotron-3-nano:30b';
+  }
 }
 loadEnvFromFiles();
 
@@ -4629,7 +4653,17 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
       res.status(500).json({ success: false, error: err.message });
     }
   } else if (target === 'ollama_cloud') {
-    const host = ollamaCloud.getHost();
+    let host = ollamaCloud.getHost();
+    if (host.includes('localhost') || host.includes('127.0.0.1') || !host.startsWith('http')) {
+      host = 'https://ollama.com';
+      ollamaCloud.setHost(host);
+    }
+
+    const reqModel = (req.query.model as string | undefined)?.trim();
+    if (reqModel && isKeyValid(reqModel)) {
+      ollamaCloud.setSelectedModel(reqModel as any);
+    }
+
     let rawQueryKey = (req.query.key as string | undefined)?.trim();
     if (rawQueryKey) {
       if ((rawQueryKey.startsWith('"') && rawQueryKey.endsWith('"')) || (rawQueryKey.startsWith("'") && rawQueryKey.endsWith("'"))) {
@@ -4644,66 +4678,87 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
         let isOk = false;
         let statusCode = 200;
         let errDetails = '';
+        let workingModel = ollamaCloud.getSelectedModel();
 
-        // 1. Try native Ollama endpoint /api/generate
-        try {
-          const resGen = await fetch(`${host}/api/generate`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${rawQueryKey}`,
-            },
-            body: JSON.stringify({
-              model: ollamaCloud.getSelectedModel(),
-              prompt: 'Ответь словом "OK"',
-              stream: false,
-            }),
-            signal: AbortSignal.timeout(7000),
-          });
-          statusCode = resGen.status;
-          if (resGen.ok) {
-            isOk = true;
-          } else if (resGen.status === 404) {
-            // Fallback to OpenAI compatible /v1/chat/completions
-            const resV1 = await fetch(`${host}/v1/chat/completions`, {
+        // Try candidate models in case selected model name is slightly mismatched
+        const candidateModels = Array.from(new Set([
+          workingModel,
+          'nemotron-3-nano:30b',
+          'gpt-oss:20b',
+          'gemma4:31b',
+          'nemotron-3-super',
+          'gpt-oss:120b',
+          'beam',
+        ]));
+
+        for (const candModel of candidateModels) {
+          try {
+            const resGen = await fetch(`${host}/api/generate`, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 Authorization: `Bearer ${rawQueryKey}`,
               },
               body: JSON.stringify({
-                model: ollamaCloud.getSelectedModel(),
-                messages: [{ role: 'user', content: 'OK' }],
+                model: candModel,
+                prompt: 'Ответь словом "OK"',
+                stream: false,
               }),
-              signal: AbortSignal.timeout(7000),
+              signal: AbortSignal.timeout(6000),
             });
-            statusCode = resV1.status;
-            if (resV1.ok) {
+            statusCode = resGen.status;
+            if (resGen.ok) {
               isOk = true;
+              workingModel = candModel as any;
+              ollamaCloud.setSelectedModel(workingModel);
+              break;
+            } else if (resGen.status === 404) {
+              // Try OpenAI compatible /v1/chat/completions
+              const resV1 = await fetch(`${host}/v1/chat/completions`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${rawQueryKey}`,
+                },
+                body: JSON.stringify({
+                  model: candModel,
+                  messages: [{ role: 'user', content: 'OK' }],
+                }),
+                signal: AbortSignal.timeout(6000),
+              });
+              statusCode = resV1.status;
+              if (resV1.ok) {
+                isOk = true;
+                workingModel = candModel as any;
+                ollamaCloud.setSelectedModel(workingModel);
+                break;
+              } else {
+                errDetails = await resV1.text().catch(() => `HTTP ${resV1.status}`);
+              }
             } else {
-              errDetails = await resV1.text().catch(() => `HTTP ${resV1.status}`);
+              errDetails = await resGen.text().catch(() => `HTTP ${resGen.status}`);
+              break; // Auth error or 429, don't retry models
             }
-          } else {
-            errDetails = await resGen.text().catch(() => `HTTP ${resGen.status}`);
+          } catch (fetchErr: any) {
+            errDetails = fetchErr.message;
           }
-        } catch (fetchErr: any) {
-          errDetails = fetchErr.message;
         }
 
         const latencyMs = Date.now() - t0;
         if (isOk) {
           ollamaCloud.addKey(rawQueryKey);
+          process.env.OLLAMA_API_KEY = rawQueryKey;
           res.json({
             success: true,
             latencyMs,
-            statusText: `Ключ проверен успешно (HTTP 200, задержка: ${latencyMs}мс)! Модель: ${ollamaCloud.getSelectedModel()}. Ключ добавлен в активный пул.`,
+            statusText: `Ключ проверен успешно (HTTP 200, задержка: ${latencyMs}мс)! Модель: ${workingModel}. Ключ активирован в пуле.`,
             pool: ollamaCloud.getPoolStatus(),
           });
         } else {
           res.json({
             success: false,
             error: `HTTP ${statusCode}: ${errDetails}`,
-            statusText: `Ollama Cloud отклонил ключ (HTTP ${statusCode}). Проверьте токен на https://ollama.com/settings/keys`,
+            statusText: `Ollama Cloud отклонил запрос (HTTP ${statusCode}). Детали: ${errDetails || 'проверьте токен'}`,
           });
         }
       } catch (err: any) {

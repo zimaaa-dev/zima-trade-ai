@@ -250,9 +250,13 @@ export const SettingsConfigView: React.FC = () => {
       if (target === 'ollama_cloud') {
         const textareaEl = document.querySelector('textarea[name="ollamaKeys"]') as HTMLTextAreaElement | null;
         const inputEl = document.querySelector('input[name="ollamaKeys"], input[name="ollamaKey"]') as HTMLInputElement | null;
+        const modelEl = document.querySelector('select[name="ollamaModel"]') as HTMLSelectElement | null;
         const keyVal = directKey || textareaEl?.value?.trim() || inputEl?.value?.trim();
         if (keyVal) {
           url += `&key=${encodeURIComponent(keyVal)}`;
+        }
+        if (modelEl?.value) {
+          url += `&model=${encodeURIComponent(modelEl.value)}`;
         }
       }
       const res = await fetch(url);

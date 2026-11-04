@@ -56,28 +56,52 @@ export class OllamaCloudEngine {
     keys?: string | string[];
     defaultModel?: OllamaCloudModel;
   }) {
-    this.host = (options?.host || 'https://ollama.com').replace(/\/+$/, '');
-    this.selectedModel = options?.defaultModel || 'nemotron-3-nano:30b';
+    let cleanHost = (options?.host || 'https://ollama.com').trim().replace(/\/+$/, '');
+    if (cleanHost.includes('localhost') || cleanHost.includes('127.0.0.1') || !cleanHost.startsWith('http')) {
+      cleanHost = 'https://ollama.com';
+    }
+    this.host = cleanHost;
+
+    const reqModel = (options?.defaultModel || 'nemotron-3-nano:30b').trim();
+    this.selectedModel = (OLLAMA_CLOUD_MODELS as readonly string[]).includes(reqModel)
+      ? (reqModel as OllamaCloudModel)
+      : 'nemotron-3-nano:30b';
+
     if (options?.keys) {
       this.setKeys(options.keys);
     }
   }
 
   public setHost(host: string) {
-    this.host = (host || 'https://ollama.com').replace(/\/+$/, '');
+    let clean = (host || 'https://ollama.com').trim().replace(/\/+$/, '');
+    if (clean.includes('localhost') || clean.includes('127.0.0.1') || !clean.startsWith('http')) {
+      clean = 'https://ollama.com';
+    }
+    this.host = clean;
   }
 
   public getHost(): string {
+    if (this.host.includes('localhost') || this.host.includes('127.0.0.1') || !this.host.startsWith('http')) {
+      this.host = 'https://ollama.com';
+    }
     return this.host;
   }
 
   public setSelectedModel(model: OllamaCloudModel) {
-    if (model && model.trim()) {
-      this.selectedModel = model.trim();
+    if (model && typeof model === 'string') {
+      const trimmed = model.trim();
+      if ((OLLAMA_CLOUD_MODELS as readonly string[]).includes(trimmed)) {
+        this.selectedModel = trimmed as OllamaCloudModel;
+      } else {
+        this.selectedModel = 'nemotron-3-nano:30b';
+      }
     }
   }
 
   public getSelectedModel(): OllamaCloudModel {
+    if (!(OLLAMA_CLOUD_MODELS as readonly string[]).includes(this.selectedModel)) {
+      this.selectedModel = 'nemotron-3-nano:30b';
+    }
     return this.selectedModel;
   }
 
