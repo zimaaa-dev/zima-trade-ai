@@ -86,7 +86,7 @@ export default {
         throw new Error(`Node A returned HTTP status ${resp.status}`);
       }
 
-      const body = (await resp.json()) as any;
+      const body = await resp.json();
       const loopDeltaSec = body.vcpu0_loop_age_sec || 0;
 
       if (loopDeltaSec > 5.0) {
@@ -98,7 +98,7 @@ export default {
       if (env.KV_STATE) {
         await env.KV_STATE.put('consecutive_failures', '0');
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error("Dead-Man's Switch Alarm:", err?.message || err);
 
       let failures = 1;

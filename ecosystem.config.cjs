@@ -14,5 +14,18 @@ module.exports = {
         NODE_ENV: 'production',
       },
     },
+    {
+      name: 'cf-tunnel',
+      script: 'cloudflared',
+      args: 'tunnel --url http://127.0.0.1:3000',
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_restarts: 15,
+      restart_delay: 4000,
+      env: {
+        TUNNEL_METRICS: '127.0.0.1:20241',
+      },
+    },
   ],
 };

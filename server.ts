@@ -1846,6 +1846,58 @@ app.get(['/api/system/health', '/api/health'], (_req: Request, res: Response) =>
   }
 });
 
+// Cloudflare Tunnel & Watchdog Status API
+app.get('/api/system/cloudflare', (_req: Request, res: Response) => {
+  let tunnelUrl: string | null = process.env.CLOUDFLARE_TUNNEL_URL || null;
+  let isRunning = false;
+
+  try {
+    const homedir = os.homedir();
+    const candidates = [
+      path.join(homedir, '.pm2', 'logs', 'cf-tunnel-error.log'),
+      path.join(homedir, '.pm2', 'logs', 'cf-tunnel-out.log'),
+      path.join(process.cwd(), 'data', 'tunnel_url.txt'),
+    ];
+
+    for (const f of candidates) {
+      if (fs.existsSync(f)) {
+        const text = fs.readFileSync(f, 'utf-8');
+        const matches = text.match(/https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/gi);
+        if (matches && matches.length > 0) {
+          tunnelUrl = matches[matches.length - 1];
+          break;
+        }
+      }
+    }
+
+    try {
+      const pm2Res = execSync('pm2 jlist', { encoding: 'utf-8', timeout: 3000 });
+      const pm2Data = JSON.parse(pm2Res);
+      const cfProc = Array.isArray(pm2Data) && pm2Data.find((p: any) => p.name === 'cf-tunnel');
+      if (cfProc && cfProc.pm2_env?.status === 'online') {
+        isRunning = true;
+      }
+    } catch {
+      // ignore
+    }
+  } catch {
+    // ignore
+  }
+
+  res.json({
+    enabled: true,
+    isRunning,
+    tunnelUrl: tunnelUrl || 'https://stories-feof-trains-chip.trycloudflare.com',
+    watchdogConfig: {
+      workerDir: 'zima_trade_ai/watchdog_cf',
+      cronInterval: '60s',
+      healthUrl: 'http://194.113.34.230:3000/api/system/health',
+      bybitProxyPath: '/bybit/v5/',
+      telegramProxyPath: '/telegram/bot',
+    },
+  });
+});
+
 app.post('/api/system/mode', (req: Request, res: Response) => {
   const { mode } = req.body;
   if (mode !== 'SHADOW' && mode !== 'LIVE') {
