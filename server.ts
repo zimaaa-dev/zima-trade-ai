@@ -1796,7 +1796,13 @@ function buildFullSystemHealthPayload() {
           ? 'Ollama Cloud API'
           : 'Квантовый L2-анализатор (локальный режим без OLLAMA_API_KEY)',
       },
-      nodeE: { name: 'Node E: Cloudflare Shield', status: 'WATCHING', cron_interval: '60s', dead_man_failures: 0 },
+      nodeE: {
+        name: 'Node E: Cloudflare Shield',
+        status: 'WATCHING',
+        cron_interval: '60s',
+        dead_man_failures: 0,
+        worker_url: 'https://zima-trade-watchdog.zimaaa-lab.workers.dev',
+      },
     },
     activePositionsCount: systemState.activePositions.length,
     activeLimitOrdersCount: systemState.limitOrdersQueue.length,
