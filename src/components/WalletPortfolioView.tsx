@@ -303,11 +303,14 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
       if (res.ok && data.success) {
         setSummary(data.summary);
         setLedger(data.ledger || []);
+        if (action === 'RESET') {
+          await fetchWalletData();
+        }
         setAdjustStatus({
           type: 'success',
           text:
             action === 'RESET'
-              ? 'Базовый капитал сброшен до $10,000.00 USDT и сохранен на диск'
+              ? 'Полный сброс выполнен: статистика и PnL обнулены, баланс $10,000.00 USDT, Kill-Switch снят'
               : `Кошелек пополнен на +$${val.toLocaleString('en-US', { minimumFractionDigits: 2 })} USDT`,
         });
         if (onRefreshHealth) onRefreshHealth();
@@ -1286,12 +1289,16 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
                 <button
                   type="button"
                   disabled={isAdjusting}
-                  onClick={() => handleAdjustBalance('RESET')}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-rose-950/60 hover:text-rose-300 text-slate-300 rounded-lg transition flex items-center gap-1"
-                  title="Сбросить базовый капитал к $10,000 USDT"
+                  onClick={() => {
+                    if (window.confirm('Вы уверены, что хотите обнулить всю статистику, сделки и запустить систему с чистого баланса $10,000 USDT?')) {
+                      handleAdjustBalance('RESET');
+                    }
+                  }}
+                  className="px-3 py-1.5 bg-rose-950/40 hover:bg-rose-900/80 text-rose-300 border border-rose-500/30 rounded-lg transition flex items-center gap-1 font-semibold"
+                  title="Полный сброс всех сделок, PnL и возврат к чистому балансу $10,000 USDT"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Сброс $10k</span>
+                  <span>Обнулить всё ($10k)</span>
                 </button>
               </div>
             </div>

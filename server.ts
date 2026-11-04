@@ -265,6 +265,7 @@ interface AppSystemState {
   mode: 'SHADOW' | 'LIVE';
   isKillSwitchActive: boolean;
   killSwitchTriggerReason: string | null;
+  lastUnblockedAt?: number;
   capitalUsdt: number;
   rolling24hPnlUsdt: number;
   totalRealizedPnlUsdt: number;
@@ -442,6 +443,7 @@ const systemState: AppSystemState = {
   mode: 'SHADOW',
   isKillSwitchActive: false,
   killSwitchTriggerReason: null,
+  lastUnblockedAt: 0,
   capitalUsdt: 10000.0,
   rolling24hPnlUsdt: 381.79,
   totalRealizedPnlUsdt: 381.79,
@@ -811,6 +813,9 @@ function savePersistedState(): void {
       capitalUsdt: systemState.capitalUsdt,
       rolling24hPnlUsdt: systemState.rolling24hPnlUsdt,
       totalRealizedPnlUsdt: systemState.totalRealizedPnlUsdt,
+      isKillSwitchActive: systemState.isKillSwitchActive,
+      killSwitchTriggerReason: systemState.killSwitchTriggerReason,
+      lastUnblockedAt: systemState.lastUnblockedAt || 0,
       botTradingEnabled: systemState.botTradingEnabled,
       activePositions: systemState.activePositions,
       limitOrdersQueue: systemState.limitOrdersQueue,
@@ -841,46 +846,35 @@ function loadPersistedState(): void {
       if (typeof parsed.rolling24hPnlUsdt === 'number') systemState.rolling24hPnlUsdt = parsed.rolling24hPnlUsdt;
       if (typeof parsed.totalRealizedPnlUsdt === 'number') systemState.totalRealizedPnlUsdt = parsed.totalRealizedPnlUsdt;
       if (typeof parsed.botTradingEnabled === 'boolean') systemState.botTradingEnabled = parsed.botTradingEnabled;
+      if (typeof parsed.lastUnblockedAt === 'number') systemState.lastUnblockedAt = parsed.lastUnblockedAt;
+      if (typeof parsed.isKillSwitchActive === 'boolean') systemState.isKillSwitchActive = parsed.isKillSwitchActive;
+      if (parsed.killSwitchTriggerReason !== undefined) systemState.killSwitchTriggerReason = parsed.killSwitchTriggerReason;
       if (Array.isArray(parsed.activePositions)) systemState.activePositions = parsed.activePositions;
       if (Array.isArray(parsed.limitOrdersQueue)) systemState.limitOrdersQueue = parsed.limitOrdersQueue;
-      if (Array.isArray(parsed.closedTrades) && parsed.closedTrades.length >= 20) {
+      
+      if (Array.isArray(parsed.closedTrades)) {
         systemState.closedTrades = parsed.closedTrades;
-      } else if (Array.isArray(parsed.closedTrades) && parsed.closedTrades.length > 0) {
-        const existingIds = new Set(parsed.closedTrades.map((t: any) => t.id));
-        const merged = [...parsed.closedTrades];
-        for (const st of initialClosedTrades) {
-          if (!existingIds.has(st.id)) {
-            merged.push(st);
-          }
-        }
-        merged.sort((a, b) => b.closedAt - a.closedAt);
-        systemState.closedTrades = merged;
       }
 
-      if (Array.isArray(parsed.walletLedger) && parsed.walletLedger.length >= 20) {
+      if (Array.isArray(parsed.walletLedger)) {
         systemState.walletLedger = parsed.walletLedger;
-      } else if (Array.isArray(parsed.walletLedger) && parsed.walletLedger.length > 0) {
-        const existingIds = new Set(parsed.walletLedger.map((l: any) => l.id));
-        const mergedLedger = [...parsed.walletLedger];
-        for (const sl of initialWalletLedger) {
-          if (!existingIds.has(sl.id)) {
-            mergedLedger.push(sl);
-          }
-        }
-        mergedLedger.sort((a, b) => b.timestamp - a.timestamp);
-        systemState.walletLedger = mergedLedger;
       }
 
       if (systemState.closedTrades.length > 0) {
         systemState.totalRealizedPnlUsdt = Number(
-          systemState.closedTrades.reduce((acc, t) => acc + t.netPnlUsdt, 0).toFixed(2)
+          systemState.closedTrades.reduce((acc, t) => acc + (Number(t.netPnlUsdt) || 0), 0).toFixed(2)
         );
         recalculateRolling24hPnl();
+      } else {
+        systemState.totalRealizedPnlUsdt = 0.0;
+        systemState.rolling24hPnlUsdt = 0.0;
       }
-      if (Array.isArray(parsed.botTradeLogs) && parsed.botTradeLogs.length > 0) {
+      if (Array.isArray(parsed.botTradeLogs)) {
         systemState.botTradeLogs = parsed.botTradeLogs;
       }
-      if (Array.isArray(parsed.xaiDecisions) && parsed.xaiDecisions.length > 0) {
+      if (Array.isArray(parsed.xaiDecisions)) {
+        systemState.xaiDecisions = parsed.xaiDecisions;
+      }
         systemState.xaiDecisions = parsed.xaiDecisions;
       }
       if (Array.isArray(parsed.channels) && parsed.channels.length > 0) {
@@ -1311,7 +1305,8 @@ function resolveInstrumentRules(symbol: string, referencePrice?: number): Instru
 }
 
 function recalculateRolling24hPnl(): number {
-  const cutoff = Date.now() - 86400000;
+  const unblockCutoff = systemState.lastUnblockedAt || 0;
+  const cutoff = Math.max(Date.now() - 86400000, unblockCutoff);
   const recentTrades = systemState.closedTrades.filter((t) => t.closedAt >= cutoff);
   const rollingSum = recentTrades.reduce((acc, t) => acc + (Number(t.netPnlUsdt) || 0), 0);
   systemState.rolling24hPnlUsdt = Number(rollingSum.toFixed(2));
@@ -1947,6 +1942,9 @@ app.post('/api/kill-switch/trigger', (req: Request, res: Response) => {
 app.post('/api/kill-switch/reset', (_req: Request, res: Response) => {
   systemState.isKillSwitchActive = false;
   systemState.killSwitchTriggerReason = null;
+  systemState.lastUnblockedAt = Date.now();
+  systemState.rolling24hPnlUsdt = 0.0;
+  savePersistedState();
   dispatchTelegramNotification({
     category: 'KILL_SWITCH',
     title: '🟢 РИСК-ФАЙРВОЛ РАЗБЛОКИРОВАН',
@@ -1954,7 +1952,7 @@ app.post('/api/kill-switch/reset', (_req: Request, res: Response) => {
     plainPreview: 'Риск-Файрвол разблокирован оператором. Торговля возобновлена.',
     isManualOrUrgent: true,
   }).catch(() => {});
-  res.json({ success: true, isKillSwitchActive: false });
+  res.json({ success: true, isKillSwitchActive: false, rolling24hPnlUsdt: 0.0, lastUnblockedAt: systemState.lastUnblockedAt });
 });
 
 app.get('/api/market/orderbook', async (req: Request, res: Response) => {
@@ -3797,22 +3795,104 @@ app.post('/api/wallet/snapshot', (_req: Request, res: Response) => {
   });
 });
 
+function executeSystemFactoryReset(): {
+  success: boolean;
+  capitalUsdt: number;
+  walletBalance: number;
+  totalRealizedPnlUsdt: number;
+  rolling24hPnlUsdt: number;
+  closedTradesCount: number;
+  activePositionsCount: number;
+} {
+  systemState.capitalUsdt = 10000.0;
+  systemState.rolling24hPnlUsdt = 0.0;
+  systemState.totalRealizedPnlUsdt = 0.0;
+  systemState.activePositions = [];
+  systemState.limitOrdersQueue = [];
+  systemState.closedTrades = [];
+  systemState.botTradeLogs = [];
+  systemState.xaiDecisions = [];
+  systemState.isKillSwitchActive = false;
+  systemState.killSwitchTriggerReason = null;
+  systemState.lastUnblockedAt = Date.now();
+  systemState.botTradingEnabled = true;
+
+  // Reset all agents to fresh default brains and 0 trades
+  systemState.agents = systemState.agents.map((agent) => ({
+    ...agent,
+    tradesCount: 0,
+    virtualBalance: 1500.0,
+    profitFactor: 1.5,
+    sharpeRatio: 1.6,
+    maxDrawdownPct: 0.0,
+    brain: createDefaultBotBrain(agent.engineType, agent.agentId),
+  }));
+
+  const now = Date.now();
+  systemState.walletLedger = [
+    {
+      id: `led-init-${now}`,
+      timestamp: now,
+      type: 'DEPOSIT_RESET',
+      amountUsdt: 10000.0,
+      balanceAfterUsdt: 10000.0,
+      description: 'Чистый старт торговой системы ZimaTrade AI: базовый баланс $10,000.00 USDT',
+      mode: systemState.mode,
+    },
+  ];
+
+  addBotLog({
+    botId: 'system',
+    botName: 'Ядро управления',
+    action: 'SCAN_PASS',
+    symbol: 'SYSTEM',
+    message: 'Выполнен полный сброс торговой статистики к $10,000.00 USDT. Все сделки обнулены, Kill-Switch снят, система запущена с чистого листа.',
+    rttMs: systemState.pings.bybit,
+  });
+
+  savePersistedState();
+
+  dispatchTelegramNotification({
+    category: 'KILL_SWITCH',
+    title: '🔄 ПОЛНЫЙ СБРОС СИСТЕМЫ И СТАТИСТИКИ К $10,000',
+    htmlBody: `Оператор выполнил полный сброс торговой истории.\n• <b>Баланс:</b> $10,000.00 USDT\n• <b>Статус:</b> Сделки обнулены, Kill-Switch снят, система запущена с чистого листа.`,
+    plainPreview: 'Полный сброс торговой статистики к $10,000 USDT. Система готова к работе.',
+    isManualOrUrgent: true,
+  }).catch(() => {});
+
+  return {
+    success: true,
+    capitalUsdt: systemState.capitalUsdt,
+    walletBalance: 10000.0,
+    totalRealizedPnlUsdt: 0.0,
+    rolling24hPnlUsdt: 0.0,
+    closedTradesCount: 0,
+    activePositionsCount: 0,
+  };
+}
+
+app.post(['/api/system/factory-reset', '/api/system/reset-all', '/api/wallet/factory-reset'], (_req: Request, res: Response) => {
+  const result = executeSystemFactoryReset();
+  const summary = calculatePortfolioSummary(
+    systemState.capitalUsdt,
+    systemState.activePositions,
+    systemState.closedTrades
+  );
+  res.json({
+    ...result,
+    summary,
+    ledger: systemState.walletLedger,
+    closedTrades: systemState.closedTrades,
+    activePositions: systemState.activePositions,
+  });
+});
+
 app.post('/api/wallet/adjust-balance', (req: Request, res: Response) => {
   const { action, amountUsdt } = req.body;
   const parsedAmount = parseFloat(amountUsdt);
 
-  if (action === 'RESET') {
-    systemState.capitalUsdt = 10000.0;
-    const newWalletBal = Number((systemState.capitalUsdt + systemState.totalRealizedPnlUsdt).toFixed(2));
-    systemState.walletLedger.unshift({
-      id: `led-${Date.now()}`,
-      timestamp: Date.now(),
-      type: 'DEPOSIT_RESET',
-      amountUsdt: 10000.0,
-      balanceAfterUsdt: newWalletBal,
-      description: 'Сброс базового капитала Shadow-пула до стандартных $10,000.00 USDT',
-      mode: systemState.mode,
-    });
+  if (action === 'RESET' || action === 'FACTORY_RESET') {
+    executeSystemFactoryReset();
   } else if (action === 'DEPOSIT' && !isNaN(parsedAmount) && parsedAmount > 0 && parsedAmount <= 1000000) {
     systemState.capitalUsdt = Number((systemState.capitalUsdt + parsedAmount).toFixed(2));
     const newWalletBal = Number((systemState.capitalUsdt + systemState.totalRealizedPnlUsdt).toFixed(2));
@@ -3825,12 +3905,11 @@ app.post('/api/wallet/adjust-balance', (req: Request, res: Response) => {
       description: `Пополнение виртуального маржинального пула на +$${parsedAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })} USDT`,
       mode: systemState.mode,
     });
+    savePersistedState();
   } else {
     res.status(400).json({ error: 'Укажите корректную сумму пополнения (от $10 до $1,000,000 USDT)' });
     return;
   }
-
-  savePersistedState();
 
   const summary = calculatePortfolioSummary(
     systemState.capitalUsdt,

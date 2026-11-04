@@ -1,46 +1,51 @@
 #!/usr/bin/env bash
 # ============================================================================
 # ZIMA-TRADE-AI v4.0 — Скрипт обучения ИИ на домашнем ПК (Node B: Trainer Forge)
-# Использование: bash scripts/train-pc.sh [URL_СЕРВЕРА_CLOUD_RU]
-# Пример: bash scripts/train-pc.sh http://127.0.0.1:3000
+# Использование: bash scripts/train-pc.sh [URL_СЕРВЕРА] [КОЛИЧЕСТВО_ЭПОХ]
+# Пример: bash scripts/train-pc.sh http://194.113.34.230:3000 15
 # ============================================================================
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT_DIR"
+
 CLOUD_RU_URL="${1:-http://127.0.0.1:3000}"
+EPOCHS="${2:-15}"
 
-echo "🧠 [ZIMA-TRADE-AI] Старт сессии обучения на ПК (целевой сервер: $CLOUD_RU_URL)..."
+echo "🧠 [ZIMA-TRADE-AI] Запуск сессии квант-обучения (целевой сервер: $CLOUD_RU_URL, эпох: $EPOCHS)..."
 
-# 1. Синхронизация свежего кода из GitHub
+# 1. Синхронизация свежего кода из GitHub (если это git репозиторий)
 if [ -d ".git" ]; then
-  echo "🔄 Получение последних обновлений из GitHub..."
+  echo "🔄 Проверка свежих коммитов в ветке main..."
   git pull --ff-only || true
 fi
 
-# 2. Пакетное обучение квантовых весов и авто-тюнинг гиперпараметров на реальных исторических свечах Bybit
-echo "📈 Этап 1: Прогон эпох обучения и калибровка гиперпараметров (Порог ИИ, ATR-SL, R:R, Спред) по свечам Bybit..."
-for symbol in BTCUSDT ETHUSDT SOLUSDT; do
-  echo "   -> Обучение и калибровка ботов на паре $symbol (интервал 5m, 200 свечей, учет комиссии 0.11%)..."
-  curl -sS -X POST "$CLOUD_RU_URL/api/bots/train-epoch" \
-    -H "Content-Type: application/json" \
-    -d "{\"agentId\": \"ALL\", \"symbol\": \"$symbol\", \"interval\": \"5\", \"limit\": 200}" | head -c 450 || echo "⚠️ Сервер $CLOUD_RU_URL недоступен"
-  echo ""
-  sleep 1
-done
-
-# 3. Локальное GPU-обучение PyTorch PPO+LSTM и экспорт в ONNX с SHA-256 манифестом
+# 2. Подготовка виртуального окружения Python
 if command -v python3 >/dev/null 2>&1; then
-  echo "🔥 Этап 2: Проверка Python / PyTorch окружения для обучения PPO+LSTM..."
   if [ ! -d ".venv" ]; then
+    echo "📦 Создание виртуального окружения .venv..."
     python3 -m venv .venv
   fi
-  source .venv/bin/activate
-  if python3 -c "import torch, onnx" >/dev/null 2>&1; then
-    python3 -m zima_trade_ai.trainer_forge.train_rl_pytorch
-    python3 -m zima_trade_ai.trainer_forge.export_onnx
-    echo "✅ Модель экспортирована в ./models/ppo_policy.onnx с криптографическим манифестом ./models/manifest.json"
-  else
-    echo "ℹ️ Для запуска PyTorch GPU-тренажера установите пакеты: source .venv/bin/activate && pip install torch onnx numpy"
+  
+  # Активация окружения (кроссплатформенно)
+  if [ -f ".venv/bin/activate" ]; then
+    source .venv/bin/activate
+  elif [ -f ".venv/Scripts/activate" ]; then
+    source .venv/Scripts/activate
   fi
-fi
 
-echo "✅ [ZIMA-TRADE-AI] Сессия обучения завершена!"
+  # Проверка библиотек
+  if ! python3 -c "import torch, numpy, requests" >/dev/null 2>&1; then
+    echo "⬇️ Установка зависимостей PyTorch, ONNX, NumPy..."
+    pip install --upgrade pip
+    pip install torch onnx numpy requests
+  fi
+
+  # 3. Запуск нейро-тренажера
+  echo "🚀 Запуск локального тренажера scripts/train_pc.py..."
+  python3 scripts/train_pc.py --server "$CLOUD_RU_URL" --epochs "$EPOCHS"
+else
+  echo "❌ Python 3 не обнаружен. Установите Python 3 с официального сайта: https://www.python.org/downloads/"
+  exit 1
+fi
