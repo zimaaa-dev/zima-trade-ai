@@ -142,35 +142,51 @@ deploy_watchdog_worker() {
   fi
 
   echo "🔐 Проверка авторизации в Cloudflare..."
-  if ! $WRANGLER whoami >/dev/null 2>&1; then
-    echo -e "${C_YELLOW}Требуется авторизация в Cloudflare.${C_RESET}"
-    echo "Выберите способ авторизации:"
-    echo "1) Вставить Cloudflare API Token (Рекомендуется для удаленного сервера)"
-    echo "2) Авторизоваться по ссылке в браузере (OAuth)"
-    read -r -p "Ваш выбор (1 или 2, по умолчанию 1): " AUTH_CHOICE
-    AUTH_CHOICE="${AUTH_CHOICE:-1}"
+  IS_LOGGED_IN=false
 
-    if [ "$AUTH_CHOICE" = "1" ]; then
-      echo -e "\nДля создания API Token:"
-      echo -e "  1. Откройте: ${C_CYAN}https://dash.cloudflare.com/profile/api-tokens${C_RESET}"
-      echo -e "  2. Нажмите ${C_BOLD}Create Token${C_RESET} -> шаблон ${C_BOLD}Edit Cloudflare Workers${C_RESET} -> ${C_BOLD}Continue to summary${C_RESET} -> ${C_BOLD}Create Token${C_RESET}"
-      read -r -p "Вставьте Cloudflare API Token: " CF_TOKEN
-      if [ -n "$CF_TOKEN" ]; then
-        export CLOUDFLARE_API_TOKEN="$CF_TOKEN"
-        # Сохраняем в .env сервера чтобы не вводить повторно
-        if ! grep -q "CLOUDFLARE_API_TOKEN=" "$ROOT_DIR/.env" 2>/dev/null; then
-          echo "CLOUDFLARE_API_TOKEN=\"$CF_TOKEN\"" >> "$ROOT_DIR/.env"
-        fi
-      fi
-    else
-      echo -e "\n${C_YELLOW}Запуск OAuth без графического браузера (headless):${C_RESET}"
-      BROWSER=echo $WRANGLER login || true
+  # Проверяем, есть ли токен в окружении или в .env
+  if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+    IS_LOGGED_IN=true
+  elif [ -f "$ROOT_DIR/.env" ]; then
+    CF_ENV_TOK=$(grep -E "^CLOUDFLARE_API_TOKEN=" "$ROOT_DIR/.env" 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" | tr -d ' ' || true)
+    if [ -n "$CF_ENV_TOK" ]; then
+      export CLOUDFLARE_API_TOKEN="$CF_ENV_TOK"
+      IS_LOGGED_IN=true
     fi
   fi
 
+  if [ "$IS_LOGGED_IN" = "false" ]; then
+    WHOAMI_OUTPUT=$($WRANGLER whoami 2>&1 || true)
+    if echo "$WHOAMI_OUTPUT" | grep -iq "logged in as"; then
+      IS_LOGGED_IN=true
+    fi
+  fi
+
+  if [ "$IS_LOGGED_IN" = "false" ]; then
+    echo -e "${C_YELLOW}Требуется авторизация в Cloudflare.${C_RESET}"
+    echo "Для деплоя Worker на удаленном сервере нужен Cloudflare API Token:"
+    echo -e "  1. Откройте в браузере: ${C_CYAN}https://dash.cloudflare.com/profile/api-tokens${C_RESET}"
+    echo -e "  2. Нажмите ${C_BOLD}Create Token${C_RESET} -> шаблон ${C_BOLD}Edit Cloudflare Workers${C_RESET}"
+    echo -e "  3. Нажмите ${C_BOLD}Continue to summary${C_RESET} -> ${C_BOLD}Create Token${C_RESET}"
+    echo ""
+    read -r -p "Вставьте ваш Cloudflare API Token: " CF_TOKEN
+    if [ -z "$CF_TOKEN" ]; then
+      echo -e "${C_RED}✖ Токен не введен. Деплой отменен.${C_RESET}"
+      return
+    fi
+
+    export CLOUDFLARE_API_TOKEN="$CF_TOKEN"
+    if ! grep -q "CLOUDFLARE_API_TOKEN=" "$ROOT_DIR/.env" 2>/dev/null; then
+      echo "CLOUDFLARE_API_TOKEN=\"$CF_TOKEN\"" >> "$ROOT_DIR/.env"
+    fi
+  fi
+
+  echo -e "${C_GREEN}✔ Авторизация подтверждена.${C_RESET}"
   echo "🚀 Деплой Worker zima-trade-watchdog..."
   $WRANGLER deploy
-  echo -e "${C_GREEN}✔ Cloudflare Worker Watchdog успешно развернут!${C_RESET}"
+  echo -e "\n${C_GREEN}══════════════════════════════════════════════════════════════════${C_RESET}"
+  echo -e "${C_BOLD}${C_GREEN}🎉 Cloudflare Worker Watchdog успешно развернут!${C_RESET}"
+  echo -e "${C_GREEN}══════════════════════════════════════════════════════════════════${C_RESET}"
 }
 
 # Меню
