@@ -7,6 +7,7 @@ crons = ["* * * * *"]
 
 [vars]
 NODE_A_HEALTH_URL = "http://194.113.34.230:3000/api/system/health"
+NODE_A_ORIGIN = "http://194.113.34.230:3000"
 TG_ALERT_CHAT_ID = ""
 WATCHDOG_SECRET = "zima_cf_watchdog_secret_2026"
 

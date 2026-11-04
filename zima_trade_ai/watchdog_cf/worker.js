@@ -13,14 +13,16 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // 1. Root / Health endpoint
-    if (url.pathname === '/' || url.pathname === '/health') {
+    // 1. Watchdog Health endpoint
+    if (url.pathname === '/watchdog-status' || url.pathname === '/health') {
       return new Response(
         JSON.stringify({
           status: 'ONLINE',
           node: 'Node C (Cloudflare Edge)',
+          subdomain: 'zimaaa-lab.workers.dev',
+          target_node_a: 'http://194.113.34.230:3000',
           timestamp: Date.now(),
-          features: ['dead_mans_switch_cron', 'bybit_v5_proxy', 'telegram_proxy'],
+          features: ['terminal_reverse_proxy', 'dead_mans_switch_cron', 'bybit_v5_proxy', 'telegram_proxy'],
         }),
         {
           headers: { 'Content-Type': 'application/json' },
@@ -66,7 +68,36 @@ export default {
       return await fetch(proxyReq);
     }
 
-    return new Response('Not Found', { status: 404 });
+    // 4. Full Web Terminal & API Reverse Proxy to Node A (Cloud.ru: http://194.113.34.230:3000)
+    // Allows full HTTPS access without buying or configuring a custom domain!
+    const nodeAOrigin = env.NODE_A_ORIGIN || 'http://194.113.34.230:3000';
+    const targetUrl = `${nodeAOrigin.replace(/\/$/, '')}${url.pathname}${url.search}`;
+
+    const headers = new Headers(request.headers);
+    headers.set('Host', '194.113.34.230:3000');
+    headers.set('X-Forwarded-Proto', 'https');
+    headers.set('X-Forwarded-Host', url.host);
+
+    try {
+      const proxyReq = new Request(targetUrl, {
+        method: request.method,
+        headers,
+        body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body,
+        redirect: 'follow',
+      });
+
+      return await fetch(proxyReq);
+    } catch (err) {
+      return new Response(
+        `<html><body style="font-family:sans-serif;padding:30px;background:#0f172a;color:#f8fafc">` +
+        `<h2>⚠️ ZimaTrade AI — Ошибка шлюза</h2>` +
+        `<p>Не удалось подключиться к ядру Node A: <code>${nodeAOrigin}</code></p>` +
+        `<p>Ошибка: <code>${err?.message || err}</code></p>` +
+        `<p>Проверьте запуск сервера: <code>pm2 status zima-core</code> на сервере Cloud.ru.</p>` +
+        `</body></html>`,
+        { status: 502, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+      );
+    }
   },
 
   // 1-Minute Cron Trigger (Dead-Man's Switch)
