@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Build & Test Outputs
+build/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Environment & Secrets (NEVER commit real API keys or tokens)
+.env
+.env.*
+!.env.example
+
+# Runtime State & Heavy Data Archives
+data/*.json
+data/runtime_state.json
+data/auth_config.json
+data/parquet/
+*.parquet
+*.sqlite
+*.db
+*.db-wal
+*.db-shm
+
+# Trained Binary Weights (tracked via SHA-256 manifest or GitHub Releases)
+models/*.onnx
+
+# OS, Artifacts & Logs
+.DS_Store
+*.log
+npm-debug.log*
+.aistudio/
+public/assets/aistudio/
+.playwright-cli/
+

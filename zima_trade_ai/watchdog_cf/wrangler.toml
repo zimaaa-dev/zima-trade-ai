@@ -1,0 +1,16 @@
+name = "zima-trade-watchdog"
+main = "worker.js"
+compatibility_date = "2025-02-01"
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+NODE_A_HEALTH_URL = "http://194.113.34.230:3000/api/system/health"
+TG_ALERT_CHAT_ID = ""
+WATCHDOG_SECRET = "zima_cf_watchdog_secret_2026"
+
+# Опционально для сохранения счетчика последовательных сбоев:
+# [[kv_namespaces]]
+# binding = "KV_STATE"
+# id = "<YOUR_KV_NAMESPACE_ID>"

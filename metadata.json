@@ -1,0 +1,6 @@
+{
+  "name": "ZimaTrade AI",
+  "description": "Автономный программный комплекс для криптовалютного анализа, L2-50 симуляции, риск-файрвола и ИИ-торговли",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
