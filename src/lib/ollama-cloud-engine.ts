@@ -91,14 +91,20 @@ export class OllamaCloudEngine {
     const rawList: string[] = Array.isArray(input)
       ? input
       : typeof input === 'string'
-      ? input.split(/[,\n;]+/).map((s) => s.trim())
+      ? input.split(/[,\n;\r]+/).map((s) => s.trim())
       : [];
 
     const validKeys = Array.from(
       new Set(
         rawList
-          .map((k) => k.trim())
-          .filter((k) => k.length >= 6 && !k.startsWith('ваш_') && !k.startsWith('your_'))
+          .map((k) => {
+            let s = k.trim();
+            if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+              s = s.slice(1, -1).trim();
+            }
+            return s;
+          })
+          .filter((k) => k.length >= 6 && !k.startsWith('ваш_') && !k.startsWith('your_') && !k.includes('placeholder'))
       )
     );
 
@@ -125,6 +131,26 @@ export class OllamaCloudEngine {
 
     if (this.currentKeyIndex >= this.keys.length) {
       this.currentKeyIndex = 0;
+    }
+  }
+
+  public addKey(key: string): void {
+    let s = (key || '').trim();
+    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+      s = s.slice(1, -1).trim();
+    }
+    if (s.length >= 6 && !this.keys.some((k) => k.rawKey === s)) {
+      this.keys.push({
+        id: `key-${this.keys.length + 1}-${Date.now().toString(36)}`,
+        rawKey: s,
+        masked: OllamaCloudEngine.maskKey(s),
+        requestCount: 0,
+        successCount: 0,
+        failCount: 0,
+        cooldownUntil: 0,
+        lastUsedAt: 0,
+        status: 'ACTIVE',
+      });
     }
   }
 
@@ -300,6 +326,35 @@ export class OllamaCloudEngine {
           };
         }
 
+        // Fallback to OpenAI compatible /v1/chat/completions if /api/generate is 404
+        if (res.status === 404) {
+          const resV1 = await fetch(`${this.host}/v1/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${keyItem.rawKey}`,
+            },
+            body: JSON.stringify({
+              model: targetModel,
+              messages: [{ role: 'user', content: prompt }],
+              temperature,
+            }),
+            signal: AbortSignal.timeout(timeoutMs),
+          });
+          if (resV1.ok) {
+            const data = (await resV1.json()) as any;
+            const text = String(data?.choices?.[0]?.message?.content || '').trim();
+            this.reportKeySuccess(keyItem);
+            return {
+              text,
+              model: targetModel,
+              keyMasked: keyItem.masked,
+              latencyMs: Date.now() - t0,
+              ok: true,
+            };
+          }
+        }
+
         const errText = await res.text().catch(() => `HTTP ${res.status}`);
         lastError = `HTTP ${res.status}: ${errText}`;
         this.reportKeyFailure(keyItem, res.status, errText);
@@ -377,6 +432,35 @@ export class OllamaCloudEngine {
             latencyMs: Date.now() - t0,
             ok: true,
           };
+        }
+
+        // Fallback to OpenAI compatible /v1/chat/completions if /api/chat is 404
+        if (res.status === 404) {
+          const resV1 = await fetch(`${this.host}/v1/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${keyItem.rawKey}`,
+            },
+            body: JSON.stringify({
+              model: targetModel,
+              messages,
+              temperature,
+            }),
+            signal: AbortSignal.timeout(timeoutMs),
+          });
+          if (resV1.ok) {
+            const data = (await resV1.json()) as any;
+            const text = String(data?.choices?.[0]?.message?.content || '').trim();
+            this.reportKeySuccess(keyItem);
+            return {
+              text,
+              model: targetModel,
+              keyMasked: keyItem.masked,
+              latencyMs: Date.now() - t0,
+              ok: true,
+            };
+          }
         }
 
         const errText = await res.text().catch(() => `HTTP ${res.status}`);

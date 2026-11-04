@@ -65,8 +65,12 @@ function loadEnvFromFiles() {
   }
 
   // Purge any accidental placeholder keys
-  if (!isKeyValid(process.env.OLLAMA_API_KEY)) {
-    delete process.env.OLLAMA_API_KEY;
+  if (!isKeyValid(process.env.OLLAMA_API_KEY)) delete process.env.OLLAMA_API_KEY;
+  if (!isKeyValid(process.env.OLLAMA_KEY)) delete process.env.OLLAMA_KEY;
+  if (!isKeyValid(process.env.OLLAMA_TOKEN)) delete process.env.OLLAMA_TOKEN;
+  if (!isKeyValid(process.env.OLLAMA_CLOUD_KEY)) delete process.env.OLLAMA_CLOUD_KEY;
+  if (process.env.OLLAMA_API_KEYS && !isKeyValid(process.env.OLLAMA_API_KEYS)) {
+    delete process.env.OLLAMA_API_KEYS;
   }
   if (!isKeyValid(process.env.BYBIT_API_KEY)) {
     delete process.env.BYBIT_API_KEY;
@@ -134,7 +138,13 @@ import {
 } from './src/lib/bot-learning-math.ts';
 
 // Ollama Cloud Multi-Key Rotation & Model Orchestrator
-const initialOllamaKeys = [process.env.OLLAMA_API_KEYS, process.env.OLLAMA_API_KEY]
+const initialOllamaKeys = [
+  process.env.OLLAMA_API_KEYS,
+  process.env.OLLAMA_API_KEY,
+  process.env.OLLAMA_KEY,
+  process.env.OLLAMA_TOKEN,
+  process.env.OLLAMA_CLOUD_KEY,
+]
   .filter(Boolean)
   .join(',');
 
@@ -4620,37 +4630,80 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
     }
   } else if (target === 'ollama_cloud') {
     const host = ollamaCloud.getHost();
-    const queryKey = req.query.key as string | undefined;
+    let rawQueryKey = (req.query.key as string | undefined)?.trim();
+    if (rawQueryKey) {
+      if ((rawQueryKey.startsWith('"') && rawQueryKey.endsWith('"')) || (rawQueryKey.startsWith("'") && rawQueryKey.endsWith("'"))) {
+        rawQueryKey = rawQueryKey.slice(1, -1).trim();
+      }
+      rawQueryKey = rawQueryKey.split(/[,\n;\r]+/)[0]?.trim();
+    }
 
-    if (queryKey && isKeyValid(queryKey)) {
+    if (rawQueryKey && isKeyValid(rawQueryKey)) {
       try {
         const t0 = Date.now();
-        const resTest = await fetch(`${host}/api/generate`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${queryKey.trim()}`,
-          },
-          body: JSON.stringify({
-            model: ollamaCloud.getSelectedModel(),
-            prompt: 'Ответь словом "OK"',
-            stream: false,
-          }),
-          signal: AbortSignal.timeout(6000),
-        });
+        let isOk = false;
+        let statusCode = 200;
+        let errDetails = '';
+
+        // 1. Try native Ollama endpoint /api/generate
+        try {
+          const resGen = await fetch(`${host}/api/generate`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${rawQueryKey}`,
+            },
+            body: JSON.stringify({
+              model: ollamaCloud.getSelectedModel(),
+              prompt: 'Ответь словом "OK"',
+              stream: false,
+            }),
+            signal: AbortSignal.timeout(7000),
+          });
+          statusCode = resGen.status;
+          if (resGen.ok) {
+            isOk = true;
+          } else if (resGen.status === 404) {
+            // Fallback to OpenAI compatible /v1/chat/completions
+            const resV1 = await fetch(`${host}/v1/chat/completions`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${rawQueryKey}`,
+              },
+              body: JSON.stringify({
+                model: ollamaCloud.getSelectedModel(),
+                messages: [{ role: 'user', content: 'OK' }],
+              }),
+              signal: AbortSignal.timeout(7000),
+            });
+            statusCode = resV1.status;
+            if (resV1.ok) {
+              isOk = true;
+            } else {
+              errDetails = await resV1.text().catch(() => `HTTP ${resV1.status}`);
+            }
+          } else {
+            errDetails = await resGen.text().catch(() => `HTTP ${resGen.status}`);
+          }
+        } catch (fetchErr: any) {
+          errDetails = fetchErr.message;
+        }
 
         const latencyMs = Date.now() - t0;
-        if (resTest.ok) {
+        if (isOk) {
+          ollamaCloud.addKey(rawQueryKey);
           res.json({
             success: true,
             latencyMs,
-            statusText: `Ключ проверен успешно! Модель: ${ollamaCloud.getSelectedModel()}, задержка: ${latencyMs}мс.`,
+            statusText: `Ключ проверен успешно (HTTP 200, задержка: ${latencyMs}мс)! Модель: ${ollamaCloud.getSelectedModel()}. Ключ добавлен в активный пул.`,
+            pool: ollamaCloud.getPoolStatus(),
           });
         } else {
           res.json({
             success: false,
-            error: `HTTP ${resTest.status}`,
-            statusText: `Ollama Cloud отклонил ключ (HTTP ${resTest.status}). Проверьте баланс и токен на https://ollama.com/settings/keys`,
+            error: `HTTP ${statusCode}: ${errDetails}`,
+            statusText: `Ollama Cloud отклонил ключ (HTTP ${statusCode}). Проверьте токен на https://ollama.com/settings/keys`,
           });
         }
       } catch (err: any) {
@@ -4667,14 +4720,15 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
     if (pool.totalKeys === 0) {
       res.json({
         success: false,
-        error: 'В пуле Ollama Cloud нет ключей. Добавьте ключи в настройках.',
-        statusText: 'Ключи Ollama Cloud не настроены.',
+        error: 'В пуле Ollama Cloud пока нет активных ключей.',
+        statusText: 'Ключи Ollama Cloud пока не введены. Вставьте ключ в поле "Ollama Cloud Multi-Key Pool" ниже и нажмите "Тест" или "Сохранить и активировать".',
+        pool,
       });
       return;
     }
 
     const testRes = await ollamaCloud.generate('Ответь кратко "ZimaTrade Quant OK"', {
-      timeoutMs: 6500,
+      timeoutMs: 7500,
     });
 
     if (testRes.ok) {
@@ -4682,12 +4736,14 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
         success: true,
         latencyMs: testRes.latencyMs,
         statusText: `Ollama Cloud отвечает (${testRes.latencyMs}мс). Модель: ${testRes.model}, ключ: ${testRes.keyMasked}, ротаций: ${pool.totalRotations}.`,
+        pool: ollamaCloud.getPoolStatus(),
       });
     } else {
       res.json({
         success: false,
         error: testRes.error || 'Ошибка вызова Ollama Cloud',
-        statusText: `Сбой Ollama Cloud: ${testRes.error}. Проверьте ключи и квоты.`,
+        statusText: `Сбой Ollama Cloud: ${testRes.error}. Проверьте баланс на https://ollama.com/settings/keys`,
+        pool: ollamaCloud.getPoolStatus(),
       });
     }
   } else {

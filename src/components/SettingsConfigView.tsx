@@ -248,8 +248,9 @@ export const SettingsConfigView: React.FC = () => {
     try {
       let url = `/api/config/test-connection?target=${target}`;
       if (target === 'ollama_cloud') {
-        const inputEl = document.querySelector('input[name="ollamaKey"]') as HTMLInputElement | null;
-        const keyVal = directKey || inputEl?.value?.trim();
+        const textareaEl = document.querySelector('textarea[name="ollamaKeys"]') as HTMLTextAreaElement | null;
+        const inputEl = document.querySelector('input[name="ollamaKeys"], input[name="ollamaKey"]') as HTMLInputElement | null;
+        const keyVal = directKey || textareaEl?.value?.trim() || inputEl?.value?.trim();
         if (keyVal) {
           url += `&key=${encodeURIComponent(keyVal)}`;
         }
@@ -939,9 +940,10 @@ SPREAD_GUARD_MAX_PCT=0.0025
                   type: 'success',
                   message: data.message || 'Ключи успешно сохранены и активированы в рантайме!',
                 });
-                form.reset();
                 await fetchStatus();
-                runTest('ollama_cloud');
+                if (ollamaKeys) {
+                  runTest('ollama_cloud', ollamaKeys);
+                }
               } else {
                 setSaveStatus({
                   type: 'error',
@@ -1006,11 +1008,14 @@ SPREAD_GUARD_MAX_PCT=0.0025
                 />
                 <button
                   type="button"
-                  onClick={() => runTest('ollama_cloud')}
+                  onClick={() => {
+                    const textareaEl = document.querySelector('textarea[name="ollamaKeys"]') as HTMLTextAreaElement | null;
+                    runTest('ollama_cloud', textareaEl?.value?.trim());
+                  }}
                   disabled={testingTarget === 'ollama_cloud'}
-                  className="absolute right-1.5 top-1.5 px-2 py-1 bg-slate-800 hover:bg-slate-700 text-cyan-300 rounded text-[10px] font-mono transition"
+                  className="absolute right-1.5 top-1.5 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-cyan-300 rounded text-[10px] font-mono transition border border-slate-700 hover:border-cyan-500/50"
                 >
-                  {testingTarget === 'ollama_cloud' ? '...' : 'Тест'}
+                  {testingTarget === 'ollama_cloud' ? 'Проверка...' : 'Тест'}
                 </button>
               </div>
 
