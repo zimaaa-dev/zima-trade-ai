@@ -26,6 +26,9 @@ import {
   Trash2,
   Power,
   Flame,
+  Copy,
+  Terminal,
+  Check,
 } from 'lucide-react';
 import type {
   AgentItem,
@@ -194,6 +197,50 @@ export const AiArenaView: React.FC = () => {
   const [testingTg, setTestingTg] = useState<boolean>(false);
   const [syncingTg, setSyncingTg] = useState<boolean>(false);
 
+  // Market Trend & Autonomous Retraining Recommendation Monitor
+  const [trendAudit, setTrendAudit] = useState<{
+    regime: string;
+    regimeTitle: string;
+    regimeSummary: string;
+    btcChange24hPct: number;
+    ethChange24hPct: number;
+    solChange24hPct: number;
+    avgAtrPct: number;
+    isRetrainingRecommended: boolean;
+    retrainingReason: string;
+    hoursSinceLastTrain: number;
+    recommendedCommand: string;
+  } | null>(null);
+  const [isAuditingTrends, setIsAuditingTrends] = useState<boolean>(false);
+  const [copiedCmd, setCopiedCmd] = useState<boolean>(false);
+
+  const fetchTrendAudit = async () => {
+    try {
+      const res = await fetch('/api/ai/trend-audit');
+      if (res.ok) {
+        const data = await res.json();
+        setTrendAudit(data);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleForceAudit = async () => {
+    setIsAuditingTrends(true);
+    try {
+      const res = await fetch('/api/ai/trend-audit/check-now', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.audit) setTrendAudit(data.audit);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIsAuditingTrends(false);
+    }
+  };
+
   const handleAssignToCompareSlot = (slot: 0 | 1, agentId: string) => {
     setComparePair((prev) => {
       const otherSlot = slot === 0 ? 1 : 0;
@@ -269,8 +316,13 @@ export const AiArenaView: React.FC = () => {
 
   useEffect(() => {
     fetchAgentsAndBots();
+    fetchTrendAudit();
     const timer = setInterval(fetchAgentsAndBots, 2500);
-    return () => clearInterval(timer);
+    const trendTimer = setInterval(fetchTrendAudit, 15000);
+    return () => {
+      clearInterval(timer);
+      clearInterval(trendTimer);
+    };
   }, []);
 
   const handleToggleGlobalBots = async () => {
@@ -766,6 +818,144 @@ export const AiArenaView: React.FC = () => {
             )}
           </button>
         </div>
+      </div>
+
+      {/* Market Regime Shift & Retraining Recommendation Monitor */}
+      <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 sm:p-5 space-y-3.5 shadow-lg">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-purple-500/15 border border-purple-500/30 text-purple-400 flex items-center justify-center shrink-0">
+              <TrendingUp className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs sm:text-sm font-bold text-white">
+                  Анализатор рыночных режимов & Детектор сдвига трендов (Cloud.ru Engine)
+                </h3>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-400/30">
+                  Bybit V5 Linear
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                Поверхностный анализ макро-трендов 24ч, волатильности ATR и авто-рекомендации к дообучению нейро-ботов в Telegram
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {trendAudit && (
+              <span
+                className={`px-3 py-1 rounded-lg text-xs font-semibold border flex items-center gap-1.5 ${
+                  trendAudit.regime === 'STRONG_BULL'
+                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                    : trendAudit.regime === 'STRONG_BEAR'
+                    ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                    : trendAudit.regime === 'HIGH_VOLATILITY'
+                    ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                    : 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300'
+                }`}
+              >
+                <span>{trendAudit.regimeTitle}</span>
+              </span>
+            )}
+
+            <button
+              type="button"
+              onClick={handleForceAudit}
+              disabled={isAuditingTrends}
+              className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-mono font-medium transition flex items-center gap-1.5 border border-slate-700"
+              title="Принудительно пересчитать тренды и отправить рекомендацию в Telegram при необходимости"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isAuditingTrends ? 'animate-spin text-cyan-400' : 'text-slate-400'}`} />
+              <span className="hidden sm:inline">{isAuditingTrends ? 'Анализ...' : 'Проверить сейчас'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Ticker 24h Metrics */}
+        {trendAudit && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs font-mono">
+            <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
+              <span className="text-[10px] text-slate-500 uppercase">BTCUSDT 24ч</span>
+              <div className={`text-sm font-bold mt-0.5 ${trendAudit.btcChange24hPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {trendAudit.btcChange24hPct >= 0 ? '+' : ''}{trendAudit.btcChange24hPct.toFixed(2)}%
+              </div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
+              <span className="text-[10px] text-slate-500 uppercase">ETHUSDT 24ч</span>
+              <div className={`text-sm font-bold mt-0.5 ${trendAudit.ethChange24hPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {trendAudit.ethChange24hPct >= 0 ? '+' : ''}{trendAudit.ethChange24hPct.toFixed(2)}%
+              </div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
+              <span className="text-[10px] text-slate-500 uppercase">SOLUSDT 24ч</span>
+              <div className={`text-sm font-bold mt-0.5 ${trendAudit.solChange24hPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {trendAudit.solChange24hPct >= 0 ? '+' : ''}{trendAudit.solChange24hPct.toFixed(2)}%
+              </div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
+              <span className="text-[10px] text-slate-500 uppercase">Волатильность корзины</span>
+              <div className="text-sm font-bold text-amber-300 mt-0.5">
+                ATR {trendAudit.avgAtrPct}%
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Retraining Recommendation Decision Box */}
+        {trendAudit && (
+          <div
+            className={`p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+              trendAudit.isRetrainingRecommended
+                ? 'bg-amber-950/30 border-amber-500/40 text-amber-200'
+                : 'bg-emerald-950/20 border-emerald-500/30 text-emerald-200'
+            }`}
+          >
+            <div className="flex items-start gap-2.5 min-w-0">
+              {trendAudit.isRetrainingRecommended ? (
+                <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              ) : (
+                <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+              )}
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-white">
+                    {trendAudit.isRetrainingRecommended
+                      ? '⚠️ РЕКОМЕНДУЕТСЯ ДООБУЧЕНИЕ МОДЕЛЕЙ НА НОВЫХ ДАННЫХ'
+                      : '✅ Веса нейросетей актуальны (рыночный режим стабилен)'}
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-400">
+                    (обучение: {trendAudit.hoursSinceLastTrain}ч назад)
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-300 mt-0.5 leading-relaxed">
+                  {trendAudit.retrainingReason}
+                </p>
+              </div>
+            </div>
+
+            {/* Copy Command Button for train_pc.py */}
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-1.5 bg-black/60 px-2.5 py-1.5 rounded-lg border border-white/[0.08] text-[11px] font-mono text-cyan-300 max-w-xs truncate">
+                <Terminal className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                <span className="truncate">python3 scripts/train_pc.py...</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(trendAudit.recommendedCommand);
+                  setCopiedCmd(true);
+                  setTimeout(() => setCopiedCmd(false), 2000);
+                }}
+                className="px-3 py-1.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold rounded-lg text-xs font-mono transition flex items-center gap-1 shadow-sm shrink-0"
+                title="Скопировать готовую команду для терминала на Mac / Home PC"
+              >
+                {copiedCmd ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedCmd ? 'Скопировано!' : 'Команда для ПК'}</span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Collapsible Inline News & Telegram Channels Manager right inside AI Arena */}

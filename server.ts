@@ -3468,6 +3468,138 @@ const handleTrainBotEpoch = async (req: Request, res: Response) => {
 app.post('/api/bots/train-epoch', handleTrainBotEpoch);
 app.post('/api/bots/train', handleTrainBotEpoch);
 
+// ============================================================================
+// Market Regime, Trend Drift & Autonomous Retraining Recommendation Engine
+// ============================================================================
+let lastRetrainingAlertTs = 0;
+
+export interface MarketTrendAuditResult {
+  timestamp: number;
+  regime: 'STRONG_BULL' | 'STRONG_BEAR' | 'HIGH_VOLATILITY' | 'RANGE_CHOP';
+  regimeTitle: string;
+  regimeSummary: string;
+  btcChange24hPct: number;
+  ethChange24hPct: number;
+  solChange24hPct: number;
+  avgAtrPct: number;
+  isRetrainingRecommended: boolean;
+  retrainingReason: string;
+  hoursSinceLastTrain: number;
+  recommendedCommand: string;
+}
+
+export async function analyzeMarketTrendsAndRetrainingNeeds(notifyTelegram = false): Promise<MarketTrendAuditResult> {
+  const tickers = await fetchRealBybitTickers();
+  const btc = tickers.find((t: any) => t.symbol === 'BTCUSDT') || { priceChangePct: 0, atrPct: 2.5 };
+  const eth = tickers.find((t: any) => t.symbol === 'ETHUSDT') || { priceChangePct: 0, atrPct: 3.0 };
+  const sol = tickers.find((t: any) => t.symbol === 'SOLUSDT') || { priceChangePct: 0, atrPct: 3.5 };
+
+  const btcChange = btc.priceChangePct || 0;
+  const ethChange = eth.priceChangePct || 0;
+  const solChange = sol.priceChangePct || 0;
+  const avgAtr = Number((((btc.atrPct || 2.5) + (eth.atrPct || 3.0) + (sol.atrPct || 3.5)) / 3).toFixed(2));
+
+  let regime: 'STRONG_BULL' | 'STRONG_BEAR' | 'HIGH_VOLATILITY' | 'RANGE_CHOP' = 'RANGE_CHOP';
+  let regimeTitle = '🔄 Боковой диапазон (Range / Choppy)';
+  let regimeSummary = 'Рынок движется в умеренном коридоре без выраженного доминирования покупателей или продавцов.';
+
+  if (btcChange >= 3.0 && ethChange >= 2.0) {
+    regime = 'STRONG_BULL';
+    regimeTitle = '🚀 Сильный бычий тренд (Bullish Expansion)';
+    regimeSummary = `Мощный восходящий импульс: BTC +${btcChange}%, ETH +${ethChange}%. Высокая вероятность продолжения тренда.`;
+  } else if (btcChange <= -3.0 && ethChange <= -2.0) {
+    regime = 'STRONG_BEAR';
+    regimeTitle = '📉 Сильный медвежий пробой (Bearish Breakdown)';
+    regimeSummary = `Резкий импульс продаж: BTC ${btcChange}%, ETH ${ethChange}%. Повышенные риски ложных отскоков.`;
+  } else if (avgAtr >= 4.0 || Math.abs(btcChange) >= 4.0) {
+    regime = 'HIGH_VOLATILITY';
+    regimeTitle = '⚡ Высокая волатильность (High ATR Volatility)';
+    regimeSummary = `Всплеск волатильности (средний ATR ${avgAtr}%). Резкие проскальзывания и расширение спредов.`;
+  }
+
+  // Calculate bot training freshness
+  const lastTrainedAt = Math.min(...systemState.agents.map((a) => a.brain?.lastTrainedAt || Date.now()));
+  const hoursSinceLastTrain = Number(((Date.now() - lastTrainedAt) / (1000 * 3600)).toFixed(1));
+  const epochsTrained = Math.max(...systemState.agents.map((a) => a.brain?.epochsTrained || 0));
+
+  let isRetrainingRecommended = false;
+  let retrainingReason = 'Модели обучены на актуальных данных.';
+
+  if ((regime === 'STRONG_BULL' || regime === 'STRONG_BEAR') && hoursSinceLastTrain >= 4) {
+    isRetrainingRecommended = true;
+    retrainingReason = `Сдвиг рыночного режима в ${regimeTitle}. Прошло ${hoursSinceLastTrain}ч с последнего обучения — весам нейро-агентов требуется адаптация к направленному тренду.`;
+  } else if (regime === 'HIGH_VOLATILITY' && hoursSinceLastTrain >= 6) {
+    isRetrainingRecommended = true;
+    retrainingReason = `Всплеск волатильности (ATR ${avgAtr}%). Требуется калибровка множителей ATR и стоп-лоссов на свежих свечах.`;
+  } else if (hoursSinceLastTrain >= 18) {
+    isRetrainingRecommended = true;
+    retrainingReason = `Прошло ${hoursSinceLastTrain}ч с последней эпохи обучения на реальных свечах Bybit. Рекомендуется плановое обновление весов.`;
+  }
+
+  const serverUrl = 'http://194.113.34.230:3000';
+  const recommendedCommand = `python3 scripts/train_pc.py --server ${serverUrl} --epochs 15`;
+
+  const now = Date.now();
+  // Auto-push alert if recommended and at least 2.5 hours passed since last alert
+  if (isRetrainingRecommended && notifyTelegram && (now - lastRetrainingAlertTs > 2.5 * 3600 * 1000)) {
+    lastRetrainingAlertTs = now;
+
+    emitAppNotification({
+      category: 'AI_TRAIN',
+      severity: 'WARNING',
+      title: '🔔 Рекомендация к дообучению ИИ-ботов',
+      message: `${retrainingReason} Запустите квант-тренажер с домашнего ПК.`,
+      isUrgent: false,
+    });
+
+    const btcSign = btcChange >= 0 ? '+' : '';
+    const ethSign = ethChange >= 0 ? '+' : '';
+    const solSign = solChange >= 0 ? '+' : '';
+
+    dispatchTelegramNotification({
+      category: 'AI_TRAIN',
+      title: '⚡ РЕКОМЕНДАЦИЯ К ДООБУЧЕНИЮ ИИ-БОТОВ',
+      htmlBody: `• <b>Рыночный режим:</b> <b>${regimeTitle}</b>\n• <b>Анализ трендов 24ч:</b> BTC <b>${btcSign}${btcChange.toFixed(2)}%</b> · ETH <b>${ethSign}${ethChange.toFixed(2)}%</b> · SOL <b>${solSign}${solChange.toFixed(2)}%</b>\n• <b>Волатильность корзины:</b> ATR ${avgAtr}%\n• <b>Причина:</b> ${retrainingReason}\n• <b>Последнее обучение:</b> ${hoursSinceLastTrain}ч назад (эпоха #${epochsTrained})\n\n💡 <b>Команда для запуска на домашнем ПК (Node B / Mac / GPU):</b>\n<code>${recommendedCommand}</code>`,
+      plainPreview: `Рекомендация дообучить ИИ: ${regimeTitle} (BTC ${btcSign}${btcChange.toFixed(1)}%). Запустите train_pc.py`,
+      isManualOrUrgent: false,
+    }).catch(() => {});
+  }
+
+  return {
+    timestamp: now,
+    regime,
+    regimeTitle,
+    regimeSummary,
+    btcChange24hPct: btcChange,
+    ethChange24hPct: ethChange,
+    solChange24hPct: solChange,
+    avgAtrPct: avgAtr,
+    isRetrainingRecommended,
+    retrainingReason,
+    hoursSinceLastTrain,
+    recommendedCommand,
+  };
+}
+
+app.get(['/api/ai/trend-audit', '/api/market/trend-audit'], async (_req: Request, res: Response) => {
+  try {
+    const audit = await analyzeMarketTrendsAndRetrainingNeeds(false);
+    res.json(audit);
+  } catch (err: any) {
+    res.status(500).json({ error: `Trend audit error: ${err.message}` });
+  }
+});
+
+app.post(['/api/ai/trend-audit/check-now', '/api/market/trend-audit/check-now'], async (_req: Request, res: Response) => {
+  try {
+    lastRetrainingAlertTs = 0; // force notification dispatch
+    const audit = await analyzeMarketTrendsAndRetrainingNeeds(true);
+    res.json({ success: true, audit });
+  } catch (err: any) {
+    res.status(500).json({ error: `Trend check error: ${err.message}` });
+  }
+});
+
 // Reset a bot's neural weights to factory defaults
 app.post('/api/bots/reset-brain', (req: Request, res: Response) => {
   const { agentId } = req.body;
@@ -6780,6 +6912,14 @@ async function startServer() {
         }
       }
     }, 10 * 60 * 1000);
+
+    // Background Market Trend Shift & Retraining Recommendation Analyzer (every 15 min)
+    setTimeout(() => {
+      analyzeMarketTrendsAndRetrainingNeeds(true).catch(() => {});
+    }, 20000);
+    setInterval(() => {
+      analyzeMarketTrendsAndRetrainingNeeds(true).catch(() => {});
+    }, 15 * 60 * 1000);
   });
 }
 
