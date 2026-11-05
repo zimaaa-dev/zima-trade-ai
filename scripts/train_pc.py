@@ -144,9 +144,70 @@ def extract_dataset_from_klines(bars, seq_len: int = 10):
 
 
 # ---------------------------------------------------------------------------
-# 4. Основной цикл обучения (Training Epochs)
+# 4. Динамический полнорыночный сканер трендов Bybit V5 Linear (200+ инструментов)
 # ---------------------------------------------------------------------------
-def run_trainer(target_server: str = "http://127.0.0.1:3000", epochs: int = 15):
+def discover_market_trends(target_server: str = "http://127.0.0.1:3000", limit: int = 8):
+    """
+    Сканирует весь рынок Bybit Linear (200+ пар) и отбирает самые горячие трендовые инструменты
+    (топ пампы, топ дампы и объемные пробои) + якоря BTC и ETH.
+    """
+    symbols = []
+    # 1. Запрос трендового аудита с сервера ZimaTrade AI
+    try:
+        req = urllib.request.Request(f"{target_server}/api/ai/trend-audit", headers={"User-Agent": "ZimaTrade-PC-Trainer/4.0"})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            trend_syms = data.get("topTrendingSymbols", [])
+            if trend_syms:
+                symbols.extend(trend_syms)
+                regime = data.get("regimeTitle", "Анализ")
+                print(f"📡 Получены топ-тренды с торгового сервера ({regime}): {', '.join(trend_syms[:6])}")
+    except Exception:
+        pass
+
+    # 2. Если сервер недоступен — сканируем Bybit V5 Linear API напрямую
+    if len(symbols) < 4:
+        try:
+            url = "https://api.bybit.com/v5/market/tickers?category=linear"
+            req = urllib.request.Request(url, headers={"User-Agent": "ZimaTrade-PC-Trainer/4.0"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                list_raw = data.get("result", {}).get("list", [])
+                
+                valid_tickers = []
+                blacklist = {"ESPORTSUSDT", "APRUSDT", "TRUMPUSDT"}
+                for t in list_raw:
+                    sym = t.get("symbol", "")
+                    if not sym.endswith("USDT") or sym in blacklist:
+                        continue
+                    turnover = float(t.get("turnover24h") or 0)
+                    price = float(t.get("lastPrice") or 0)
+                    chg = float(t.get("price24hPcnt") or 0) * 100.0
+                    if turnover >= 2000000 and price > 0:
+                        valid_tickers.append({"symbol": sym, "turnover": turnover, "chg": chg, "abs_chg": abs(chg)})
+
+                # Сортируем по максимальному трендовому импульсу
+                valid_tickers.sort(key=lambda x: x["abs_chg"], reverse=True)
+                top_movers = [x["symbol"] for x in valid_tickers[:limit]]
+                symbols.extend(top_movers)
+                print(f"🔥 Просканирован рынок Bybit ({len(valid_tickers)} пар). Топ тренды: {', '.join(top_movers[:6])}")
+        except Exception as e:
+            print(f"⚠️ Не удалось просканировать тикеры Bybit: {e}")
+
+    # Добавляем базовые якоря ликвидности
+    anchors = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    final_symbols = []
+    for s in symbols + anchors:
+        if s not in final_symbols:
+            final_symbols.append(s)
+            
+    return final_symbols[:max(6, limit + 2)]
+
+
+# ---------------------------------------------------------------------------
+# 5. Основной цикл обучения (Training Epochs)
+# ---------------------------------------------------------------------------
+def run_trainer(target_server: str = "http://127.0.0.1:3000", epochs: int = 15, dynamic_trends: bool = True, custom_symbols: list = None):
     print("=" * 72)
     print("🧠 ZimaTrade AI — Квант-тренажер нейро-агентов (Node B: Home Forge)")
     print("=" * 72)
@@ -165,12 +226,20 @@ def run_trainer(target_server: str = "http://127.0.0.1:3000", epochs: int = 15):
     print(f"🌐 Целевой торговый сервер: {target_server}")
     print()
 
-    # Сбор обучающего датасета по трем базовым инструментам Bybit
-    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT"]
+    # Сбор обучающего датасета: динамические тренды всего рынка или кастомные символы
+    if custom_symbols and len(custom_symbols) > 0:
+        symbols = custom_symbols
+        print(f"🎯 Использование заданного списка пар: {', '.join(symbols)}")
+    elif dynamic_trends:
+        print("🔍 Полнорыночный сканер Bybit V5: поиск горячих трендовых альткоинов и пробоев...")
+        symbols = discover_market_trends(target_server, limit=8)
+    else:
+        symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT"]
+
     all_x = []
     all_y = []
 
-    print("📥 Сбор реальных исторических свечей Bybit V5 Linear...")
+    print(f"📥 Сбор реальных исторических свечей Bybit V5 Linear для {len(symbols)} инструментов:")
     for sym in symbols:
         bars = fetch_bybit_klines(sym, interval="5", limit=200)
         if bars:
@@ -292,9 +361,12 @@ def run_trainer(target_server: str = "http://127.0.0.1:3000", epochs: int = 15):
     # -----------------------------------------------------------------------
     # 6. Отправка сигналов и запуск синхронной калибровки на боевом сервере
     # -----------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # 6. Отправка сигналов и запуск синхронной калибровки на боевом сервере
+    # -----------------------------------------------------------------------
     if target_server and target_server.startswith("http"):
         print(f"\n📡 Отправка результатов обучения на целевой сервер ({target_server})...")
-        for sym in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
+        for sym in symbols[:5]:
             try:
                 payload = json.dumps({
                     "agentId": "ALL",
@@ -319,9 +391,12 @@ def run_trainer(target_server: str = "http://127.0.0.1:3000", epochs: int = 15):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="ZimaTrade AI — Обучение на домашнем ПК")
+    parser = argparse.ArgumentParser(description="ZimaTrade AI — Обучение на домашнем ПК с динамическим сканированием трендов Bybit")
     parser.add_argument("--server", type=str, default="http://127.0.0.1:3000", help="URL запущенного сервера ZimaTrade AI")
     parser.add_argument("--epochs", type=int, default=15, help="Количество эпох обучения")
+    parser.add_argument("--dynamic-trends", action="store_true", default=True, help="Динамический отбор самых горячих трендовых альткоинов Bybit (по умолчанию включен)")
+    parser.add_argument("--symbols", type=str, default="", help="Список пар через запятую (например: SUIUSDT,TIAUSDT,NEARUSDT)")
     args = parser.parse_args()
 
-    run_trainer(target_server=args.server, epochs=args.epochs)
+    custom_syms = [s.strip().upper() for s in args.symbols.split(",") if s.strip()] if args.symbols else None
+    run_trainer(target_server=args.server, epochs=args.epochs, dynamic_trends=args.dynamic_trends, custom_symbols=custom_syms)

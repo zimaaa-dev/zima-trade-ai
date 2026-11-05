@@ -202,6 +202,13 @@ export const AiArenaView: React.FC = () => {
     regime: string;
     regimeTitle: string;
     regimeSummary: string;
+    totalPairsScanned?: number;
+    advancersCount?: number;
+    declinersCount?: number;
+    marketBreadthPct?: number;
+    topGainers?: Array<{ symbol: string; priceChangePct: number; turnover24h: number; atrPct: number; price: number }>;
+    topLosers?: Array<{ symbol: string; priceChangePct: number; turnover24h: number; atrPct: number; price: number }>;
+    topTrendingSymbols?: string[];
     btcChange24hPct: number;
     ethChange24hPct: number;
     solChange24hPct: number;
@@ -872,31 +879,85 @@ export const AiArenaView: React.FC = () => {
           </div>
         </div>
 
-        {/* Ticker 24h Metrics */}
+        {/* Market Breadth & Altcoin Screener Metrics */}
         {trendAudit && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs font-mono">
-            <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
-              <span className="text-[10px] text-slate-500 uppercase">BTCUSDT 24ч</span>
-              <div className={`text-sm font-bold mt-0.5 ${trendAudit.btcChange24hPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {trendAudit.btcChange24hPct >= 0 ? '+' : ''}{trendAudit.btcChange24hPct.toFixed(2)}%
+          <div className="space-y-3 font-mono text-xs">
+            {/* Market Breadth Header Line */}
+            <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80 text-[11px]">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-slate-300 font-bold">Охват Bybit Linear:</span>
+                <span className="text-cyan-300 font-semibold">{trendAudit.totalPairsScanned || 150}+ пар USDT</span>
+              </div>
+              <div className="flex items-center gap-3 text-slate-400">
+                <span>Растут: <b className="text-emerald-400">{trendAudit.advancersCount ?? '—'}</b></span>
+                <span>Падают: <b className="text-rose-400">{trendAudit.declinersCount ?? '—'}</b></span>
+                <span>Ширина рынка: <b className="text-cyan-300">{trendAudit.marketBreadthPct ?? 50}%</b></span>
+                <span>Ср. волатильность: <b className="text-amber-300">ATR {trendAudit.avgAtrPct}%</b></span>
               </div>
             </div>
-            <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
-              <span className="text-[10px] text-slate-500 uppercase">ETHUSDT 24ч</span>
-              <div className={`text-sm font-bold mt-0.5 ${trendAudit.ethChange24hPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {trendAudit.ethChange24hPct >= 0 ? '+' : ''}{trendAudit.ethChange24hPct.toFixed(2)}%
+
+            {/* Top Trending Altcoins (Gainers & Losers) */}
+            {trendAudit.topGainers && trendAudit.topGainers.length > 0 && (
+              <div className="p-3 rounded-lg bg-slate-950/90 border border-slate-800/90 space-y-2">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-purple-300 font-bold flex items-center gap-1.5">
+                    <TrendingUp className="w-3.5 h-3.5 text-purple-400" />
+                    <span>🔥 Топ лидеры трендов (Импульсы & Пампы Bybit):</span>
+                  </span>
+                  <span className="text-[10px] text-slate-400">Боты торгуют в приоритете L2</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {trendAudit.topGainers.map((g) => (
+                    <div
+                      key={g.symbol}
+                      className="px-2.5 py-1.5 rounded-lg bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 flex items-center gap-2 text-xs"
+                      title={`24h оборот: $${(g.turnover24h / 1e6).toFixed(1)}M, ATR ${g.atrPct}%`}
+                    >
+                      <span className="font-bold text-white">{g.symbol}</span>
+                      <span className="font-semibold text-emerald-400">+{g.priceChangePct.toFixed(2)}%</span>
+                      <span className="text-[10px] text-slate-400 font-mono">${(g.turnover24h / 1e6).toFixed(0)}M</span>
+                    </div>
+                  ))}
+                  {trendAudit.topLosers && trendAudit.topLosers.slice(0, 3).map((l) => (
+                    <div
+                      key={l.symbol}
+                      className="px-2.5 py-1.5 rounded-lg bg-rose-950/40 border border-rose-500/30 text-rose-300 flex items-center gap-2 text-xs"
+                      title={`24h оборот: $${(l.turnover24h / 1e6).toFixed(1)}M, ATR ${l.atrPct}%`}
+                    >
+                      <span className="font-bold text-white">{l.symbol}</span>
+                      <span className="font-semibold text-rose-400">{l.priceChangePct.toFixed(2)}%</span>
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
-            <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
-              <span className="text-[10px] text-slate-500 uppercase">SOLUSDT 24ч</span>
-              <div className={`text-sm font-bold mt-0.5 ${trendAudit.solChange24hPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {trendAudit.solChange24hPct >= 0 ? '+' : ''}{trendAudit.solChange24hPct.toFixed(2)}%
+            )}
+
+            {/* Core Anchors (BTC, ETH, SOL) */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+              <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800/80">
+                <span className="text-[10px] text-slate-500 uppercase">BTCUSDT (Якорь)</span>
+                <div className={`text-sm font-bold mt-0.5 ${trendAudit.btcChange24hPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {trendAudit.btcChange24hPct >= 0 ? '+' : ''}{trendAudit.btcChange24hPct.toFixed(2)}%
+                </div>
               </div>
-            </div>
-            <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
-              <span className="text-[10px] text-slate-500 uppercase">Волатильность корзины</span>
-              <div className="text-sm font-bold text-amber-300 mt-0.5">
-                ATR {trendAudit.avgAtrPct}%
+              <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800/80">
+                <span className="text-[10px] text-slate-500 uppercase">ETHUSDT (Якорь)</span>
+                <div className={`text-sm font-bold mt-0.5 ${trendAudit.ethChange24hPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {trendAudit.ethChange24hPct >= 0 ? '+' : ''}{trendAudit.ethChange24hPct.toFixed(2)}%
+                </div>
+              </div>
+              <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800/80">
+                <span className="text-[10px] text-slate-500 uppercase">SOLUSDT (L1)</span>
+                <div className={`text-sm font-bold mt-0.5 ${trendAudit.solChange24hPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {trendAudit.solChange24hPct >= 0 ? '+' : ''}{trendAudit.solChange24hPct.toFixed(2)}%
+                </div>
+              </div>
+              <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800/80">
+                <span className="text-[10px] text-slate-500 uppercase">Режим алгоритмов</span>
+                <div className="text-xs font-bold text-cyan-300 mt-1 truncate">
+                  ⚡ 150+ пар в пуле
+                </div>
               </div>
             </div>
           </div>

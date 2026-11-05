@@ -1491,7 +1491,7 @@ async function fetchRealBybitTickers(): Promise<any[]> {
           const priceChangePct = Number((rawPriceChange * 100).toFixed(2));
           const absChange = Math.abs(priceChangePct);
           const trendDirection = priceChangePct >= 1.0 ? 'BULLISH' : priceChangePct <= -1.0 ? 'BEARISH' : 'NEUTRAL';
-          const isTrendHot = absChange >= 2.0 && turnover >= 15000000;
+          const isTrendHot = absChange >= 2.0 && turnover >= 2000000;
           return {
             symbol: t.symbol,
             turnover24h: turnover,
@@ -1500,15 +1500,15 @@ async function fetchRealBybitTickers(): Promise<any[]> {
             priceChangePct,
             trendDirection,
             isTrendHot,
-            status: isTrendHot ? 'TREND' : turnover >= 5000000 ? 'READY' : 'WARMING_UP',
+            status: isTrendHot ? 'TREND' : turnover >= 3000000 ? 'READY' : 'WARMING_UP',
             price: parseFloat(t.lastPrice || '0'),
             fundingRate: parseFloat(t.fundingRate || '0.0001'),
             nextFundingTime: parseInt(t.nextFundingTime || '0'),
           };
         })
-        .filter((t: any) => t.price > 0)
+        .filter((t: any) => t.price > 0 && t.turnover24h >= 1500000 && t.spreadBps <= 35.0)
         .sort((a: any, b: any) => b.turnover24h - a.turnover24h)
-        .slice(0, 40);
+        .slice(0, 150);
 
       if (filtered.length > 0) {
         cachedTickers = filtered;
@@ -2912,13 +2912,13 @@ async function runBotEngineCycle() {
           actingBot.brain = createDefaultBotBrain(actingBot.engineType, actingBot.agentId);
         }
 
-        // Dynamic Multi-Pair Trend Scanner Universe (strictly high-liquidity institutional pairs >= $35M 24h turnover & tight spread):
+        // Dynamic Multi-Pair Trend Scanner Universe (liquid altcoin & momentum pairs >= $3M 24h turnover & fair spread):
         const noisyLowTierBlacklist = new Set(['ESPORTSUSDT', 'APRUSDT', 'TRUMPUSDT']);
         const liquidScreenerPairs = systemState.screenerSymbols.filter(
           (s) =>
             !noisyLowTierBlacklist.has(s.symbol) &&
-            (s.spreadBps || 1) <= Math.min(14.0, actingBot.brain?.maxSpreadBps || 18.0) &&
-            (s.turnover24h || 0) >= 35000000
+            (s.spreadBps || 1) <= Math.min(22.0, actingBot.brain?.maxSpreadBps || 25.0) &&
+            (s.turnover24h || 0) >= 3000000
         );
 
         // 2. Sort candidates by 24h Trend Momentum (absolute % change & volume)
@@ -2928,13 +2928,14 @@ async function runBotEngineCycle() {
           return bTrend - aTrend;
         });
 
-        const topTrendingSymbols = trendingSorted.slice(0, 12).map((s) => s.symbol);
+        // Pick top 25 hottest trending breakout pairs (gainers + dump breakdowns)
+        const topTrendingSymbols = trendingSorted.slice(0, 25).map((s) => s.symbol);
 
         // 3. Base configured symbols for the bot
         const baseAllowedSymbols: string[] =
           Array.isArray(actingBot.allowedSymbols) && actingBot.allowedSymbols.length > 0
             ? actingBot.allowedSymbols.filter((s: string) => !noisyLowTierBlacklist.has(s))
-            : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'HYPEUSDT', 'NEARUSDT', 'DOGEUSDT', 'SUIUSDT', 'AVAXUSDT'];
+            : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'SUIUSDT', 'NEARUSDT', 'DOGEUSDT', 'PEPEUSDT', 'AVAXUSDT', 'RENDERUSDT', 'TIAUSDT'];
 
         // 4. Combine base symbols with top trending breakout pairs from Bybit L2 screener
         const isDynamicScanEnabled =
@@ -2943,22 +2944,22 @@ async function runBotEngineCycle() {
           baseAllowedSymbols.includes('DYNAMIC_TRENDS');
 
         const combinedUniverse = isDynamicScanEnabled
-          ? Array.from(new Set([...baseAllowedSymbols.filter((s) => s !== 'ALL' && s !== 'DYNAMIC_TRENDS'), ...topTrendingSymbols]))
+          ? Array.from(new Set([...topTrendingSymbols, ...baseAllowedSymbols.filter((s) => s !== 'ALL' && s !== 'DYNAMIC_TRENDS')]))
           : baseAllowedSymbols;
 
         // 5. Select symbol not currently in position to enforce portfolio diversification
         const openSymbols = new Set(systemState.activePositions.map((p) => p.symbol));
         const availableCandidates = combinedUniverse.filter((s) => !openSymbols.has(s));
 
-        // Prioritize coins with hot trend / momentum or alternate between trending breakout coins and core assets
+        // Prioritize coins with hot trend / momentum (80% probability to trade the hottest trending mover)
         let targetSymbol: string;
         if (availableCandidates.length > 0) {
           const hotAvailable = availableCandidates.filter((sym) => {
             const meta = systemState.screenerSymbols.find((s) => s.symbol === sym);
-            return meta && (meta.isTrendHot || Math.abs(meta.priceChangePct || 0) >= 1.5);
+            return meta && (meta.isTrendHot || Math.abs(meta.priceChangePct || 0) >= 2.0);
           });
 
-          if (hotAvailable.length > 0 && Math.random() < 0.70) {
+          if (hotAvailable.length > 0 && Math.random() < 0.80) {
             targetSymbol = hotAvailable[Math.floor(Math.random() * hotAvailable.length)];
           } else {
             targetSymbol = availableCandidates[Math.floor(Math.random() * availableCandidates.length)];
@@ -3473,11 +3474,26 @@ app.post('/api/bots/train', handleTrainBotEpoch);
 // ============================================================================
 let lastRetrainingAlertTs = 0;
 
+export interface MarketTrendMover {
+  symbol: string;
+  priceChangePct: number;
+  turnover24h: number;
+  atrPct: number;
+  price: number;
+}
+
 export interface MarketTrendAuditResult {
   timestamp: number;
-  regime: 'STRONG_BULL' | 'STRONG_BEAR' | 'HIGH_VOLATILITY' | 'RANGE_CHOP';
+  regime: 'ALT_SEASON_EXPANSION' | 'MARKET_WIDE_DUMP' | 'SELECTIVE_PUMPS' | 'STRONG_BULL' | 'STRONG_BEAR' | 'HIGH_VOLATILITY' | 'RANGE_CHOP';
   regimeTitle: string;
   regimeSummary: string;
+  totalPairsScanned: number;
+  advancersCount: number;
+  declinersCount: number;
+  marketBreadthPct: number;
+  topGainers: MarketTrendMover[];
+  topLosers: MarketTrendMover[];
+  topTrendingSymbols: string[];
   btcChange24hPct: number;
   ethChange24hPct: number;
   solChange24hPct: number;
@@ -3490,31 +3506,85 @@ export interface MarketTrendAuditResult {
 
 export async function analyzeMarketTrendsAndRetrainingNeeds(notifyTelegram = false): Promise<MarketTrendAuditResult> {
   const tickers = await fetchRealBybitTickers();
-  const btc = tickers.find((t: any) => t.symbol === 'BTCUSDT') || { priceChangePct: 0, atrPct: 2.5 };
-  const eth = tickers.find((t: any) => t.symbol === 'ETHUSDT') || { priceChangePct: 0, atrPct: 3.0 };
-  const sol = tickers.find((t: any) => t.symbol === 'SOLUSDT') || { priceChangePct: 0, atrPct: 3.5 };
+  const validTickers = tickers.filter((t: any) => t.price > 0 && t.turnover24h >= 1500000);
+  const totalPairsScanned = validTickers.length || 1;
+  const advancers = validTickers.filter((t: any) => (t.priceChangePct || 0) > 0);
+  const decliners = validTickers.filter((t: any) => (t.priceChangePct || 0) < 0);
+  const advancersCount = advancers.length;
+  const declinersCount = decliners.length;
+  const marketBreadthPct = Number(((advancersCount / totalPairsScanned) * 100).toFixed(1));
+
+  // Sort by gainers and losers across the entire market
+  const sortedGainers = [...validTickers]
+    .sort((a: any, b: any) => (b.priceChangePct || 0) - (a.priceChangePct || 0));
+  const topGainers: MarketTrendMover[] = sortedGainers.slice(0, 5).map((t: any) => ({
+    symbol: t.symbol,
+    priceChangePct: t.priceChangePct || 0,
+    turnover24h: t.turnover24h || 0,
+    atrPct: t.atrPct || 2.5,
+    price: t.price || 0,
+  }));
+
+  const sortedLosers = [...validTickers]
+    .sort((a: any, b: any) => (a.priceChangePct || 0) - (b.priceChangePct || 0));
+  const topLosers: MarketTrendMover[] = sortedLosers.slice(0, 5).map((t: any) => ({
+    symbol: t.symbol,
+    priceChangePct: t.priceChangePct || 0,
+    turnover24h: t.turnover24h || 0,
+    atrPct: t.atrPct || 2.5,
+    price: t.price || 0,
+  }));
+
+  const topTrendingSymbols = Array.from(new Set([
+    ...topGainers.map((g) => g.symbol),
+    ...topLosers.map((l) => l.symbol),
+  ]));
+
+  const btc = validTickers.find((t: any) => t.symbol === 'BTCUSDT') || { priceChangePct: 0, atrPct: 2.5 };
+  const eth = validTickers.find((t: any) => t.symbol === 'ETHUSDT') || { priceChangePct: 0, atrPct: 3.0 };
+  const sol = validTickers.find((t: any) => t.symbol === 'SOLUSDT') || { priceChangePct: 0, atrPct: 3.5 };
 
   const btcChange = btc.priceChangePct || 0;
   const ethChange = eth.priceChangePct || 0;
   const solChange = sol.priceChangePct || 0;
-  const avgAtr = Number((((btc.atrPct || 2.5) + (eth.atrPct || 3.0) + (sol.atrPct || 3.5)) / 3).toFixed(2));
 
-  let regime: 'STRONG_BULL' | 'STRONG_BEAR' | 'HIGH_VOLATILITY' | 'RANGE_CHOP' = 'RANGE_CHOP';
+  // Average ATR of all liquid market tickers
+  const avgAtr = validTickers.length > 0
+    ? Number((validTickers.reduce((acc: number, t: any) => acc + (t.atrPct || 2.5), 0) / validTickers.length).toFixed(2))
+    : 3.0;
+
+  // Detect regime across the full market (altcoin movements, market-wide dumps, selective pumps)
+  let regime: 'ALT_SEASON_EXPANSION' | 'MARKET_WIDE_DUMP' | 'SELECTIVE_PUMPS' | 'STRONG_BULL' | 'STRONG_BEAR' | 'HIGH_VOLATILITY' | 'RANGE_CHOP' = 'RANGE_CHOP';
   let regimeTitle = '🔄 Боковой диапазон (Range / Choppy)';
-  let regimeSummary = 'Рынок движется в умеренном коридоре без выраженного доминирования покупателей или продавцов.';
+  let regimeSummary = `Рынок консолидируется: ${advancersCount} пар в плюсе, ${declinersCount} в минусе (рыночная ширина ${marketBreadthPct}%).`;
 
-  if (btcChange >= 3.0 && ethChange >= 2.0) {
+  const topGainerAvg = topGainers.slice(0, 3).reduce((acc, g) => acc + g.priceChangePct, 0) / Math.max(1, Math.min(3, topGainers.length));
+  const topLoserAvg = topLosers.slice(0, 3).reduce((acc, l) => acc + l.priceChangePct, 0) / Math.max(1, Math.min(3, topLosers.length));
+
+  if (marketBreadthPct >= 65 && topGainerAvg >= 5.0) {
+    regime = 'ALT_SEASON_EXPANSION';
+    regimeTitle = '🚀 Альт-сезон / Широкий импульс альткоинов';
+    regimeSummary = `Масштабный рост по всему рынку: ${marketBreadthPct}% монет в зелёной зоне. Лидеры: ${topGainers.map((g) => `${g.symbol} +${g.priceChangePct}%`).slice(0, 3).join(', ')}.`;
+  } else if (marketBreadthPct <= 30 && topLoserAvg <= -5.0) {
+    regime = 'MARKET_WIDE_DUMP';
+    regimeTitle = '📉 Общерыночный сброс (Market-Wide Flush)';
+    regimeSummary = `Широкие распродажи: ${declinersCount} из ${totalPairsScanned} пар падают. Лидеры падения: ${topLosers.map((l) => `${l.symbol} ${l.priceChangePct}%`).slice(0, 3).join(', ')}.`;
+  } else if (topGainerAvg >= 7.0 && Math.abs(btcChange) <= 2.0) {
+    regime = 'SELECTIVE_PUMPS';
+    regimeTitle = '🎯 Выборочные пампы трендовых альтов';
+    regimeSummary = `Биткоин во флэте (${btcChange >= 0 ? '+' : ''}${btcChange}%), но отдельные альткоины показывают взрывной рост: ${topGainers.map((g) => `${g.symbol} +${g.priceChangePct}%`).slice(0, 3).join(', ')}.`;
+  } else if (btcChange >= 3.0 && ethChange >= 2.0) {
     regime = 'STRONG_BULL';
     regimeTitle = '🚀 Сильный бычий тренд (Bullish Expansion)';
-    regimeSummary = `Мощный восходящий импульс: BTC +${btcChange}%, ETH +${ethChange}%. Высокая вероятность продолжения тренда.`;
+    regimeSummary = `Мощный восходящий импульс локомотивов: BTC +${btcChange}%, ETH +${ethChange}%. Высокая вероятность продолжения тренда.`;
   } else if (btcChange <= -3.0 && ethChange <= -2.0) {
     regime = 'STRONG_BEAR';
     regimeTitle = '📉 Сильный медвежий пробой (Bearish Breakdown)';
-    regimeSummary = `Резкий импульс продаж: BTC ${btcChange}%, ETH ${ethChange}%. Повышенные риски ложных отскоков.`;
-  } else if (avgAtr >= 4.0 || Math.abs(btcChange) >= 4.0) {
+    regimeSummary = `Резкий импульс продаж локомотивов: BTC ${btcChange}%, ETH ${ethChange}%. Повышенные риски ложных отскоков.`;
+  } else if (avgAtr >= 4.2 || Math.abs(btcChange) >= 4.0) {
     regime = 'HIGH_VOLATILITY';
-    regimeTitle = '⚡ Высокая волатильность (High ATR Volatility)';
-    regimeSummary = `Всплеск волатильности (средний ATR ${avgAtr}%). Резкие проскальзывания и расширение спредов.`;
+    regimeTitle = '⚡ Высокая волатильность рынка (High Market ATR)';
+    regimeSummary = `Всплеск волатильности по рынку (средний ATR ${avgAtr}%). Резкие проскальзывания и расширение спредов.`;
   }
 
   // Calculate bot training freshness
@@ -3525,19 +3595,19 @@ export async function analyzeMarketTrendsAndRetrainingNeeds(notifyTelegram = fal
   let isRetrainingRecommended = false;
   let retrainingReason = 'Модели обучены на актуальных данных.';
 
-  if ((regime === 'STRONG_BULL' || regime === 'STRONG_BEAR') && hoursSinceLastTrain >= 4) {
+  if ((regime === 'ALT_SEASON_EXPANSION' || regime === 'MARKET_WIDE_DUMP' || regime === 'SELECTIVE_PUMPS' || regime === 'STRONG_BULL' || regime === 'STRONG_BEAR') && hoursSinceLastTrain >= 3.5) {
     isRetrainingRecommended = true;
-    retrainingReason = `Сдвиг рыночного режима в ${regimeTitle}. Прошло ${hoursSinceLastTrain}ч с последнего обучения — весам нейро-агентов требуется адаптация к направленному тренду.`;
-  } else if (regime === 'HIGH_VOLATILITY' && hoursSinceLastTrain >= 6) {
+    retrainingReason = `Сдвиг рыночного режима в ${regimeTitle}. Прошло ${hoursSinceLastTrain}ч с последнего обучения — нейро-агентам требуется адаптация к динамическим трендам альткоинов.`;
+  } else if (regime === 'HIGH_VOLATILITY' && hoursSinceLastTrain >= 5) {
     isRetrainingRecommended = true;
-    retrainingReason = `Всплеск волатильности (ATR ${avgAtr}%). Требуется калибровка множителей ATR и стоп-лоссов на свежих свечах.`;
-  } else if (hoursSinceLastTrain >= 18) {
+    retrainingReason = `Всплеск волатильности рынка (ATR ${avgAtr}%). Требуется калибровка множителей ATR и стоп-лоссов на свежих свечах Bybit.`;
+  } else if (hoursSinceLastTrain >= 16) {
     isRetrainingRecommended = true;
     retrainingReason = `Прошло ${hoursSinceLastTrain}ч с последней эпохи обучения на реальных свечах Bybit. Рекомендуется плановое обновление весов.`;
   }
 
   const serverUrl = 'http://194.113.34.230:3000';
-  const recommendedCommand = `python3 scripts/train_pc.py --server ${serverUrl} --epochs 15`;
+  const recommendedCommand = `python3 scripts/train_pc.py --server ${serverUrl} --epochs 15 --dynamic-trends`;
 
   const now = Date.now();
   // Auto-push alert if recommended and at least 2.5 hours passed since last alert
@@ -3547,20 +3617,19 @@ export async function analyzeMarketTrendsAndRetrainingNeeds(notifyTelegram = fal
     emitAppNotification({
       category: 'AI_TRAIN',
       severity: 'WARNING',
-      title: '🔔 Рекомендация к дообучению ИИ-ботов',
-      message: `${retrainingReason} Запустите квант-тренажер с домашнего ПК.`,
+      title: '🔔 Рекомендация к дообучению ИИ-ботов (Тренды)',
+      message: `${retrainingReason} Запустите квант-тренажер на домашнем ПК с динамическим охватом трендов.`,
       isUrgent: false,
     });
 
-    const btcSign = btcChange >= 0 ? '+' : '';
-    const ethSign = ethChange >= 0 ? '+' : '';
-    const solSign = solChange >= 0 ? '+' : '';
+    const gainersList = topGainers.slice(0, 4).map((g) => `• <b>${g.symbol}</b>: <code>+${g.priceChangePct}%</code> (24h: $${(g.turnover24h / 1e6).toFixed(1)}M, ATR ${g.atrPct}%)`).join('\n');
+    const losersList = topLosers.slice(0, 3).map((l) => `• <b>${l.symbol}</b>: <code>${l.priceChangePct}%</code> (24h: $${(l.turnover24h / 1e6).toFixed(1)}M)`).join('\n');
 
     dispatchTelegramNotification({
       category: 'AI_TRAIN',
-      title: '⚡ РЕКОМЕНДАЦИЯ К ДООБУЧЕНИЮ ИИ-БОТОВ',
-      htmlBody: `• <b>Рыночный режим:</b> <b>${regimeTitle}</b>\n• <b>Анализ трендов 24ч:</b> BTC <b>${btcSign}${btcChange.toFixed(2)}%</b> · ETH <b>${ethSign}${ethChange.toFixed(2)}%</b> · SOL <b>${solSign}${solChange.toFixed(2)}%</b>\n• <b>Волатильность корзины:</b> ATR ${avgAtr}%\n• <b>Причина:</b> ${retrainingReason}\n• <b>Последнее обучение:</b> ${hoursSinceLastTrain}ч назад (эпоха #${epochsTrained})\n\n💡 <b>Команда для запуска на домашнем ПК (Node B / Mac / GPU):</b>\n<code>${recommendedCommand}</code>`,
-      plainPreview: `Рекомендация дообучить ИИ: ${regimeTitle} (BTC ${btcSign}${btcChange.toFixed(1)}%). Запустите train_pc.py`,
+      title: '⚡ РЕКОМЕНДАЦИЯ К ДООБУЧЕНИЮ ИИ-БОТОВ (ТРЕНДОВЫЙ СКАНЕР)',
+      htmlBody: `• <b>Рыночный режим:</b> <b>${regimeTitle}</b>\n• <b>Охват рынка Bybit:</b> <b>${totalPairsScanned} пар</b> (Растут: ${advancersCount} · Падают: ${declinersCount} · Ширина: ${marketBreadthPct}%)\n• <b>Волатильность рынка:</b> ATR <b>${avgAtr}%</b>\n\n🔥 <b>Лидеры трендов (Пампы / Импульсы):</b>\n${gainersList}\n\n📉 <b>Лидеры сброса (Медвежьи пробои):</b>\n${losersList}\n\n• <b>Причина:</b> ${retrainingReason}\n• <b>Последнее обучение:</b> ${hoursSinceLastTrain}ч назад (эпоха #${epochsTrained})\n\n🤖 <b>Авто-боты ZimaTrade:</b> динамически сканируют и торгуют эти трендовые пары в L2!\n\n💡 <b>Команда обучения на домашнем ПК (Node B / Mac / GPU):</b>\n<code>${recommendedCommand}</code>`,
+      plainPreview: `Рекомендация дообучить ИИ: ${regimeTitle} (Охват: ${totalPairsScanned} пар, ширина ${marketBreadthPct}%). Запустите train_pc.py`,
       isManualOrUrgent: false,
     }).catch(() => {});
   }
@@ -3570,6 +3639,13 @@ export async function analyzeMarketTrendsAndRetrainingNeeds(notifyTelegram = fal
     regime,
     regimeTitle,
     regimeSummary,
+    totalPairsScanned,
+    advancersCount,
+    declinersCount,
+    marketBreadthPct,
+    topGainers,
+    topLosers,
+    topTrendingSymbols,
     btcChange24hPct: btcChange,
     ethChange24hPct: ethChange,
     solChange24hPct: solChange,
