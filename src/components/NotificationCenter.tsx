@@ -281,7 +281,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
       case 'TRADE_CLOSE':
         return { label: 'Закрытие', icon: CheckCircle2, color: 'text-slate-300', bg: 'bg-slate-800 border-white/[0.08]' };
       case 'AI_TRAIN':
-        return { label: 'Обучение ИИ', icon: Cpu, color: 'text-purple-400', bg: 'bg-purple-500/10 border-purple-500/30' };
+        return { label: 'Калибровка', icon: Cpu, color: 'text-purple-400', bg: 'bg-purple-500/10 border-purple-500/30' };
       case 'KILL_SWITCH':
         return { label: 'Стоп-Кран', icon: ShieldAlert, color: 'text-rose-400', bg: 'bg-rose-500/15 border-rose-500/40' };
       case 'SYSTEM_UPDATE':
@@ -557,7 +557,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                     : 'text-slate-400 hover:text-white hover:bg-slate-900'
                 }`}
               >
-                Обучение ИИ
+                Калибровка
               </button>
               <button
                 type="button"
@@ -612,9 +612,6 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                     <Bell className="w-6 h-6" />
                   </div>
                   <p className="text-sm font-medium text-slate-400">Уведомлений нет</p>
-                  <p className="text-xs text-slate-500 mt-1 max-w-xs">
-                    Здесь появляются отчеты о сделках, фиксации TP1, обучение нейро-ботов и системные обновления.
-                  </p>
                 </div>
               ) : (
                 filteredNotifications.map((n) => {
@@ -711,7 +708,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
 
             {/* Footer with Telegram Link */}
             <div className="p-3 border-t border-white/[0.08] bg-slate-950 flex items-center justify-between text-xs">
-              <span className="text-slate-400 text-[11px]">Правило 25с: если не прочитать в UI, летит в TG</span>
+              <span className="text-slate-400 text-[11px]">Синхронизация с Telegram</span>
               <a
                 href={`https://t.me/${telegramBotUsername.replace('@', '')}`}
                 target="_blank"

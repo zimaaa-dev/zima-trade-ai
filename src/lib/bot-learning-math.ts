@@ -144,31 +144,31 @@ export function createDefaultBotBrain(engineType: string, agentId: string): BotB
 
   const rewardSeriesByEngine: Record<string, { label: string; reward: number; cumulativeReward: number; hoursAgo: number }[]> = {
     ONNX_RL: [
-      { hoursAgo: 36, label: 'Эпоха #1 (Init PPO)', reward: 0.42, cumulativeReward: 0.42 },
+      { hoursAgo: 36, label: 'Цикл #1 (L2 Init)', reward: 0.42, cumulativeReward: 0.42 },
       { hoursAgo: 28, label: 'BTCUSDT (LONG)', reward: 0.78, cumulativeReward: 1.20 },
-      { hoursAgo: 22, label: 'Эпоха #2 (Bybit L2)', reward: 0.65, cumulativeReward: 1.85 },
+      { hoursAgo: 22, label: 'Цикл #2 (Bybit L2)', reward: 0.65, cumulativeReward: 1.85 },
       { hoursAgo: 16, label: 'SOLUSDT (SHORT)', reward: -0.34, cumulativeReward: 1.51 },
       { hoursAgo: 11, label: 'ETHUSDT (LONG)', reward: 0.94, cumulativeReward: 2.45 },
-      { hoursAgo: 6, label: 'Эпоха #3 (ATR+VWAP)', reward: 0.72, cumulativeReward: 3.17 },
+      { hoursAgo: 6, label: 'Цикл #3 (ATR+VWAP)', reward: 0.72, cumulativeReward: 3.17 },
       { hoursAgo: 2, label: 'BTCUSDT (LONG)', reward: 0.68, cumulativeReward: 3.85 },
     ],
     LIGHTGBM: [
-      { hoursAgo: 36, label: 'Эпоха #1 (GBDT Init)', reward: 0.31, cumulativeReward: 0.31 },
+      { hoursAgo: 36, label: 'Цикл #1 (Momentum)', reward: 0.31, cumulativeReward: 0.31 },
       { hoursAgo: 28, label: 'ETHUSDT (SHORT)', reward: 0.54, cumulativeReward: 0.85 },
       { hoursAgo: 22, label: 'DOGEUSDT (LONG)', reward: -0.42, cumulativeReward: 0.43 },
-      { hoursAgo: 16, label: 'Эпоха #2 (Hist 5m)', reward: 0.88, cumulativeReward: 1.31 },
+      { hoursAgo: 16, label: 'Цикл #2 (Hist 5m)', reward: 0.88, cumulativeReward: 1.31 },
       { hoursAgo: 11, label: 'SOLUSDT (LONG)', reward: 0.61, cumulativeReward: 1.92 },
       { hoursAgo: 6, label: 'NEARUSDT (LONG)', reward: 0.49, cumulativeReward: 2.41 },
-      { hoursAgo: 2, label: 'Эпоха #3 (L2 Depth)', reward: 0.57, cumulativeReward: 2.98 },
+      { hoursAgo: 2, label: 'Цикл #3 (L2 Depth)', reward: 0.57, cumulativeReward: 2.98 },
     ],
     TG_CHANNEL: [
-      { hoursAgo: 36, label: 'Эпоха #1 (NLP Alpha)', reward: 0.55, cumulativeReward: 0.55 },
+      { hoursAgo: 36, label: 'Цикл #1 (Alpha)', reward: 0.55, cumulativeReward: 0.55 },
       { hoursAgo: 28, label: 'SOLUSDT (LONG)', reward: 0.92, cumulativeReward: 1.47 },
       { hoursAgo: 22, label: 'DOGEUSDT (SHORT)', reward: -0.58, cumulativeReward: 0.89 },
       { hoursAgo: 16, label: 'BTCUSDT (LONG)', reward: 0.44, cumulativeReward: 1.33 },
-      { hoursAgo: 11, label: 'Эпоха #2 (TG Sentiment)', reward: 0.52, cumulativeReward: 1.85 },
+      { hoursAgo: 11, label: 'Цикл #2 (Индекс)', reward: 0.52, cumulativeReward: 1.85 },
       { hoursAgo: 6, label: 'ETHUSDT (LONG)', reward: 0.38, cumulativeReward: 2.23 },
-      { hoursAgo: 2, label: 'Эпоха #3 (Confluence)', reward: 0.46, cumulativeReward: 2.69 },
+      { hoursAgo: 2, label: 'Цикл #3 (Confluence)', reward: 0.46, cumulativeReward: 2.69 },
     ],
   };
 
@@ -508,7 +508,7 @@ export function evaluateBotSignal(
     };
   }
 
-  // 5. Strict Learned Confidence Threshold (No artificial lowering)
+  // 5. Strict Learned Confidence Threshold
   const absScore = Math.abs(compositeScore);
   if (absScore < brain.confidenceThreshold) {
     return {
@@ -516,12 +516,12 @@ export function evaluateBotSignal(
       compositeScore,
       slDistancePct,
       contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
-      reasonSummary: `Пропуск [${regimeTag}]: Сигнал слабее порога ИИ (|${compositeScore.toFixed(2)}| < ${brain.confidenceThreshold.toFixed(2)}). OBI=${features.obi.toFixed(2)}, RSI=${features.rsi14.toFixed(1)}.`,
+      reasonSummary: `Пропуск [${regimeTag}]: Сигнал слабее порога (|${compositeScore.toFixed(2)}| < ${brain.confidenceThreshold.toFixed(2)}). OBI=${features.obi.toFixed(2)}, RSI=${features.rsi14.toFixed(1)}.`,
     };
   }
 
   const action: 'LONG' | 'SHORT' = compositeScore >= 0 ? 'LONG' : 'SHORT';
-  const reasonSummary = `Вектор ИИ [${action} · ${regimeTag}]: Score=${compositeScore >= 0 ? '+' : ''}${compositeScore.toFixed(2)} (порог ${brain.confidenceThreshold.toFixed(2)}) · L2 OBI=${features.obi >= 0 ? '+' : ''}${features.obi.toFixed(2)} · RSI=${features.rsi14.toFixed(1)} · VWAP=${features.vwapDeviationPct >= 0 ? '+' : ''}${features.vwapDeviationPct.toFixed(2)}% · ATR SL=${slDistancePct.toFixed(2)}%`;
+  const reasonSummary = `Сигнал [${action} · ${regimeTag}]: Score=${compositeScore >= 0 ? '+' : ''}${compositeScore.toFixed(2)} (порог ${brain.confidenceThreshold.toFixed(2)}) · L2 OBI=${features.obi >= 0 ? '+' : ''}${features.obi.toFixed(2)} · RSI=${features.rsi14.toFixed(1)} · VWAP=${features.vwapDeviationPct >= 0 ? '+' : ''}${features.vwapDeviationPct.toFixed(2)}% · ATR SL=${slDistancePct.toFixed(2)}%`;
 
   return {
     action,
@@ -814,7 +814,7 @@ export function runHistoricalKlineEpoch(params: {
     ...(brain.rewardHistory || []).slice(-29),
     {
       timestamp: Date.now(),
-      label: `Эпоха #${nextEpochs} (${simulatedTrades} св.)`,
+      label: `Цикл #${nextEpochs} (${simulatedTrades} св.)`,
       reward: epochReward,
       cumulativeReward: nextCumulative,
       sha256: newSha256.slice(0, 16),

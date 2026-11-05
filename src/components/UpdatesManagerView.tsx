@@ -592,7 +592,7 @@ export const UpdatesManagerView: React.FC = () => {
               </div>
 
               <p className="text-xs text-slate-400 leading-relaxed">
-                Сохраняет текущие веса обученных нейро-ботов, настройки риск-профиля и изменения кода напрямую в ваш репозиторий <code className="text-cyan-300">origin/main</code>.
+                Сохраняет текущие веса стратегий, настройки риск-профиля и изменения кода напрямую в ваш репозиторий <code className="text-cyan-300">origin/main</code>.
               </p>
 
               <form onSubmit={handleGitCommitPush} className="space-y-2.5">
@@ -600,7 +600,7 @@ export const UpdatesManagerView: React.FC = () => {
                   type="text"
                   value={commitMessage}
                   onChange={(e) => setCommitMessage(e.target.value)}
-                  placeholder="Описание коммита (напр., Обновлены веса ONNX RL эпохи #18)..."
+                  placeholder="Описание коммита (напр., Обновлены веса стратегий и параметры риска)..."
                   className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500/60 font-mono"
                 />
                 <button
@@ -826,7 +826,7 @@ export const UpdatesManagerView: React.FC = () => {
               <div className="flex items-center gap-2">
                 <Cpu className="w-5 h-5 text-purple-400" />
                 <h3 className="font-extrabold text-sm text-white uppercase tracking-wider">
-                  Карантин моделей Node B (Кузница ИИ Домашнего ПК)
+                  Карантин весов стратегий (Внешний узел калибровки)
                 </h3>
               </div>
               <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-500/30">
@@ -835,9 +835,9 @@ export const UpdatesManagerView: React.FC = () => {
             </div>
 
             <p className="text-xs text-slate-300 leading-relaxed">
-              Модели PyTorch RL (PPO/SAC) и LightGBM, обученные на вашей домашней видеокарте (Ryzen 5 5600X + 8GB GPU),
-              выгружаются на Node A в изолированный карантин. После проверки валидационной метрики их можно{' '}
-              <strong className="text-purple-300">мгновенно подгрузить в инференс-память CPU onnxruntime</strong>.
+              Профили весов, рассчитанные на внешнем узле по архивным котировкам, выгружаются в изолированный карантин.
+              После проверки валидационной метрики их можно{' '}
+              <strong className="text-purple-300">мгновенно применить к активным стратегиям ядра</strong>.
             </p>
 
             <div className="space-y-3 font-mono text-xs">
@@ -882,7 +882,7 @@ export const UpdatesManagerView: React.FC = () => {
 
           <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between text-[11px] font-mono text-slate-400">
             <span>Проверка контрольной суммы SHA256 обязательна</span>
-            <span className="text-purple-400 font-bold">ONNX Runtime CPU</span>
+            <span className="text-purple-400 font-bold">Hot-Swap Engine</span>
           </div>
         </div>
       </div>

@@ -61,7 +61,7 @@ const STRATEGY_THEMES: Record<string, StrategyVisualConfig> = {
     text: 'text-cyan-400',
     bg: 'bg-cyan-950/60',
     border: 'border-cyan-500/40',
-    shortName: 'ONNX RL (PPO+LSTM)',
+    shortName: 'Delta-L2 · Стакан',
   },
   'agent-lgbm-nightly': {
     stroke: '#10b981', // emerald-500
@@ -71,7 +71,7 @@ const STRATEGY_THEMES: Record<string, StrategyVisualConfig> = {
     text: 'text-emerald-400',
     bg: 'bg-emerald-950/60',
     border: 'border-emerald-500/40',
-    shortName: 'LightGBM Momentum',
+    shortName: 'Momentum · Импульс',
   },
   'agent-tg-crypto-alpha': {
     stroke: '#f59e0b', // amber-500
@@ -81,7 +81,7 @@ const STRATEGY_THEMES: Record<string, StrategyVisualConfig> = {
     text: 'text-amber-400',
     bg: 'bg-amber-950/60',
     border: 'border-amber-500/40',
-    shortName: 'TG Alpha Hunter',
+    shortName: 'Alpha-Signal · Индекс',
   },
 };
 
@@ -93,7 +93,7 @@ const DEFAULT_THEME: StrategyVisualConfig = {
   text: 'text-purple-400',
   bg: 'bg-purple-950/60',
   border: 'border-purple-500/40',
-  shortName: 'ИИ-Агент',
+  shortName: 'Стратегия',
 };
 
 const MARKET_REGIMES: Array<{
@@ -605,7 +605,7 @@ export const RewardCurveChart: React.FC<RewardCurveChartProps> = ({
       <div className="bg-slate-950/95 border border-slate-700/80 rounded-lg p-3.5 shadow-2xl backdrop-blur font-mono text-xs min-w-[280px] space-y-2 tabular-nums">
         <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
           <span className="text-white font-bold">{data.displayStep}</span>
-          <span className="text-slate-400 text-[10px]">Сравнение всех 3 кривых RL</span>
+          <span className="text-slate-400 text-[10px]">Сравнение всех 3 стратегий</span>
         </div>
 
         <div className="space-y-2 pt-0.5">
@@ -671,13 +671,13 @@ export const RewardCurveChart: React.FC<RewardCurveChartProps> = ({
             </div>
             <div className="min-w-0">
               <h3 className="text-sm font-bold text-white flex flex-wrap items-center gap-2">
-                <span>Кривая доходности и обучения моделей (RL Reward & Yield Curve)</span>
+                <span>Кривая доходности и сравнение стратегий (Yield &amp; R-Curve)</span>
                 <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-cyan-950 text-cyan-300 border border-cyan-800/60 font-semibold whitespace-nowrap">
-                  Bybit V5 + Online RL
+                  Bybit V5 Linear
                 </span>
               </h3>
               <p className="text-xs text-slate-400 mt-0.5">
-                Параллельное сравнение кривых доходности двух стратегий (A vs B) и оценка устойчивости RL-агентов в разных рыночных режимах
+                Параллельное сравнение кривых доходности двух стратегий (A vs B) в разных рыночных режимах
               </p>
             </div>
           </div>
@@ -796,7 +796,7 @@ export const RewardCurveChart: React.FC<RewardCurveChartProps> = ({
               disabled={trainingBotId !== null || isTrainingPair}
               onClick={handleTrainSelectedPair}
               className="px-3 py-1.5 bg-cyan-950 hover:bg-cyan-900 text-cyan-300 rounded-lg text-xs font-mono font-semibold transition flex items-center gap-1.5 border border-cyan-500/40 whitespace-nowrap shrink-0"
-              title="Обучить обе выбранные стратегии (A и B) на свечах Bybit V5 (5m)"
+              title="Калибровать обе выбранные стратегии (A и B) на свечах Bybit V5 (5m)"
             >
               <Sparkles
                 className={`w-3.5 h-3.5 ${
@@ -805,8 +805,8 @@ export const RewardCurveChart: React.FC<RewardCurveChartProps> = ({
               />
               <span>
                 {trainingBotId !== null || isTrainingPair
-                  ? 'Обучение пары A+B...'
-                  : 'Обучить пару A vs B (5m)'}
+                  ? 'Калибровка A+B...'
+                  : 'Калибровать A vs B (5m)'}
               </span>
             </button>
           ) : (
@@ -817,8 +817,8 @@ export const RewardCurveChart: React.FC<RewardCurveChartProps> = ({
                 onTrainEpoch(
                   selectedStrategyId,
                   selectedStrategyId === 'ALL'
-                    ? 'Все ИИ-боты'
-                    : currentAgent?.name || 'ИИ-бот'
+                    ? 'Все стратегии'
+                    : currentAgent?.name || 'Стратегия'
                 )
               }
               className="px-3 py-1.5 bg-cyan-950 hover:bg-cyan-900 text-cyan-300 rounded-lg text-xs font-mono font-semibold transition flex items-center gap-1.5 border border-cyan-500/40 whitespace-nowrap shrink-0"
@@ -830,10 +830,10 @@ export const RewardCurveChart: React.FC<RewardCurveChartProps> = ({
               />
               <span>
                 {trainingBotId === selectedStrategyId || trainingBotId === 'ALL'
-                  ? 'Обучение на Bybit...'
+                  ? 'Калибровка Bybit...'
                   : selectedStrategyId === 'ALL'
-                  ? 'Обучить все модели (5m)'
-                  : `Обучить ${currentAgent?.name.split(' ')[0] || 'бота'}`}
+                  ? 'Откалибровать все (5m)'
+                  : `Калибровать ${currentAgent?.name.split(' ')[0] || 'стратегию'}`}
               </span>
             </button>
           )}
@@ -1109,7 +1109,7 @@ export const RewardCurveChart: React.FC<RewardCurveChartProps> = ({
 
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-slate-800/60 text-[10px] text-slate-400">
                     <span className="flex flex-wrap items-center gap-1.5">
-                      <span>Веса ИИ:</span>
+                      <span>Веса:</span>
                       <MetricTooltip metric="OBI" value={w.obiWeight * 100} showIcon={false}>
                         <span>OBI <strong className="text-cyan-300">{(w.obiWeight * 100).toFixed(0)}%</strong></span>
                       </MetricTooltip>
@@ -1188,8 +1188,8 @@ export const RewardCurveChart: React.FC<RewardCurveChartProps> = ({
                 </div>
 
                 <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 mt-2">
-                  <span>Эпох Bybit: {epochs}</span>
-                  <span>RL-сделок: {steps}</span>
+                  <span>Циклов Bybit: {epochs}</span>
+                  <span>Сделок: {steps}</span>
                   <span className="text-cyan-400 underline text-[10px]">Подробнее &rarr;</span>
                 </div>
               </div>
@@ -1201,7 +1201,7 @@ export const RewardCurveChart: React.FC<RewardCurveChartProps> = ({
           <div className="bg-slate-950/70 border border-slate-800/80 rounded-lg p-3 text-xs font-mono tabular-nums flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-4">
               <div>
-                <span className="text-slate-500 text-[10px] block">Текущая награда (ΣR)</span>
+                <span className="text-slate-500 text-[10px] block">Текущий результат (ΣR)</span>
                 <span
                   className={`font-bold text-sm ${
                     (currentAgent.brain?.cumulativeReward ?? 0) >= 0
@@ -1214,19 +1214,19 @@ export const RewardCurveChart: React.FC<RewardCurveChartProps> = ({
                 </span>
               </div>
               <div className="border-l border-slate-800 pl-3">
-                <span className="text-slate-500 text-[10px] block">Эпох на Bybit (5m)</span>
+                <span className="text-slate-500 text-[10px] block">Циклов Bybit (5m)</span>
                 <span className="font-bold text-white text-sm">
                   {currentAgent.brain?.epochsTrained ?? 0}
                 </span>
               </div>
               <div className="border-l border-slate-800 pl-3">
-                <span className="text-slate-500 text-[10px] block">Онлайн RL-шагов</span>
+                <span className="text-slate-500 text-[10px] block">Обновлений весов</span>
                 <span className="font-bold text-cyan-300 text-sm">
                   {currentAgent.brain?.onlineUpdatesCount ?? 0}
                 </span>
               </div>
               <div className="border-l border-slate-800 pl-3">
-                <span className="text-slate-500 text-[10px] block">Порог / ATR SL / LR</span>
+                <span className="text-slate-500 text-[10px] block">Порог / ATR SL / Шаг</span>
                 <span className="text-slate-300 text-xs">
                   &ge;{(currentAgent.brain?.confidenceThreshold ?? 0.21).toFixed(2)} ·{' '}
                   {(currentAgent.brain?.atrMultiplier ?? 1.45).toFixed(2)}x ATR · &eta;=
@@ -1589,16 +1589,16 @@ export const RewardCurveChart: React.FC<RewardCurveChartProps> = ({
         </ResponsiveContainer>
       </div>
 
-      {/* Footer Info & Explainable RL Progress Note */}
+      {/* Footer Info */}
       <div className="flex flex-wrap items-center justify-between text-xs font-mono text-slate-400 pt-1 border-t border-slate-800/60">
         <div className="flex items-center gap-2">
           <Brain className="w-3.5 h-3.5 text-cyan-400" />
           <span>
             {selectedStrategyId === 'DUAL'
-              ? `Режим A vs B (${MARKET_REGIMES.find((r) => r.id === marketRegime)?.label}): оценка расхождения кривых доходности`
+              ? `Режим A vs B (${MARKET_REGIMES.find((r) => r.id === marketRegime)?.label}): сравнение кривых доходности`
               : selectedStrategyId === 'ALL'
-              ? 'Сравнение: Все 3 модели обучаются параллельно (онлайн-сделки + Bybit пакетные свечи)'
-              : `Модель «${currentAgent?.name}»: адаптация весов OBI, RSI/EMA, VWAP и Sentiment по функции награды`}
+              ? 'Сравнение всех 3 стратегий по накопленному результату'
+              : `Стратегия «${currentAgent?.name}»: динамика весов OBI, RSI/EMA, VWAP и Sentiment`}
           </span>
         </div>
         <div className="text-[11px] text-slate-500">

@@ -109,10 +109,10 @@ export const AuthLoginScreen: React.FC<AuthLoginScreenProps> = ({
             </div>
             <div>
               <h1 className="text-base font-bold text-white tracking-tight">
-                ZimaTrade <span className="text-cyan-400">AI</span> · Авторизация
+                ZimaTrade · Авторизация
               </h1>
               <p className="text-xs text-slate-400">
-                Защищенный доступ к торговому терминалу и ИИ-ботам
+                Защищенный доступ к торговому терминалу
               </p>
             </div>
           </div>
@@ -232,27 +232,15 @@ export const AuthLoginScreen: React.FC<AuthLoginScreenProps> = ({
           </button>
         </form>
 
-        {/* Initial Setup Helper Banner (Only shown while default password hasn't been changed) */}
         {!hasCustomPassword && (
-          <div className="bg-cyan-950/30 border border-cyan-500/30 rounded-xl p-3.5 space-y-2.5 text-xs">
-            <div className="flex items-start gap-2">
-              <Sparkles className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
-              <div className="text-slate-300 leading-relaxed">
-                <span className="font-semibold text-white">Первичный запуск:</span> сейчас установлен стартовый доступ{' '}
-                <code className="text-cyan-300 font-mono">admin</code> / пароль{' '}
-                <code className="text-cyan-300 font-mono">zima2026</code> (или PIN{' '}
-                <code className="text-cyan-300 font-mono">2026</code>). Вы можете изменить их в 1 клик через иконку профиля в шапке.
-              </div>
-            </div>
-            <button
-              type="button"
-              disabled={loading}
-              onClick={handleQuickDemoLogin}
-              className="w-full py-1.5 px-3 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/40 text-cyan-200 font-mono text-xs font-semibold transition cursor-pointer"
-            >
-              Быстрый вход в 1 клик (admin / zima2026)
-            </button>
-          </div>
+          <button
+            type="button"
+            disabled={loading}
+            onClick={handleQuickDemoLogin}
+            className="w-full py-2 px-3 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/40 text-cyan-200 font-mono text-xs font-semibold transition cursor-pointer"
+          >
+            Быстрый вход (admin)
+          </button>
         )}
       </div>
     </div>

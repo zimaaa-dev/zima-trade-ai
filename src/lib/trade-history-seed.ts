@@ -17,7 +17,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "LIVE",
     "exitReason": "TP_HIT",
     "botId": "agent-onnx-ppo-v2",
-    "botName": "ONNX PyTorch RL (PPO+LSTM)",
+    "botName": "Delta-L2 · Стакан и Объемы",
     "openedAt": 1793536950519,
     "closedAt": 1793539000872
   },
@@ -37,7 +37,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "LIVE",
     "exitReason": "TP_HIT",
     "botId": "agent-lgbm-nightly",
-    "botName": "LightGBM Nightly L2 Momentum",
+    "botName": "Momentum · Импульсный Скальпер",
     "openedAt": 1793534924868,
     "closedAt": 1793535747549
   },
@@ -57,7 +57,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "LIVE",
     "exitReason": "SL_HIT",
     "botId": "agent-tg-crypto-alpha",
-    "botName": "TG Channel Alpha Parser Agent",
+    "botName": "Alpha-Signal · Индекс Каналов",
     "openedAt": 1793530633839,
     "closedAt": 1793532503745
   },
@@ -77,7 +77,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-onnx-ppo-v2",
-    "botName": "ONNX PyTorch RL (PPO+LSTM)",
+    "botName": "Delta-L2 · Стакан и Объемы",
     "openedAt": 1793527531176,
     "closedAt": 1793529223503
   },
@@ -97,7 +97,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-lgbm-nightly",
-    "botName": "LightGBM Nightly L2 Momentum",
+    "botName": "Momentum · Импульсный Скальпер",
     "openedAt": 1793524890625,
     "closedAt": 1793526116789
   },
@@ -117,7 +117,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-tg-crypto-alpha",
-    "botName": "TG Channel Alpha Parser Agent",
+    "botName": "Alpha-Signal · Индекс Каналов",
     "openedAt": 1793520809031,
     "closedAt": 1793522697217
   },
@@ -137,7 +137,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "SL_HIT",
     "botId": "agent-onnx-ppo-v2",
-    "botName": "ONNX PyTorch RL (PPO+LSTM)",
+    "botName": "Delta-L2 · Стакан и Объемы",
     "openedAt": 1793519234498,
     "closedAt": 1793519657346
   },
@@ -157,7 +157,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-lgbm-nightly",
-    "botName": "LightGBM Nightly L2 Momentum",
+    "botName": "Momentum · Импульсный Скальпер",
     "openedAt": 1793514473833,
     "closedAt": 1793516337491
   },
@@ -177,7 +177,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-tg-crypto-alpha",
-    "botName": "TG Channel Alpha Parser Agent",
+    "botName": "Alpha-Signal · Индекс Каналов",
     "openedAt": 1793511549005,
     "closedAt": 1793513370887
   },
@@ -197,7 +197,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-onnx-ppo-v2",
-    "botName": "ONNX PyTorch RL (PPO+LSTM)",
+    "botName": "Delta-L2 · Стакан и Объемы",
     "openedAt": 1793508916497,
     "closedAt": 1793510144890
   },
@@ -217,7 +217,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-lgbm-nightly",
-    "botName": "LightGBM Nightly L2 Momentum",
+    "botName": "Momentum · Импульсный Скальпер",
     "openedAt": 1793504989222,
     "closedAt": 1793506783383
   },
@@ -237,7 +237,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "MANUAL_CLOSE",
     "botId": "agent-tg-crypto-alpha",
-    "botName": "TG Channel Alpha Parser Agent",
+    "botName": "Alpha-Signal · Индекс Каналов",
     "openedAt": 1793502953651,
     "closedAt": 1793503774675
   },
@@ -257,7 +257,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-onnx-ppo-v2",
-    "botName": "ONNX PyTorch RL (PPO+LSTM)",
+    "botName": "Delta-L2 · Стакан и Объемы",
     "openedAt": 1793498439782,
     "closedAt": 1793500529329
   },
@@ -277,7 +277,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-lgbm-nightly",
-    "botName": "LightGBM Nightly L2 Momentum",
+    "botName": "Momentum · Импульсный Скальпер",
     "openedAt": 1793495960691,
     "closedAt": 1793497214538
   },
@@ -297,7 +297,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-tg-crypto-alpha",
-    "botName": "TG Channel Alpha Parser Agent",
+    "botName": "Alpha-Signal · Индекс Каналов",
     "openedAt": 1793492639050,
     "closedAt": 1793494181112
   },
@@ -317,7 +317,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-onnx-ppo-v2",
-    "botName": "ONNX PyTorch RL (PPO+LSTM)",
+    "botName": "Delta-L2 · Стакан и Объемы",
     "openedAt": 1793490206787,
     "closedAt": 1793490801316
   },
@@ -337,7 +337,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "SL_HIT",
     "botId": "agent-lgbm-nightly",
-    "botName": "LightGBM Nightly L2 Momentum",
+    "botName": "Momentum · Импульсный Скальпер",
     "openedAt": 1793486411712,
     "closedAt": 1793487577893
   },
@@ -357,7 +357,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-tg-crypto-alpha",
-    "botName": "TG Channel Alpha Parser Agent",
+    "botName": "Alpha-Signal · Индекс Каналов",
     "openedAt": 1793483096271,
     "closedAt": 1793484547578
   },
@@ -377,7 +377,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-onnx-ppo-v2",
-    "botName": "ONNX PyTorch RL (PPO+LSTM)",
+    "botName": "Delta-L2 · Стакан и Объемы",
     "openedAt": 1793480460103,
     "closedAt": 1793481343656
   },
@@ -397,7 +397,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-lgbm-nightly",
-    "botName": "LightGBM Nightly L2 Momentum",
+    "botName": "Momentum · Импульсный Скальпер",
     "openedAt": 1793477582709,
     "closedAt": 1793477905319
   },
@@ -417,7 +417,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "SL_HIT",
     "botId": "agent-tg-crypto-alpha",
-    "botName": "TG Channel Alpha Parser Agent",
+    "botName": "Alpha-Signal · Индекс Каналов",
     "openedAt": 1793473982688,
     "closedAt": 1793474932839
   },
@@ -437,7 +437,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-onnx-ppo-v2",
-    "botName": "ONNX PyTorch RL (PPO+LSTM)",
+    "botName": "Delta-L2 · Стакан и Объемы",
     "openedAt": 1793470141911,
     "closedAt": 1793471777084
   },
@@ -457,7 +457,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-lgbm-nightly",
-    "botName": "LightGBM Nightly L2 Momentum",
+    "botName": "Momentum · Импульсный Скальпер",
     "openedAt": 1793466650781,
     "closedAt": 1793468629394
   },
@@ -477,7 +477,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "MANUAL_CLOSE",
     "botId": "agent-tg-crypto-alpha",
-    "botName": "TG Channel Alpha Parser Agent",
+    "botName": "Alpha-Signal · Индекс Каналов",
     "openedAt": 1793464069428,
     "closedAt": 1793465318412
   },
@@ -497,7 +497,7 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
     "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-onnx-ppo-v2",
-    "botName": "ONNX PyTorch RL (PPO+LSTM)",
+    "botName": "Delta-L2 · Стакан и Объемы",
     "openedAt": 1793461749819,
     "closedAt": 1793462071307
   }
@@ -511,7 +511,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 12.16,
     balanceAfterUsdt: 10012.16,
     symbol: 'NEARUSDT',
-    description: 'Take-Profit LONG NEARUSDT ($5.17) • ONNX PyTorch RL (PPO+LSTM) (комиссия -$2.84)',
+    description: 'Take-Profit LONG NEARUSDT ($5.17) • Delta-L2 · Стакан и Объемы (комиссия -$2.84)',
     mode: 'SHADOW',
   },
   {
@@ -521,7 +521,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: -44.69,
     balanceAfterUsdt: 9967.47,
     symbol: 'DOGEUSDT',
-    description: 'Закрыто вручную LONG DOGEUSDT ($0.0753) • TG Channel Alpha Parser Agent (комиссия -$3.75)',
+    description: 'Закрыто вручную LONG DOGEUSDT ($0.0753) • Alpha-Signal · Индекс Каналов (комиссия -$3.75)',
     mode: 'SHADOW',
   },
   {
@@ -531,7 +531,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 27.58,
     balanceAfterUsdt: 9995.05,
     symbol: 'SOLUSDT',
-    description: 'Take-Profit SHORT SOLUSDT ($93.48) • LightGBM Nightly L2 Momentum (комиссия -$2.59)',
+    description: 'Take-Profit SHORT SOLUSDT ($93.48) • Momentum · Импульсный Скальпер (комиссия -$2.59)',
     mode: 'SHADOW',
   },
   {
@@ -541,7 +541,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 50.48,
     balanceAfterUsdt: 10045.53,
     symbol: 'ETHUSDT',
-    description: 'Take-Profit LONG ETHUSDT ($2293.04) • ONNX PyTorch RL (PPO+LSTM) (комиссия -$4.51)',
+    description: 'Take-Profit LONG ETHUSDT ($2293.04) • Delta-L2 · Стакан и Объемы (комиссия -$4.51)',
     mode: 'SHADOW',
   },
   {
@@ -551,7 +551,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: -123.74,
     balanceAfterUsdt: 9921.79,
     symbol: 'BTCUSDT',
-    description: 'Stop-Loss SHORT BTCUSDT ($78426.94) • TG Channel Alpha Parser Agent (комиссия -$10.29)',
+    description: 'Stop-Loss SHORT BTCUSDT ($78426.94) • Alpha-Signal · Индекс Каналов (комиссия -$10.29)',
     mode: 'SHADOW',
   },
   {
@@ -561,7 +561,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 12.26,
     balanceAfterUsdt: 9934.05,
     symbol: 'NEARUSDT',
-    description: 'Take-Profit LONG NEARUSDT ($5.13) • LightGBM Nightly L2 Momentum (комиссия -$2.81)',
+    description: 'Take-Profit LONG NEARUSDT ($5.13) • Momentum · Импульсный Скальпер (комиссия -$2.81)',
     mode: 'SHADOW',
   },
   {
@@ -571,7 +571,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 18.99,
     balanceAfterUsdt: 9953.04,
     symbol: 'DOGEUSDT',
-    description: 'Take-Profit SHORT DOGEUSDT ($0.0758) • ONNX PyTorch RL (PPO+LSTM) (комиссия -$3.76)',
+    description: 'Take-Profit SHORT DOGEUSDT ($0.0758) • Delta-L2 · Стакан и Объемы (комиссия -$3.76)',
     mode: 'SHADOW',
   },
   {
@@ -581,7 +581,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 30.14,
     balanceAfterUsdt: 9983.18,
     symbol: 'SOLUSDT',
-    description: 'Take-Profit LONG SOLUSDT ($94.77) • TG Channel Alpha Parser Agent (комиссия -$2.59)',
+    description: 'Take-Profit LONG SOLUSDT ($94.77) • Alpha-Signal · Индекс Каналов (комиссия -$2.59)',
     mode: 'SHADOW',
   },
   {
@@ -591,7 +591,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: -48.41,
     balanceAfterUsdt: 9934.77,
     symbol: 'ETHUSDT',
-    description: 'Stop-Loss LONG ETHUSDT ($2202.27) • LightGBM Nightly L2 Momentum (комиссия -$4.38)',
+    description: 'Stop-Loss LONG ETHUSDT ($2202.27) • Momentum · Импульсный Скальпер (комиссия -$4.38)',
     mode: 'SHADOW',
   },
   {
@@ -601,7 +601,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 107.98,
     balanceAfterUsdt: 10042.75,
     symbol: 'BTCUSDT',
-    description: 'Take-Profit SHORT BTCUSDT ($76162.85) • ONNX PyTorch RL (PPO+LSTM) (комиссия -$10.12)',
+    description: 'Take-Profit SHORT BTCUSDT ($76162.85) • Delta-L2 · Стакан и Объемы (комиссия -$10.12)',
     mode: 'SHADOW',
   },
   {
@@ -611,7 +611,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 12.42,
     balanceAfterUsdt: 10055.17,
     symbol: 'NEARUSDT',
-    description: 'Take-Profit LONG NEARUSDT ($5.19) • TG Channel Alpha Parser Agent (комиссия -$2.85)',
+    description: 'Take-Profit LONG NEARUSDT ($5.19) • Alpha-Signal · Индекс Каналов (комиссия -$2.85)',
     mode: 'SHADOW',
   },
   {
@@ -621,7 +621,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 36.39,
     balanceAfterUsdt: 10091.56,
     symbol: 'DOGEUSDT',
-    description: 'Take-Profit SHORT DOGEUSDT ($0.075) • LightGBM Nightly L2 Momentum (комиссия -$3.73)',
+    description: 'Take-Profit SHORT DOGEUSDT ($0.075) • Momentum · Импульсный Скальпер (комиссия -$3.73)',
     mode: 'SHADOW',
   },
   {
@@ -631,7 +631,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 20.27,
     balanceAfterUsdt: 10111.83,
     symbol: 'SOLUSDT',
-    description: 'Take-Profit LONG SOLUSDT ($96.25) • ONNX PyTorch RL (PPO+LSTM) (комиссия -$2.63)',
+    description: 'Take-Profit LONG SOLUSDT ($96.25) • Delta-L2 · Стакан и Объемы (комиссия -$2.63)',
     mode: 'SHADOW',
   },
   {
@@ -641,7 +641,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: -52.74,
     balanceAfterUsdt: 10059.09,
     symbol: 'ETHUSDT',
-    description: 'Закрыто вручную SHORT ETHUSDT ($2293.52) • TG Channel Alpha Parser Agent (комиссия -$4.51)',
+    description: 'Закрыто вручную SHORT ETHUSDT ($2293.52) • Alpha-Signal · Индекс Каналов (комиссия -$4.51)',
     mode: 'SHADOW',
   },
   {
@@ -651,7 +651,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 141.12,
     balanceAfterUsdt: 10200.21,
     symbol: 'BTCUSDT',
-    description: 'Take-Profit LONG BTCUSDT ($79425.74) • LightGBM Nightly L2 Momentum (комиссия -$10.4)',
+    description: 'Take-Profit LONG BTCUSDT ($79425.74) • Momentum · Импульсный Скальпер (комиссия -$10.4)',
     mode: 'SHADOW',
   },
   {
@@ -661,7 +661,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 26.89,
     balanceAfterUsdt: 10227.1,
     symbol: 'NEARUSDT',
-    description: 'Take-Profit LONG NEARUSDT ($5.18) • ONNX PyTorch RL (PPO+LSTM) (комиссия -$2.83)',
+    description: 'Take-Profit LONG NEARUSDT ($5.18) • Delta-L2 · Стакан и Объемы (комиссия -$2.83)',
     mode: 'SHADOW',
   },
   {
@@ -671,7 +671,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 50.02,
     balanceAfterUsdt: 10277.12,
     symbol: 'DOGEUSDT',
-    description: 'Take-Profit SHORT DOGEUSDT ($0.0739) • TG Channel Alpha Parser Agent (комиссия -$3.69)',
+    description: 'Take-Profit SHORT DOGEUSDT ($0.0739) • Alpha-Signal · Индекс Каналов (комиссия -$3.69)',
     mode: 'SHADOW',
   },
   {
@@ -681,7 +681,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 13.38,
     balanceAfterUsdt: 10290.5,
     symbol: 'SOLUSDT',
-    description: 'Take-Profit LONG SOLUSDT ($94.99) • LightGBM Nightly L2 Momentum (комиссия -$2.6)',
+    description: 'Take-Profit LONG SOLUSDT ($94.99) • Momentum · Импульсный Скальпер (комиссия -$2.6)',
     mode: 'SHADOW',
   },
   {
@@ -691,7 +691,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: -57.68,
     balanceAfterUsdt: 10232.82,
     symbol: 'ETHUSDT',
-    description: 'Stop-Loss SHORT ETHUSDT ($2293.34) • ONNX PyTorch RL (PPO+LSTM) (комиссия -$4.51)',
+    description: 'Stop-Loss SHORT ETHUSDT ($2293.34) • Delta-L2 · Стакан и Объемы (комиссия -$4.51)',
     mode: 'SHADOW',
   },
   {
@@ -701,7 +701,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 89.46,
     balanceAfterUsdt: 10322.28,
     symbol: 'BTCUSDT',
-    description: 'Take-Profit LONG BTCUSDT ($77537.34) • TG Channel Alpha Parser Agent (комиссия -$10.18)',
+    description: 'Take-Profit LONG BTCUSDT ($77537.34) • Alpha-Signal · Индекс Каналов (комиссия -$10.18)',
     mode: 'SHADOW',
   },
   {
@@ -711,7 +711,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 26.69,
     balanceAfterUsdt: 10348.97,
     symbol: 'NEARUSDT',
-    description: 'Take-Profit SHORT NEARUSDT ($5.11) • LightGBM Nightly L2 Momentum (комиссия -$2.83)',
+    description: 'Take-Profit SHORT NEARUSDT ($5.11) • Momentum · Импульсный Скальпер (комиссия -$2.83)',
     mode: 'SHADOW',
   },
   {
@@ -721,7 +721,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 32.21,
     balanceAfterUsdt: 10381.18,
     symbol: 'DOGEUSDT',
-    description: 'Take-Profit LONG DOGEUSDT ($0.0755) • ONNX PyTorch RL (PPO+LSTM) (комиссия -$3.72)',
+    description: 'Take-Profit LONG DOGEUSDT ($0.0755) • Delta-L2 · Стакан и Объемы (комиссия -$3.72)',
     mode: 'SHADOW',
   },
   {
@@ -731,7 +731,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: -21.25,
     balanceAfterUsdt: 10359.93,
     symbol: 'SOLUSDT',
-    description: 'Stop-Loss LONG SOLUSDT ($95.22) • TG Channel Alpha Parser Agent (комиссия -$2.63)',
+    description: 'Stop-Loss LONG SOLUSDT ($95.22) • Alpha-Signal · Индекс Каналов (комиссия -$2.63)',
     mode: 'LIVE',
   },
   {
@@ -741,7 +741,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 29.03,
     balanceAfterUsdt: 10388.96,
     symbol: 'ETHUSDT',
-    description: 'Take-Profit SHORT ETHUSDT ($2245.3) • LightGBM Nightly L2 Momentum (комиссия -$4.46)',
+    description: 'Take-Profit SHORT ETHUSDT ($2245.3) • Momentum · Импульсный Скальпер (комиссия -$4.46)',
     mode: 'LIVE',
   },
   {
@@ -751,7 +751,7 @@ export const initialWalletLedger: WalletLedgerEntry[] = [
     amountUsdt: 83.83,
     balanceAfterUsdt: 10472.79,
     symbol: 'BTCUSDT',
-    description: 'Take-Profit LONG BTCUSDT ($77907.39) • ONNX PyTorch RL (PPO+LSTM) (комиссия -$10.23)',
+    description: 'Take-Profit LONG BTCUSDT ($77907.39) • Delta-L2 · Стакан и Объемы (комиссия -$10.23)',
     mode: 'LIVE',
   },
 ];

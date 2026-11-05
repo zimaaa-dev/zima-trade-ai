@@ -468,7 +468,7 @@ export const AiArenaView: React.FC = () => {
         setPromotionStatus({
           type: 'success',
           text: data.scannedItem
-            ? `Считана и обработана свежая новость из «${data.scannedItem.sourceTitle}» (${data.scannedItem.symbol}): сентимент ИИ обновлен!`
+            ? `Считана и обработана свежая новость из «${data.scannedItem.sourceTitle}» (${data.scannedItem.symbol}): индекс сентимента обновлен!`
             : 'Сканирование источников завершено.',
         });
         fetchAgentsAndBots();
@@ -535,20 +535,20 @@ export const AiArenaView: React.FC = () => {
           type: 'success',
           text:
             agentId === 'ALL'
-              ? `Завершена пакетная эпоха обучения на исторических свечах Bybit V5 (5m) для всех ${data.reports.length} ИИ-ботов! Веса и SHA256 обновлены.`
-              : `Эпоха #${rep.epochsTrained} («${botName}») обучена на свечах Bybit: протестировано ${rep.simulatedTrades} сетапов, WinRate ${rep.winRatePct}%, прирост Reward ${rep.epochReward >= 0 ? '+' : ''}${rep.epochReward.toFixed(2)}R.`,
+              ? `Завершена пакетная калибровка на исторических свечах Bybit V5 (5m) для всех ${data.reports.length} стратегий.`
+              : `Цикл #${rep.epochsTrained} («${botName}») откалиброван на свечах Bybit: протестировано ${rep.simulatedTrades} сетапов, WinRate ${rep.winRatePct}%, прирост ${rep.epochReward >= 0 ? '+' : ''}${rep.epochReward.toFixed(2)}R.`,
         });
         await fetchAgentsAndBots();
       } else {
         setPromotionStatus({
           type: 'error',
-          text: data.error || 'Не удалось выполнить эпоху обучения',
+          text: data.error || 'Не удалось выполнить цикл калибровки',
         });
       }
     } catch (err: any) {
       setPromotionStatus({
         type: 'error',
-        text: `Ошибка обучения: ${err.message}`,
+        text: `Ошибка калибровки: ${err.message}`,
       });
     } finally {
       setTrainingBotId(null);
@@ -566,7 +566,7 @@ export const AiArenaView: React.FC = () => {
       if (res.ok) {
         setPromotionStatus({
           type: 'info',
-          text: `Нейро-веса и пороги бота «${botName}» сброшены к базовой заводской калибровке.`,
+          text: `Веса факторов и пороги стратегии «${botName}» сброшены к базовым значениям.`,
         });
         await fetchAgentsAndBots();
       }
@@ -615,7 +615,7 @@ export const AiArenaView: React.FC = () => {
     if (draft.allowedSymbols.length === 0) {
       setPromotionStatus({
         type: 'error',
-        text: 'Выберите хотя бы одну торговую пару для работы ИИ-бота.',
+        text: 'Выберите хотя бы одну торговую пару для работы стратегии.',
       });
       return;
     }
@@ -641,7 +641,7 @@ export const AiArenaView: React.FC = () => {
       if (res.ok) {
         setPromotionStatus({
           type: 'success',
-          text: `Параметры и гиперпараметры ИИ «${botName}» сохранены: риск ${draft.riskPerTradePct}%, плечо ${draft.leverage}x, порог входа ${draft.confidenceThreshold.toFixed(2)}, ATR SL ${draft.atrMultiplier}x.`,
+          text: `Параметры стратегии «${botName}» сохранены: риск ${draft.riskPerTradePct}%, плечо ${draft.leverage}x, порог входа ${draft.confidenceThreshold.toFixed(2)}, ATR SL ${draft.atrMultiplier}x.`,
         });
         setEditingBotId(null);
         await fetchAgentsAndBots();
@@ -670,8 +670,8 @@ export const AiArenaView: React.FC = () => {
           type: 'info',
           text:
             data.closedCount > 0
-              ? `Закрыто позиций бота «${botName}»: ${data.closedCount} шт. Онлайн RL-обновление весов выполнено по результату сделок.`
-              : `У бота «${botName}» нет открытых позиций для закрытия.`,
+              ? `Закрыто позиций стратегии «${botName}»: ${data.closedCount} шт.`
+              : `У стратегии «${botName}» нет открытых позиций для закрытия.`,
         });
         await fetchAgentsAndBots();
       }
@@ -775,11 +775,11 @@ export const AiArenaView: React.FC = () => {
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-sm sm:text-base font-bold text-white leading-snug">
-                ИИ-Арена: Самообучающиеся RL-Модели, Веса Признаков и Explainable AI
+                Торговые стратегии и калибровка факторов
               </h2>
             </div>
             <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
-              Многофакторный вход (L2 OBI 25 ур. · RSI/EMA · VWAP · ATR-14 SL · TG Sentiment) с онлайн RL-адаптацией весов после каждой сделки
+              Многофакторный вход (L2 OBI 25 ур. · RSI/EMA · VWAP · ATR-14 SL · TG Sentiment)
             </p>
           </div>
         </div>
@@ -801,13 +801,13 @@ export const AiArenaView: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => handleTrainEpoch('ALL', 'Все ИИ-боты')}
+            onClick={() => handleTrainEpoch('ALL', 'Все стратегии')}
             disabled={trainingBotId !== null}
             className="px-3 py-2 bg-cyan-950/90 hover:bg-cyan-900 text-cyan-300 rounded-lg text-xs font-mono font-semibold transition flex items-center gap-1.5 border border-cyan-500/40"
-            title="Загрузить исторические свечи Bybit V5 (5m) и провести эпоху обучения для всех ботов"
+            title="Загрузить исторические свечи Bybit V5 (5m) и провести калибровку для всех ботов"
           >
             <Sparkles className={`w-3.5 h-3.5 shrink-0 ${trainingBotId === 'ALL' ? 'animate-spin text-cyan-300' : 'text-cyan-400'}`} />
-            <span>{trainingBotId === 'ALL' ? 'Обучение на Bybit...' : 'Обучить все модели'}</span>
+            <span>{trainingBotId === 'ALL' ? 'Калибровка Bybit...' : 'Откалибровать все'}</span>
           </button>
 
           <button
@@ -818,7 +818,7 @@ export const AiArenaView: React.FC = () => {
             title="Форсировать цикл многофакторного анализа и генерацию сделки"
           >
             <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${tickingBot ? 'animate-spin text-cyan-400' : ''}`} />
-            <span>{tickingBot ? 'Тик ИИ...' : 'Сделать тик ИИ'}</span>
+            <span>{tickingBot ? 'Расчет...' : 'Цикл расчета'}</span>
           </button>
 
           <button
@@ -855,14 +855,14 @@ export const AiArenaView: React.FC = () => {
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-xs sm:text-sm font-bold text-white">
-                  Анализатор рыночных режимов & Детектор сдвига трендов (Cloud.ru Engine)
+                  Анализатор рыночных режимов & Детектор сдвига трендов
                 </h3>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-400/30">
                   Bybit V5 Linear
                 </span>
               </div>
               <p className="text-[11px] text-slate-400">
-                Поверхностный анализ макро-трендов 24ч, волатильности ATR и авто-рекомендации к дообучению нейро-ботов в Telegram
+                Мониторинг трендов 24ч, волатильности ATR и актуальности весов стратегий
               </p>
             </div>
           </div>
@@ -1000,11 +1000,11 @@ export const AiArenaView: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold text-white">
                     {trendAudit.isRetrainingRecommended
-                      ? '⚠️ РЕКОМЕНДУЕТСЯ ДООБУЧЕНИЕ МОДЕЛЕЙ НА НОВЫХ ДАННЫХ'
-                      : '✅ Веса нейросетей актуальны (рыночный режим стабилен)'}
+                      ? '⚠️ РЕКОМЕНДУЕТСЯ ПЕРЕКАЛИБРОВКА ВЕСОВ НА СВЕЖИХ ДАННЫХ'
+                      : '✅ Веса стратегий актуальны (рыночный режим стабилен)'}
                   </span>
                   <span className="text-[10px] font-mono text-slate-400">
-                    (обучение: {trendAudit.hoursSinceLastTrain}ч назад)
+                    (калибровка: {trendAudit.hoursSinceLastTrain}ч назад)
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-300 mt-0.5 leading-relaxed">
@@ -1027,7 +1027,7 @@ export const AiArenaView: React.FC = () => {
                   setTimeout(() => setCopiedCmd(false), 2000);
                 }}
                 className="px-3 py-1.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold rounded-lg text-xs font-mono transition flex items-center gap-1 shadow-sm shrink-0"
-                title="Скопировать готовую команду для терминала на Mac / Home PC"
+                title="Скопировать команду для терминала"
               >
                 {copiedCmd ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                 <span>{copiedCmd ? 'Скопировано!' : 'Команда для ПК'}</span>
@@ -1037,7 +1037,7 @@ export const AiArenaView: React.FC = () => {
         )}
       </div>
 
-      {/* Collapsible Inline News & Telegram Channels Manager right inside AI Arena */}
+      {/* Collapsible Inline News & Telegram Channels Manager */}
       {showNewsManager && (
         <div className="bg-slate-900/95 border border-cyan-500/40 rounded-2xl p-4 sm:p-5 space-y-4 shadow-xl">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
@@ -1047,17 +1047,17 @@ export const AiArenaView: React.FC = () => {
               </div>
               <div className="min-w-0">
                 <h3 className="text-xs sm:text-sm font-bold text-white">
-                  Источники новостей и Telegram-каналы для ИИ (TG Alpha Parser)
+                  Источники новостей и Telegram-каналы (TG Alpha Parser)
                 </h3>
                 <p className="text-[11px] text-slate-400">
-                  Добавьте ТГ-каналы (@channel), RSS или X-аккаунты — их сигналы напрямую формируют фактор Sentiment для всех ботов
+                  Подключенные ТГ-каналы (@channel), RSS и X-аккаунты формируют индекс Sentiment
                 </p>
               </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
               <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono text-slate-300">
-                Сентимент ИИ:{' '}
+                Индекс сентимента:{' '}
                 <strong className={weightedSentiment >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
                   {weightedSentiment >= 0 ? '+' : ''}
                   {(weightedSentiment * 100).toFixed(0)}%
@@ -1278,7 +1278,7 @@ export const AiArenaView: React.FC = () => {
                         <span>
                           {item.extractedSetup
                             ? `Распознан сетап: ${item.extractedSetup.side} @ $${item.extractedSetup.entryPrice} · SL $${item.extractedSetup.stopLoss} · TP1 $${item.extractedSetup.tp1}`
-                            : `Вклад в нейро-вес ИИ: ${Math.round((item.impactWeight || 0.8) * 100)}%`}
+                            : `Вес сигнала: ${Math.round((item.impactWeight || 0.8) * 100)}%`}
                         </span>
                         <span className="text-slate-500 shrink-0">
                           {new Date(item.timestamp).toLocaleTimeString()}
@@ -1504,7 +1504,7 @@ export const AiArenaView: React.FC = () => {
             {
               key: 'sent',
               metric: 'SENTIMENT_LLM',
-              label: 'Новости и сигналы Telegram (ИИ)',
+              label: 'Новости и сигналы Telegram',
               val: brain.weights.sentimentWeight,
               delta: brain.lastWeightDelta?.sentimentWeight || 0,
               barColor: 'bg-amber-400',
@@ -1605,15 +1605,15 @@ export const AiArenaView: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Neural Feature Weights & RL Brain Studio */}
+                {/* Feature Weights Studio */}
                 <div className="bg-slate-950/90 border border-slate-800 rounded-lg p-3 mb-3 space-y-2.5 font-mono text-xs tabular-nums">
                   <div className="flex flex-wrap items-center justify-between gap-1 border-b border-slate-800/80 pb-1.5">
                     <span className="text-[11px] font-bold text-cyan-300 flex items-center gap-1.5">
                       <Brain className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                      <span>На что бот смотрит перед сделкой (Веса ИИ)</span>
+                      <span>Веса факторов перед сделкой</span>
                     </span>
                     <span className="text-[10px] text-slate-400">
-                      Эпох: {brain.epochsTrained} · RL-шагов: {brain.onlineUpdatesCount}
+                      Циклов: {brain.epochsTrained} · Обновлений: {brain.onlineUpdatesCount}
                     </span>
                   </div>
 
@@ -1653,11 +1653,11 @@ export const AiArenaView: React.FC = () => {
                     })}
                   </div>
 
-                  {/* Cumulative RL Reward Sparkline */}
+                  {/* Cumulative Reward Sparkline */}
                   <div className="pt-1.5 border-t border-slate-800/70 space-y-1">
                     <div className="flex flex-wrap items-center justify-between gap-1 text-[10px]">
                       <MetricTooltip metric="REWARD_CURVE" value={brain.cumulativeReward}>
-                        <span className="text-slate-400">Кривая накопленной награды (RL Reward):</span>
+                        <span className="text-slate-400">Кривая накопленной результативности (R):</span>
                       </MetricTooltip>
                       <span
                         className={`font-bold ${
@@ -1674,7 +1674,7 @@ export const AiArenaView: React.FC = () => {
                   {/* Adaptive Hyperparameters Summary */}
                   <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-[10px] text-slate-400 pt-1 border-t border-slate-800/70">
                     <MetricTooltip metric="CONFIDENCE_THRESHOLD" value={brain.confidenceThreshold} showIcon={false}>
-                      <span>Порог ИИ: &ge;{brain.confidenceThreshold.toFixed(2)}</span>
+                      <span>Порог: &ge;{brain.confidenceThreshold.toFixed(2)}</span>
                     </MetricTooltip>
                     <span>·</span>
                     <MetricTooltip metric="ATR" value={brain.atrMultiplier} showIcon={false}>
@@ -1682,7 +1682,7 @@ export const AiArenaView: React.FC = () => {
                     </MetricTooltip>
                     <span>·</span>
                     <MetricTooltip metric="LEARNING_RATE" value={brain.learningRate} showIcon={false}>
-                      <span>LR &eta;={brain.learningRate.toFixed(3)}</span>
+                      <span>Шаг &eta;={brain.learningRate.toFixed(3)}</span>
                     </MetricTooltip>
                   </div>
                 </div>
@@ -1713,11 +1713,11 @@ export const AiArenaView: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Expandable Fine-Tuning & RL Hyperparameters Panel */}
+                {/* Expandable Fine-Tuning Panel */}
                 {isEditing && (
                   <div className="bg-slate-950 border border-cyan-500/40 rounded-lg p-3.5 mb-3 space-y-3 text-xs font-mono">
                     <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                      <span className="font-bold text-cyan-300">Настройка риска и гиперпараметров ИИ</span>
+                      <span className="font-bold text-cyan-300">Настройка риска и параметров стратегии</span>
                       <button
                         type="button"
                         onClick={() => setEditingBotId(null)}
@@ -1752,7 +1752,7 @@ export const AiArenaView: React.FC = () => {
                       <div>
                         <MetricTooltip metric="CONFIDENCE_THRESHOLD" value={draft.confidenceThreshold} className="mb-1">
                           <label htmlFor={`thresh-${agent.agentId}`} className="text-slate-400 text-[11px] cursor-help">
-                            Порог входа ИИ (0.12–0.50)
+                            Порог входа (0.12–0.50)
                           </label>
                         </MetricTooltip>
                         <input
@@ -1941,7 +1941,7 @@ export const AiArenaView: React.FC = () => {
                         disabled={savingBotId === agent.agentId}
                         onClick={() => handleResetBrain(agent.agentId, agent.name)}
                         className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition flex items-center gap-1 border border-slate-700"
-                        title="Сбросить нейро-веса к заводским значениям"
+                        title="Сбросить веса факторов к заводским значениям"
                       >
                         <RotateCcw className="w-3.5 h-3.5" />
                         <span>Сброс весов</span>
@@ -2009,17 +2009,17 @@ export const AiArenaView: React.FC = () => {
                     disabled={isTrainingThis}
                     onClick={() => handleTrainEpoch(agent.agentId, agent.name)}
                     className="flex-1 min-w-[140px] py-2 px-2.5 bg-cyan-950/80 hover:bg-cyan-900 text-cyan-300 text-xs font-mono font-semibold rounded-lg transition flex items-center justify-center gap-1.5 border border-cyan-500/40"
-                    title="Запустить обучение эпохи на реальных свечах Bybit V5 (5m)"
+                    title="Запустить калибровку на реальных свечах Bybit V5 (5m)"
                   >
                     <Sparkles className={`w-3.5 h-3.5 shrink-0 ${isTrainingThis ? 'animate-spin' : 'text-cyan-400'}`} />
-                    <span>{isTrainingThis ? 'Обучение...' : 'Обучить эпоху'}</span>
+                    <span>{isTrainingThis ? 'Калибровка...' : 'Калибровать'}</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => setEditingBotId(isEditing ? null : agent.agentId)}
                     className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-mono font-semibold rounded-lg transition flex items-center justify-center gap-1 border border-slate-700"
-                    title="Настроить риск, порог уверенности ИИ, ATR стоп и торговые пары"
+                    title="Настроить риск, порог входа, ATR стоп и торговые пары"
                   >
                     <Sliders className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
                     <span>{isEditing ? 'Скрыть' : 'Параметры'}</span>
@@ -2030,7 +2030,7 @@ export const AiArenaView: React.FC = () => {
                     disabled={botOpenPositions.length === 0 || closingBotId === agent.agentId}
                     onClick={() => handleCloseBotPositions(agent.agentId, agent.name)}
                     className="px-2.5 py-2 bg-slate-800 hover:bg-rose-950/80 hover:text-rose-300 text-slate-300 text-xs font-mono font-semibold rounded-lg transition flex items-center justify-center gap-1 border border-slate-700 disabled:opacity-40"
-                    title="Принудительно закрыть все открытые позиции этого бота и обновить веса RL"
+                    title="Принудительно закрыть все открытые позиции этой стратегии"
                   >
                     <XCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
                     <span>({botOpenPositions.length})</span>
@@ -2058,7 +2058,7 @@ export const AiArenaView: React.FC = () => {
         })}
       </div>
 
-      {/* Bottom Studio: Explainable AI (XAI) Decision Journal & Raw Bot Logs */}
+      {/* Bottom Studio: Decision Journal & Raw Bot Logs */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 sm:p-5 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -2072,7 +2072,7 @@ export const AiArenaView: React.FC = () => {
               }`}
             >
               <Activity className="w-3.5 h-3.5 shrink-0" />
-              <span>Explainable AI (XAI): Факторы ({xaiDecisions.length})</span>
+              <span>Журнал решений: Факторы ({xaiDecisions.length})</span>
             </button>
 
             <button
@@ -2091,7 +2091,7 @@ export const AiArenaView: React.FC = () => {
 
           {bottomTab === 'XAI' && (
             <div className="flex items-center gap-1.5 text-xs font-mono">
-              <span className="text-slate-400">Фильтр ИИ:</span>
+              <span className="text-slate-400">Фильтр:</span>
               <button
                 type="button"
                 onClick={() => setSelectedXaiBot('ALL')}
@@ -2216,7 +2216,7 @@ export const AiArenaView: React.FC = () => {
                       </div>
 
                       <div>
-                        <span className="text-slate-400 block text-[10px]">4. Сентимент TG / LLM</span>
+                        <span className="text-slate-400 block text-[10px]">4. Сентимент TG</span>
                         <span className="text-white font-semibold">
                           Sent: {item.factors.sentiment >= 0 ? '+' : ''}
                           {item.factors.sentiment.toFixed(2)}
@@ -2228,17 +2228,17 @@ export const AiArenaView: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Post-Trade RL Outcome Feedback if trade closed */}
+                    {/* Post-Trade Outcome Feedback if trade closed */}
                     {item.rlOutcome && (
                       <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px] text-emerald-300 bg-emerald-950/25 border border-emerald-500/30 rounded px-2.5 py-1.5">
                         <div className="flex items-center gap-2">
                           <Brain className="w-3.5 h-3.5 text-emerald-400" />
                           <span>
-                            Обратная связь RL после закрытия ({item.rlOutcome.exitReason}): Чистый PnL{' '}
+                            Результат после закрытия ({item.rlOutcome.exitReason}): Чистый PnL{' '}
                             <strong>
                               {item.rlOutcome.netPnlUsdt >= 0 ? '+' : ''}${item.rlOutcome.netPnlUsdt.toFixed(2)} USDT
                             </strong>{' '}
-                            · Награда{' '}
+                            · Результат{' '}
                             <strong>
                               {item.rlOutcome.reward >= 0 ? '+' : ''}
                               {item.rlOutcome.reward.toFixed(2)}R
@@ -2261,7 +2261,7 @@ export const AiArenaView: React.FC = () => {
               })
             ) : (
               <div className="text-slate-500 text-center py-6 text-xs font-mono">
-                Нажмите «Сделать тик ИИ», чтобы сгенерировать свежую декомпозицию признаков Explainable AI...
+                Нажмите «Цикл расчета», чтобы сформировать новую запись в журнале решений...
               </div>
             )}
           </div>
@@ -2295,7 +2295,7 @@ export const AiArenaView: React.FC = () => {
                           : 'text-amber-300'
                       }`}
                     >
-                      {isEntry ? 'ВХОД' : isTp ? 'ТЕЙК' : isSl ? 'СТОП' : isLimit ? 'ЛИМИТ' : 'RL / СИСТЕМА'}
+                      {isEntry ? 'ВХОД' : isTp ? 'ТЕЙК' : isSl ? 'СТОП' : isLimit ? 'ЛИМИТ' : 'СИСТЕМА'}
                     </span>
 
                     <span className="text-cyan-400 font-bold flex-shrink-0">{log.botName}:</span>

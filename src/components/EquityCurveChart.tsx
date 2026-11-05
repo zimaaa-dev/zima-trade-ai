@@ -198,7 +198,7 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({
         <div className="text-white font-semibold text-xs leading-snug">{row.label}</div>
         {row.botName && (
           <div className="text-[11px] text-cyan-400 flex items-center gap-1.5">
-            <span>ИИ-Агент:</span>
+            <span>Стратегия:</span>
             <strong className="text-cyan-300">{row.botName}</strong>
           </div>
         )}

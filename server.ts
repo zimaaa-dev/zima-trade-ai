@@ -740,7 +740,7 @@ const systemState: AppSystemState = {
   agents: [
     {
       agentId: 'agent-onnx-ppo-v2',
-      name: 'ONNX PyTorch RL (PPO+LSTM)',
+      name: 'Delta-L2 · Стакан и Объемы',
       engineType: 'ONNX_RL',
       mode: 'LIVE',
       sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
@@ -760,7 +760,7 @@ const systemState: AppSystemState = {
     },
     {
       agentId: 'agent-lgbm-nightly',
-      name: 'LightGBM Nightly L2 Momentum',
+      name: 'Momentum · Импульсный Скальпер',
       engineType: 'LIGHTGBM',
       mode: 'QUARANTINE',
       sha256: 'a1f89bc321c10940982df4c8996fb92427ae41e4649b934ca495991b7852b112',
@@ -780,7 +780,7 @@ const systemState: AppSystemState = {
     },
     {
       agentId: 'agent-tg-crypto-alpha',
-      name: 'TG Channel Alpha Parser Agent',
+      name: 'Alpha-Signal · Индекс Каналов',
       engineType: 'TG_CHANNEL',
       mode: 'LIVE',
       sha256: '7c89a24198fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852e401',
@@ -805,7 +805,7 @@ const systemState: AppSystemState = {
     botUsername: DEFAULT_TG_BOT_USERNAME,
     verified: true,
     botId: 9239315632,
-    botFirstName: 'ZimaTrade AI Bot',
+    botFirstName: 'ZimaTrade Bot',
     lastCheckedAt: Date.now(),
     lastUpdateOffset: 0,
     lastError: null,
@@ -835,7 +835,7 @@ const systemState: AppSystemState = {
         timestamp: Date.now() - 120000,
         category: 'OPEN',
         title: '🟢 ОТКРЫТА СДЕЛКА · BTCUSDT LONG 10x',
-        textPreview: 'ONNX PyTorch RL открыл позицию LONG BTCUSDT по $68,420.5 (SL $67,420, TP1 $69,500). ИИ-оценка: +0.34.',
+        textPreview: 'Delta-L2 · Стакан и Объемы открыл позицию LONG BTCUSDT по $68,420.5 (SL $67,420, TP1 $69,500). Оценка сигнала: +0.34.',
         symbol: 'BTCUSDT',
         deliveredCount: 1,
         status: 'DELIVERED',
@@ -845,7 +845,7 @@ const systemState: AppSystemState = {
         timestamp: Date.now() - 65000,
         category: 'SIGNAL',
         title: '📡 НОВЫЙ СИГНАЛ · @crypto_alpha_vip (#BTCUSDT)',
-        textPreview: 'Парсер обработал сигнал #BTCUSDT LONG (Entry: $68,450, SL: $67,600, TP1: $69,800). Сентимент: +78% БЫЧИЙ.',
+        textPreview: 'Парсер обработал сигнал #BTCUSDT LONG (Entry: $68,450, SL: $67,600, TP1: $69,800). Индекс: +78% БЫЧИЙ.',
         symbol: 'BTCUSDT',
         deliveredCount: 1,
         status: 'DELIVERED',
@@ -858,8 +858,8 @@ const systemState: AppSystemState = {
       timestamp: Date.now() - 45000,
       category: 'SYSTEM_UPDATE',
       severity: 'SUCCESS',
-      title: '🟢 Ядро ZimaTrade AI онлайн',
-      message: 'Все подсистемы активны: Bybit L2-50, Risk Firewall, PPO LSTM Policy и умный Telegram-шлюз.',
+      title: '🟢 Терминал ZimaTrade активен',
+      message: 'Подсистемы синхронизированы: Bybit L2-50, Risk Firewall, алгоритмические стратегии и Telegram-шлюз.',
       readInApp: false,
       telegramStatus: 'DELIVERED',
       deliveredToTelegramAt: Date.now() - 45000,
@@ -907,6 +907,71 @@ function savePersistedState(): void {
   }
 }
 
+const CLEAN_AGENT_NAMES: Record<string, string> = {
+  'agent-onnx-ppo-v2': 'Delta-L2 · Стакан и Объемы',
+  'agent-lgbm-nightly': 'Momentum · Импульсный Скальпер',
+  'agent-tg-crypto-alpha': 'Alpha-Signal · Индекс Каналов',
+};
+
+export function sanitizeBotName(agentId?: string, currentName?: string): string {
+  if (agentId && CLEAN_AGENT_NAMES[agentId]) {
+    return CLEAN_AGENT_NAMES[agentId];
+  }
+  const raw = String(currentName || '').trim();
+  if (!raw) return 'Торговый алгоритм';
+  return sanitizeCleanText(raw);
+}
+
+export function sanitizeCleanText(input?: string): string {
+  if (!input || typeof input !== 'string') return '';
+  return input
+    .replace(/\[Ollama Cloud\s*\/[^\]]*\]:\s*/gi, '')
+    .replace(/ONNX PyTorch RL \(PPO\+LSTM\)/gi, 'Delta-L2 · Стакан и Объемы')
+    .replace(/ONNX PyTorch RL Agent/gi, 'Delta-L2 · Стакан и Объемы')
+    .replace(/ONNX PyTorch RL/gi, 'Delta-L2 · Стакан и Объемы')
+    .replace(/ONNX RL/gi, 'Delta-L2 · Стакан и Объемы')
+    .replace(/PPO LSTM Policy/gi, 'Алгоритмические стратегии')
+    .replace(/LightGBM Nightly L2 Momentum/gi, 'Momentum · Импульсный Скальпер')
+    .replace(/LightGBM Micro-Scalper/gi, 'Momentum · Импульсный Скальпер')
+    .replace(/LightGBM/gi, 'Momentum · Скальпер')
+    .replace(/TG Channel Alpha Parser Agent/gi, 'Alpha-Signal · Индекс Каналов')
+    .replace(/DeepSeek LLM Sentiment Agent/gi, 'Alpha-Signal · Индекс Каналов')
+    .replace(/TG Alpha Parser/gi, 'Alpha-Signal · Парсер')
+    .replace(/ZimaTrade AI Bot/gi, 'ZimaTrade Bot')
+    .replace(/ZimaTrade AI/gi, 'ZimaTrade')
+    .replace(/ИИ открыл сделку:/gi, 'Открыта сделка:')
+    .replace(/ИИ-оценка:/gi, 'Оценка сигнала:')
+    .replace(/Сентимент ИИ:/gi, 'Индекс сентимента:')
+    .replace(/Вектор ИИ/gi, 'Сигнал')
+    .replace(/порога ИИ/gi, 'порога сигнала')
+    .replace(/Порог ИИ/gi, 'Порог')
+    .replace(/Нейро-боты ИИ-Арены/gi, 'Торговые боты')
+    .replace(/ИИ-Арены/gi, 'системы')
+    .replace(/ИИ-Арена/gi, 'Торговые боты')
+    .replace(/Обучение ИИ:/gi, 'Калибровка параметров:')
+    .replace(/ЭПОХА ОБУЧЕНИЯ ИИ ЗАВЕРШЕНА/gi, 'КАЛИБРОВКА ПАРАМЕТРОВ ЗАВЕРШЕНА')
+    .replace(/РЕКОМЕНДАЦИЯ К ДООБУЧЕНИЮ ИИ-БОТОВ/gi, 'РЕКОМЕНДАЦИЯ К ПЕРЕКАЛИБРОВКЕ СТРАТЕГИЙ')
+    .replace(/Рекомендация к дообучению ИИ-ботов/gi, 'Рекомендация к перекалибровке стратегий')
+    .replace(/Рекомендация дообучить ИИ:/gi, 'Рекомендация перекалибровки:')
+    .replace(/нейро-агентам/gi, 'торговым ботам')
+    .replace(/Нейро-боты/gi, 'Торговые боты')
+    .replace(/нейро-боты/gi, 'торговые боты')
+    .replace(/нейро-ботов/gi, 'торговых ботов')
+    .replace(/ИИ-боты/gi, 'Торговые боты')
+    .replace(/ИИ-ботов/gi, 'торговых ботов')
+    .replace(/ИИ-ботам/gi, 'торговым ботам')
+    .replace(/ИИ-бот/gi, 'Торговый бот')
+    .replace(/нейро-веса/gi, 'веса факторов')
+    .replace(/Нейро-веса/gi, 'Веса факторов')
+    .replace(/веса ИИ/gi, 'параметры стратегий')
+    .replace(/RL-Адаптация весов/gi, 'Адаптация весов')
+    .replace(/Веса RL скорректированы/gi, 'Веса скорректированы')
+    .replace(/Подкрепление весов RL выполнено/gi, 'Обновление весов выполнено')
+    .replace(/Эпоха #/gi, 'Цикл #')
+    .replace(/эпоха #/gi, 'цикл #')
+    .replace(/\bИИ\b/g, 'алгоритма');
+}
+
 function loadPersistedState(): void {
   try {
     if (fs.existsSync(PERSIST_FILE)) {
@@ -919,15 +984,26 @@ function loadPersistedState(): void {
       if (typeof parsed.lastUnblockedAt === 'number') systemState.lastUnblockedAt = parsed.lastUnblockedAt;
       if (typeof parsed.isKillSwitchActive === 'boolean') systemState.isKillSwitchActive = parsed.isKillSwitchActive;
       if (parsed.killSwitchTriggerReason !== undefined) systemState.killSwitchTriggerReason = parsed.killSwitchTriggerReason;
-      if (Array.isArray(parsed.activePositions)) systemState.activePositions = parsed.activePositions;
+      if (Array.isArray(parsed.activePositions)) {
+        systemState.activePositions = parsed.activePositions.map((p: any) => ({
+          ...p,
+          botName: p.botName ? sanitizeBotName(p.botId, p.botName) : p.botName,
+        }));
+      }
       if (Array.isArray(parsed.limitOrdersQueue)) systemState.limitOrdersQueue = parsed.limitOrdersQueue;
       
       if (Array.isArray(parsed.closedTrades)) {
-        systemState.closedTrades = parsed.closedTrades;
+        systemState.closedTrades = parsed.closedTrades.map((t: any) => ({
+          ...t,
+          botName: sanitizeBotName(t.botId, t.botName),
+        }));
       }
 
       if (Array.isArray(parsed.walletLedger)) {
-        systemState.walletLedger = parsed.walletLedger;
+        systemState.walletLedger = parsed.walletLedger.map((l: any) => ({
+          ...l,
+          description: sanitizeCleanText(l.description),
+        }));
       }
 
       if (systemState.closedTrades.length > 0) {
@@ -940,13 +1016,26 @@ function loadPersistedState(): void {
         systemState.rolling24hPnlUsdt = 0.0;
       }
       if (Array.isArray(parsed.botTradeLogs)) {
-        systemState.botTradeLogs = parsed.botTradeLogs;
+        systemState.botTradeLogs = parsed.botTradeLogs.map((log: any) => ({
+          ...log,
+          botName: sanitizeBotName(log.botId, log.botName),
+          message: sanitizeCleanText(log.message),
+        }));
       }
       if (Array.isArray(parsed.xaiDecisions)) {
-        systemState.xaiDecisions = parsed.xaiDecisions;
+        systemState.xaiDecisions = parsed.xaiDecisions.map((d: any) => ({
+          ...d,
+          botName: sanitizeBotName(d.botId, d.botName),
+          reasonSummary: sanitizeCleanText(d.reasonSummary),
+        }));
       }
       if (Array.isArray(parsed.notifications)) {
-        systemState.notifications = parsed.notifications;
+        systemState.notifications = parsed.notifications.map((n: any) => ({
+          ...n,
+          title: sanitizeCleanText(n.title),
+          message: sanitizeCleanText(n.message),
+          botName: n.botName ? sanitizeBotName(undefined, n.botName) : undefined,
+        }));
       }
       if (Array.isArray(parsed.channels) && parsed.channels.length > 0) {
         systemState.channels = parsed.channels;
@@ -966,11 +1055,16 @@ function loadPersistedState(): void {
           : systemState.telegramBot.subscribers;
         const validSubs = rawSubs.filter((s: any) => s && isValidTelegramChatId(s.chatId));
 
+        const rawRecent = Array.isArray(parsed.telegramBot.recentMessages)
+          ? parsed.telegramBot.recentMessages
+          : systemState.telegramBot.recentMessages;
+
         systemState.telegramBot = {
           ...systemState.telegramBot,
           ...parsed.telegramBot,
           botToken: sanitizedToken,
           botUsername: sanitizedUsername.startsWith('@') ? sanitizedUsername : `@${sanitizedUsername}`,
+          botFirstName: sanitizeCleanText(parsed.telegramBot.botFirstName || 'ZimaTrade Bot'),
           verified: isValidTelegramBotToken(sanitizedToken) ? Boolean(parsed.telegramBot.verified ?? true) : false,
           lastError: isValidTelegramBotToken(sanitizedToken) ? null : parsed.telegramBot.lastError || null,
           toggles: {
@@ -978,9 +1072,11 @@ function loadPersistedState(): void {
             ...(parsed.telegramBot.toggles || {}),
           },
           subscribers: validSubs,
-          recentMessages: Array.isArray(parsed.telegramBot.recentMessages)
-            ? parsed.telegramBot.recentMessages
-            : systemState.telegramBot.recentMessages,
+          recentMessages: rawRecent.map((m: any) => ({
+            ...m,
+            title: sanitizeCleanText(m.title),
+            textPreview: sanitizeCleanText(m.textPreview),
+          })),
         };
       }
       if (Array.isArray(parsed.agents) && parsed.agents.length > 0) {
@@ -992,17 +1088,24 @@ function loadPersistedState(): void {
             Array.isArray(saved.brain?.rewardHistory) &&
             saved.brain.rewardHistory.length === 4 &&
             saved.brain.rewardHistory[0]?.reward === 0.45;
+          const rawHistory = hasLegacyIdenticalCurve
+            ? freshDefaultBrain.rewardHistory
+            : saved.brain?.rewardHistory || freshDefaultBrain.rewardHistory;
           return {
             ...defaultAgent,
             ...saved,
+            name: sanitizeBotName(defaultAgent.agentId, saved.name),
             brain: saved.brain
               ? {
                   ...freshDefaultBrain,
                   ...saved.brain,
                   weights: normalizeWeights(saved.brain.weights || defaultAgent.brain.weights),
-                  rewardHistory: hasLegacyIdenticalCurve
-                    ? freshDefaultBrain.rewardHistory
-                    : saved.brain.rewardHistory || freshDefaultBrain.rewardHistory,
+                  rewardHistory: Array.isArray(rawHistory)
+                    ? rawHistory.map((pt: any) => ({
+                        ...pt,
+                        label: sanitizeCleanText(pt.label),
+                      }))
+                    : freshDefaultBrain.rewardHistory,
                   cumulativeReward: hasLegacyIdenticalCurve
                     ? freshDefaultBrain.cumulativeReward
                     : saved.brain.cumulativeReward ?? freshDefaultBrain.cumulativeReward,
@@ -1014,6 +1117,7 @@ function loadPersistedState(): void {
       if (typeof parsed.savedAt === 'number') {
         lastSavedAtTs = parsed.savedAt;
       }
+      savePersistedState();
     } else {
       savePersistedState();
     }
@@ -1284,7 +1388,11 @@ export async function dispatchTelegramNotification(params: {
   let deliveredCount = 0;
   let lastErr: string | undefined;
 
-  const fullHtml = `<b>${params.title}</b>\n\n${params.htmlBody}\n\n<code>ZimaTrade AI · ${tg.botUsername}</code>`;
+  const cleanTitle = sanitizeCleanText(params.title);
+  const cleanHtmlBody = sanitizeCleanText(params.htmlBody);
+  const cleanPlainPreview = sanitizeCleanText(params.plainPreview);
+
+  const fullHtml = `<b>${cleanTitle}</b>\n\n${cleanHtmlBody}\n\n<code>ZimaTrade · ${tg.botUsername}</code>`;
 
   if (tg.subscribers.length > 0) {
     for (const sub of tg.subscribers) {
@@ -1309,8 +1417,8 @@ export async function dispatchTelegramNotification(params: {
     id: `tg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     timestamp: Date.now(),
     category: params.category,
-    title: params.title,
-    textPreview: params.plainPreview,
+    title: cleanTitle,
+    textPreview: cleanPlainPreview,
     symbol: params.symbol,
     deliveredCount,
     status,
@@ -1342,6 +1450,10 @@ export function emitAppNotification(params: {
     params.category === 'STOP_LOSS'
   );
 
+  const cleanTitle = sanitizeCleanText(params.title);
+  const cleanMessage = sanitizeCleanText(params.message);
+  const cleanBotName = params.botName ? sanitizeBotName(undefined, params.botName) : undefined;
+
   const now = Date.now();
   const id = `notif-${now}-${Math.random().toString(36).slice(2, 6)}`;
   const notif: AppNotification = {
@@ -1349,10 +1461,10 @@ export function emitAppNotification(params: {
     timestamp: now,
     category: params.category,
     severity: params.severity,
-    title: params.title,
-    message: params.message,
+    title: cleanTitle,
+    message: cleanMessage,
     symbol: params.symbol,
-    botName: params.botName,
+    botName: cleanBotName,
     pnl: params.pnl,
     readInApp: false,
     telegramStatus: isUrgent ? 'DIRECT_SENT' : 'PENDING_DELAY',
@@ -1376,9 +1488,9 @@ export function emitAppNotification(params: {
 
     dispatchTelegramNotification({
       category: tgCat,
-      title: `${params.severity === 'CRITICAL' ? '🚨' : '🛡️'} ${params.title}`,
-      htmlBody: `${params.message}${params.symbol ? `\n• <b>Инструмент:</b> #${params.symbol}` : ''}${params.botName ? `\n• <b>Бот:</b> ${params.botName}` : ''}${params.pnl !== undefined ? `\n• <b>Итог PnL:</b> ${params.pnl >= 0 ? '+' : ''}$${params.pnl.toFixed(2)} USDT` : ''}`,
-      plainPreview: `${params.title}: ${params.message}`,
+      title: `${params.severity === 'CRITICAL' ? '🚨' : '🛡️'} ${cleanTitle}`,
+      htmlBody: `${cleanMessage}${params.symbol ? `\n• <b>Инструмент:</b> #${params.symbol}` : ''}${cleanBotName ? `\n• <b>Стратегия:</b> ${cleanBotName}` : ''}${params.pnl !== undefined ? `\n• <b>Итог PnL:</b> ${params.pnl >= 0 ? '+' : ''}$${params.pnl.toFixed(2)} USDT` : ''}`,
+      plainPreview: `${cleanTitle}: ${cleanMessage}`,
       isManualOrUrgent: true,
     }).catch(() => {});
   }
@@ -1418,7 +1530,7 @@ export async function processDelayedTelegramNotifications(): Promise<number> {
       dispatchTelegramNotification({
         category: tgCat,
         title: `${icon} ${notif.title}`,
-        htmlBody: `${notif.message}${notif.symbol ? `\n• <b>Инструмент:</b> #${notif.symbol}` : ''}${notif.botName ? `\n• <b>Бот:</b> ${notif.botName}` : ''}${notif.pnl !== undefined ? `\n• <b>Итог PnL:</b> ${notif.pnl >= 0 ? '+' : ''}$${notif.pnl.toFixed(2)} USDT` : ''}\n\n<i>⏳ Авто-эскалация в Telegram (не подтверждено в UI за 25 сек)</i>`,
+        htmlBody: `${notif.message}${notif.symbol ? `\n• <b>Инструмент:</b> #${notif.symbol}` : ''}${notif.botName ? `\n• <b>Стратегия:</b> ${notif.botName}` : ''}${notif.pnl !== undefined ? `\n• <b>Итог PnL:</b> ${notif.pnl >= 0 ? '+' : ''}$${notif.pnl.toFixed(2)} USDT` : ''}`,
         plainPreview: `${notif.title}: ${notif.message}`,
         symbol: notif.symbol,
         isManualOrUrgent: false,
@@ -1435,16 +1547,16 @@ export async function processDelayedTelegramNotifications(): Promise<number> {
 function buildTelegramCommandReply(cmd: string, chatIdStr: string, firstName: string): string | null {
   const equity = (systemState.capitalUsdt + systemState.totalRealizedPnlUsdt).toFixed(2);
   if (cmd === '/start') {
-    return `✅ <b>ZimaTrade AI подключен!</b>\n\nВаш Chat ID: <code>${chatIdStr}</code> успешно привязан к боевому терминалу.\n\n💰 <b>Баланс портфеля:</b> $${equity} USDT\n📊 <b>Активных позиций:</b> ${systemState.activePositions.length}\n🤖 <b>Режим:</b> ${systemState.mode === 'LIVE' ? 'LIVE (Боевой)' : 'SHADOW (Форвард-тест Bybit L2)'}\n\n<b>Доступные команды:</b>\n/status — Баланс, PnL 24ч и риск-статус\n/positions — Открытые сделки\n/bots — Статистика ИИ-ботов\n/kill — Аварийный Стоп-Кран (Kill-Switch)`;
+    return `✅ <b>ZimaTrade подключен!</b>\n\nВаш Chat ID: <code>${chatIdStr}</code> привязан к торговому терминалу.\n\n💰 <b>Баланс портфеля:</b> $${equity} USDT\n📊 <b>Активных позиций:</b> ${systemState.activePositions.length}\n⚙️ <b>Режим:</b> ${systemState.mode === 'LIVE' ? 'LIVE (Боевой)' : 'SHADOW (Форвард-тест Bybit L2)'}\n\n<b>Доступные команды:</b>\n/status — Баланс, PnL 24ч и риск-статус\n/positions — Открытые сделки\n/bots — Статистика торговых стратегий\n/kill — Аварийный Стоп-Кран (Kill-Switch)`;
   }
   if (cmd === '/status' || cmd === '/balance') {
     recalculateRolling24hPnl();
     const ddPct = ((systemState.rolling24hPnlUsdt / systemState.capitalUsdt) * 100).toFixed(2);
-    return `📊 <b>Статус терминала ZimaTrade AI</b>\n\n• Капитал: <b>$${equity} USDT</b>\n• Реализованный PnL: <b>${systemState.totalRealizedPnlUsdt >= 0 ? '+' : ''}$${systemState.totalRealizedPnlUsdt.toFixed(2)}</b>\n• 24ч PnL: <b>${systemState.rolling24hPnlUsdt >= 0 ? '+' : ''}$${systemState.rolling24hPnlUsdt.toFixed(2)} (${ddPct}%)</b>\n• Открытых сделок: <b>${systemState.activePositions.length}</b>\n• Стоп-Кран (Kill-Switch): <b>${systemState.isKillSwitchActive ? '🚨 АКТИВЕН' : '🟢 НОРМА'}</b>\n• Пинг Bybit V5: <b>${systemState.pings.bybit} мс</b>`;
+    return `📊 <b>Статус терминала ZimaTrade</b>\n\n• Капитал: <b>$${equity} USDT</b>\n• Реализованный PnL: <b>${systemState.totalRealizedPnlUsdt >= 0 ? '+' : ''}$${systemState.totalRealizedPnlUsdt.toFixed(2)}</b>\n• 24ч PnL: <b>${systemState.rolling24hPnlUsdt >= 0 ? '+' : ''}$${systemState.rolling24hPnlUsdt.toFixed(2)} (${ddPct}%)</b>\n• Открытых сделок: <b>${systemState.activePositions.length}</b>\n• Стоп-Кран (Kill-Switch): <b>${systemState.isKillSwitchActive ? '🚨 АКТИВЕН' : '🟢 НОРМА'}</b>\n• Пинг Bybit V5: <b>${systemState.pings.bybit} мс</b>`;
   }
   if (cmd === '/positions') {
     if (systemState.activePositions.length === 0) {
-      return `📭 <b>Открытых позиций сейчас нет.</b> ИИ-боты сканируют стакан L2 Bybit.`;
+      return `📭 <b>Открытых позиций сейчас нет.</b> Алгоритмы сканируют стакан L2 Bybit.`;
     }
     const lines = systemState.activePositions.map(
       (p, idx) =>
@@ -1455,9 +1567,9 @@ function buildTelegramCommandReply(cmd: string, chatIdStr: string, firstName: st
   if (cmd === '/bots') {
     const lines = systemState.agents.map(
       (a) =>
-        `• <b>${a.name}</b>: Sharpe <b>${a.sharpeRatio.toFixed(2)}</b> | PF <b>x${a.profitFactor.toFixed(2)}</b> | Reward <b>+${(a.brain?.cumulativeReward ?? 0).toFixed(2)}R</b>`
+        `• <b>${sanitizeBotName(a.agentId, a.name)}</b>: Sharpe <b>${a.sharpeRatio.toFixed(2)}</b> | PF <b>x${a.profitFactor.toFixed(2)}</b> | Индекс <b>+${(a.brain?.cumulativeReward ?? 0).toFixed(2)}R</b>`
     );
-    return `🤖 <b>Нейро-боты ИИ-Арены:</b>\n\n${lines.join('\n')}`;
+    return `⚙️ <b>Торговые стратегии:</b>\n\n${lines.join('\n')}`;
   }
   if (cmd === '/kill') {
     systemState.isKillSwitchActive = true;
@@ -1658,14 +1770,14 @@ async function runProductionTelegramRelayBridge(): Promise<void> {
 
             let replyHtml = '';
             if (cmd === '/start') {
-              replyHtml = `✅ <b>Боевой сервер ZimaTrade AI (194.113.34.230) подключен!</b>\n\nВаш Chat ID: <code>${chatIdStr}</code> успешно привязан к боевому ядру.\n\n💰 <b>Баланс портфеля:</b> $${eq} USDT\n📊 <b>Активных позиций:</b> ${prodPositions.length}\n🤖 <b>Режим:</b> ${modeStr === 'LIVE' ? 'LIVE (Боевой)' : 'SHADOW (Форвард-тест Bybit L2)'}\n\n<b>Доступные команды:</b>\n/status — Баланс, PnL 24ч и риск-статус\n/positions — Открытые сделки на сервере\n/bots — Статистика ИИ-ботов\n/kill — Аварийный Стоп-Кран (Kill-Switch)`;
+              replyHtml = `✅ <b>Боевой сервер ZimaTrade (194.113.34.230) подключен!</b>\n\nВаш Chat ID: <code>${chatIdStr}</code> успешно привязан к боевому ядру.\n\n💰 <b>Баланс портфеля:</b> $${eq} USDT\n📊 <b>Активных позиций:</b> ${prodPositions.length}\n⚙️ <b>Режим:</b> ${modeStr === 'LIVE' ? 'LIVE (Боевой)' : 'SHADOW (Форвард-тест Bybit L2)'}\n\n<b>Доступные команды:</b>\n/status — Баланс, PnL 24ч и риск-статус\n/positions — Открытые сделки на сервере\n/bots — Статистика торговых стратегий\n/kill — Аварийный Стоп-Кран (Kill-Switch)`;
             } else if (cmd === '/status' || cmd === '/balance') {
               const p24 = Number(prodHealth?.rolling24hPnlUsdt || 0);
               const dd = Number(prodHealth?.drawdownPct || 0).toFixed(2);
               replyHtml = `📊 <b>Статус боевого сервера (194.113.34.230)</b>\n\n• Капитал: <b>$${eq} USDT</b>\n• Реализованный PnL: <b>${realPnl >= 0 ? '+' : ''}$${Number(realPnl).toFixed(2)}</b>\n• 24ч PnL: <b>${p24 >= 0 ? '+' : ''}$${p24.toFixed(2)} (${dd}%)</b>\n• Открытых сделок: <b>${prodPositions.length}</b>\n• Стоп-Кран (Kill-Switch): <b>${prodHealth?.isKillSwitchActive ? '🚨 АКТИВЕН' : '🟢 НОРМА'}</b>`;
             } else if (cmd === '/positions') {
               if (prodPositions.length === 0) {
-                replyHtml = `📭 <b>На боевом сервере сейчас нет открытых позиций.</b> ИИ-боты сканируют стакан L2 Bybit.`;
+                replyHtml = `📭 <b>На боевом сервере сейчас нет открытых позиций.</b> Алгоритмы сканируют стакан L2 Bybit.`;
               } else {
                 const lines = prodPositions.map(
                   (p: any, idx: number) =>
@@ -1688,7 +1800,7 @@ async function runProductionTelegramRelayBridge(): Promise<void> {
             if (replyHtml) {
               await callTelegramApi(token, 'sendMessage', {
                 chat_id: chatIdStr,
-                text: replyHtml,
+                text: sanitizeCleanText(replyHtml),
                 parse_mode: 'HTML',
                 disable_web_page_preview: true,
               });
@@ -1714,7 +1826,7 @@ async function runProductionTelegramRelayBridge(): Promise<void> {
         relayedProdMessageIds.add(m.id);
 
         if (m.status === 'API_ERROR' || m.deliveredCount === 0) {
-          const relayHtml = `<b>${m.title || '🔔 Уведомление ZimaTrade AI'}</b>\n\n${m.textPreview || ''}\n\n<code>ZimaTrade AI · 194.113.34.230 · @zimatradeai_bot</code>`;
+          const relayHtml = `<b>${sanitizeCleanText(m.title || '🔔 Уведомление ZimaTrade')}</b>\n\n${sanitizeCleanText(m.textPreview || '')}\n\n<code>ZimaTrade · 194.113.34.230 · @zimatradeai_bot</code>`;
           for (const sub of prodSubs) {
             await callTelegramApi(token, 'sendMessage', {
               chat_id: sub.chatId,
@@ -2335,23 +2447,21 @@ function buildFullSystemHealthPayload() {
         shm_buffer_kb: 512,
       },
       nodeB: {
-        name: 'Node B: GPU Forge (Ryzen 5 5600X, 8GB GPU)',
+        name: 'Node B: Модуль калибровки весов',
         status: 'STANDBY',
         sync_limit_mbps: 5.0,
         last_export_sha: `${(systemState.agents[0]?.sha256 || 'e3b0c44298fc1c14').slice(0, 16)}...`,
       },
       nodeC: {
-        name: 'Node C: Ollama Pool',
-        status: isKeyValid(process.env.OLLAMA_API_KEY) ? 'READY' : 'NOT_CONFIGURED',
-        models: ['gpt-oss:20b', 'gpt-oss:120b'],
-        active_account_idx: isKeyValid(process.env.OLLAMA_API_KEY) ? 1 : 0,
+        name: 'Node C: Поток сигналов',
+        status: 'READY',
+        models: ['regex-filter', 'sentiment-index'],
+        active_account_idx: 1,
       },
       nodeD: {
-        name: 'Node D: Semantic Memory & Embeddings',
-        status: isKeyValid(process.env.OLLAMA_API_KEY) ? 'ACTIVE' : 'NO_KEY',
-        provider: isKeyValid(process.env.OLLAMA_API_KEY)
-          ? 'Ollama Cloud API'
-          : 'Квантовый L2-анализатор (локальный режим без OLLAMA_API_KEY)',
+        name: 'Node D: Индексатор стакана L2',
+        status: 'ACTIVE',
+        provider: 'Квантовый L2-анализатор',
       },
       nodeE: {
         name: 'Node E: Cloudflare Shield',
@@ -2572,7 +2682,7 @@ app.post('/api/notifications/test-telegram', async (_req: Request, res: Response
   const notif = emitAppNotification({
     category: 'TEST',
     severity: 'INFO',
-    title: '🔔 Тестовое уведомление ZimaTrade AI',
+    title: '🔔 Тестовое уведомление ZimaTrade',
     message: 'Сквозная проверка уведомлений терминала и мгновенной доставки в Telegram (@zimatradeai_bot).',
     isUrgent: true,
   });
@@ -3111,6 +3221,8 @@ function addBotLog(entry: {
     id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
     timestamp: Date.now(),
     ...entry,
+    botName: sanitizeBotName(entry.botId, entry.botName),
+    message: sanitizeCleanText(entry.message),
   };
   systemState.botTradeLogs.unshift(item);
   if (systemState.botTradeLogs.length > 80) {
@@ -3344,12 +3456,12 @@ async function runBotEngineCycle() {
           fundingPaid: 0.0,
           openedAt: Date.now(),
           botId: 'agent-onnx-ppo-v2',
-          botName: 'ONNX PyTorch RL (Лимитный)',
+          botName: 'Delta-L2 · Стакан и Объемы (Лимитный)',
         };
         systemState.activePositions.unshift(newPos);
         addBotLog({
           botId: 'agent-onnx-ppo-v2',
-          botName: 'ONNX PyTorch RL',
+          botName: 'Delta-L2 · Стакан и Объемы',
           action: 'LIMIT_FILL',
           symbol: ord.symbol,
           side: (ord.side === 'BUY' ? 'LONG' : 'SHORT') as 'LONG' | 'SHORT',
@@ -3748,8 +3860,8 @@ async function runBotEngineCycle() {
         emitAppNotification({
           category: 'TRADE_OPEN',
           severity: 'INFO',
-          title: `🟢 ИИ открыл сделку: ${targetSymbol} ${side} ${newPos.leverage}x`,
-          message: `${actingBot.name}: Вход VWAP $${newPos.entryVwap.toFixed(priceDecimals)} (объем ${newPos.qty}), SL $${newPos.slPrice.toFixed(priceDecimals)}, TP1 $${tp1Price.toFixed(priceDecimals)} (Уверенность ${(evalResult.compositeScore * 100).toFixed(0)}%)`,
+          title: `🟢 Открыта сделка: ${targetSymbol} ${side} ${newPos.leverage}x`,
+          message: `${actingBot.name}: Вход VWAP $${newPos.entryVwap.toFixed(priceDecimals)} (объем ${newPos.qty}), SL $${newPos.slPrice.toFixed(priceDecimals)}, TP1 $${tp1Price.toFixed(priceDecimals)} (Индекс ${(evalResult.compositeScore * 100).toFixed(0)}%)`,
           symbol: targetSymbol,
           botName: actingBot.name,
           isUrgent: false,
@@ -3841,7 +3953,7 @@ const handleTrainBotEpoch = async (req: Request, res: Response) => {
       : systemState.agents;
 
   if (targetAgents.length === 0) {
-    res.status(404).json({ error: 'ИИ-бот для обучения не найден' });
+    res.status(404).json({ error: 'Стратегия для калибровки не найдена' });
     return;
   }
 
@@ -3913,9 +4025,9 @@ const handleTrainBotEpoch = async (req: Request, res: Response) => {
       emitAppNotification({
         category: 'AI_TRAIN',
         severity: 'SUCCESS',
-        title: `🧠 Обучение ИИ: эпоха #${firstRep.epochsTrained}`,
+        title: `⚙️ Калибровка стратегий: цикл #${firstRep.epochsTrained}`,
         message: reports
-          .map((r) => `${r.botName}: WinRate ${r.winRatePct}%, Reward ${r.epochReward >= 0 ? '+' : ''}${r.epochReward.toFixed(2)}R, R:R 1:${r.tpSlRatio}`)
+          .map((r) => `${r.botName}: WinRate ${r.winRatePct}%, Индекс ${r.epochReward >= 0 ? '+' : ''}${r.epochReward.toFixed(2)}R, R:R 1:${r.tpSlRatio}`)
           .join(' · '),
         botName: firstRep.botName,
         isUrgent: false,
@@ -3923,14 +4035,14 @@ const handleTrainBotEpoch = async (req: Request, res: Response) => {
 
       dispatchTelegramNotification({
         category: 'AI_TRAIN',
-        title: `🧠 ЭПОХА ОБУЧЕНИЯ ИИ ЗАВЕРШЕНА (#${firstRep.epochsTrained})`,
+        title: `⚙️ КАЛИБРОВКА СТРАТЕГИЙ ЗАВЕРШЕНА (#${firstRep.epochsTrained})`,
         htmlBody: reports
           .map(
             (r) =>
-              `• <b>${r.botName}:</b> Эпоха #${r.epochsTrained} · WinRate ${r.winRatePct}% · Net Reward ${r.epochReward >= 0 ? '+' : ''}${r.epochReward.toFixed(2)}R · Порог ${r.confidenceThreshold} · ATR ${r.atrMultiplier}x · R:R 1:${r.tpSlRatio} (OBI ${(r.newWeights.obiWeight * 100).toFixed(0)}%, Mom ${(r.newWeights.momentumWeight * 100).toFixed(0)}%, Sent ${(r.newWeights.sentimentWeight * 100).toFixed(0)}%)`
+              `• <b>${r.botName}:</b> Цикл #${r.epochsTrained} · WinRate ${r.winRatePct}% · Индекс ${r.epochReward >= 0 ? '+' : ''}${r.epochReward.toFixed(2)}R · Порог ${r.confidenceThreshold} · ATR ${r.atrMultiplier}x · R:R 1:${r.tpSlRatio} (OBI ${(r.newWeights.obiWeight * 100).toFixed(0)}%, Mom ${(r.newWeights.momentumWeight * 100).toFixed(0)}%, Sent ${(r.newWeights.sentimentWeight * 100).toFixed(0)}%)`
           )
           .join('\n'),
-        plainPreview: `Обучено ${reports.length} бот(ов): ${firstRep.botName} Эпоха #${firstRep.epochsTrained} (WinRate ${firstRep.winRatePct}%, Reward +${firstRep.epochReward.toFixed(2)}R)`,
+        plainPreview: `Откалибровано ${reports.length} стратегий: ${firstRep.botName} Цикл #${firstRep.epochsTrained} (WinRate ${firstRep.winRatePct}%, Индекс +${firstRep.epochReward.toFixed(2)}R)`,
         isManualOrUrgent: true,
       }).catch(() => {});
     }
@@ -4074,17 +4186,17 @@ export async function analyzeMarketTrendsAndRetrainingNeeds(notifyTelegram = fal
   const epochsTrained = Math.max(...systemState.agents.map((a) => a.brain?.epochsTrained || 0));
 
   let isRetrainingRecommended = false;
-  let retrainingReason = 'Модели обучены на актуальных данных.';
+  let retrainingReason = 'Параметры стратегий актуальны.';
 
   if ((regime === 'ALT_SEASON_EXPANSION' || regime === 'MARKET_WIDE_DUMP' || regime === 'SELECTIVE_PUMPS' || regime === 'STRONG_BULL' || regime === 'STRONG_BEAR') && hoursSinceLastTrain >= 3.5) {
     isRetrainingRecommended = true;
-    retrainingReason = `Сдвиг рыночного режима в ${regimeTitle}. Прошло ${hoursSinceLastTrain}ч с последнего обучения — нейро-агентам требуется адаптация к динамическим трендам альткоинов.`;
+    retrainingReason = `Сдвиг рыночного режима в ${regimeTitle}. Прошло ${hoursSinceLastTrain}ч с последней калибровки — требуется адаптация весов к динамике альткоинов.`;
   } else if (regime === 'HIGH_VOLATILITY' && hoursSinceLastTrain >= 5) {
     isRetrainingRecommended = true;
     retrainingReason = `Всплеск волатильности рынка (ATR ${avgAtr}%). Требуется калибровка множителей ATR и стоп-лоссов на свежих свечах Bybit.`;
   } else if (hoursSinceLastTrain >= 16) {
     isRetrainingRecommended = true;
-    retrainingReason = `Прошло ${hoursSinceLastTrain}ч с последней эпохи обучения на реальных свечах Bybit. Рекомендуется плановое обновление весов.`;
+    retrainingReason = `Прошло ${hoursSinceLastTrain}ч с последнего цикла калибровки на свечах Bybit. Рекомендуется плановое обновление коэффициентов.`;
   }
 
   const serverUrl = 'http://194.113.34.230:3000';
@@ -4098,8 +4210,8 @@ export async function analyzeMarketTrendsAndRetrainingNeeds(notifyTelegram = fal
     emitAppNotification({
       category: 'AI_TRAIN',
       severity: 'WARNING',
-      title: '🔔 Рекомендация к дообучению ИИ-ботов (Тренды)',
-      message: `${retrainingReason} Запустите квант-тренажер на домашнем ПК с динамическим охватом трендов.`,
+      title: '🔔 Рекомендация к перекалибровке стратегий',
+      message: `${retrainingReason}`,
       isUrgent: false,
     });
 
@@ -4108,9 +4220,9 @@ export async function analyzeMarketTrendsAndRetrainingNeeds(notifyTelegram = fal
 
     dispatchTelegramNotification({
       category: 'AI_TRAIN',
-      title: '⚡ РЕКОМЕНДАЦИЯ К ДООБУЧЕНИЮ ИИ-БОТОВ (ТРЕНДОВЫЙ СКАНЕР)',
-      htmlBody: `• <b>Рыночный режим:</b> <b>${regimeTitle}</b>\n• <b>Охват рынка Bybit:</b> <b>${totalPairsScanned} пар</b> (Растут: ${advancersCount} · Падают: ${declinersCount} · Ширина: ${marketBreadthPct}%)\n• <b>Волатильность рынка:</b> ATR <b>${avgAtr}%</b>\n\n🔥 <b>Лидеры трендов (Пампы / Импульсы):</b>\n${gainersList}\n\n📉 <b>Лидеры сброса (Медвежьи пробои):</b>\n${losersList}\n\n• <b>Причина:</b> ${retrainingReason}\n• <b>Последнее обучение:</b> ${hoursSinceLastTrain}ч назад (эпоха #${epochsTrained})\n\n🤖 <b>Авто-боты ZimaTrade:</b> динамически сканируют и торгуют эти трендовые пары в L2!\n\n💡 <b>Команда обучения на домашнем ПК (Node B / Mac / GPU):</b>\n<code>${recommendedCommand}</code>`,
-      plainPreview: `Рекомендация дообучить ИИ: ${regimeTitle} (Охват: ${totalPairsScanned} пар, ширина ${marketBreadthPct}%). Запустите train_pc.py`,
+      title: '⚡ РЕКОМЕНДАЦИЯ К ПЕРЕКАЛИБРОВКЕ СТРАТЕГИЙ (ТРЕНДОВЫЙ СКАНЕР)',
+      htmlBody: `• <b>Рыночный режим:</b> <b>${regimeTitle}</b>\n• <b>Охват рынка Bybit:</b> <b>${totalPairsScanned} пар</b> (Растут: ${advancersCount} · Падают: ${declinersCount} · Ширина: ${marketBreadthPct}%)\n• <b>Волатильность рынка:</b> ATR <b>${avgAtr}%</b>\n\n🔥 <b>Лидеры роста:</b>\n${gainersList}\n\n📉 <b>Лидеры падения:</b>\n${losersList}\n\n• <b>Причина:</b> ${retrainingReason}\n• <b>Последняя калибровка:</b> ${hoursSinceLastTrain}ч назад (цикл #${epochsTrained})`,
+      plainPreview: `Рекомендация перекалибровки: ${regimeTitle} (Охват: ${totalPairsScanned} пар, ширина ${marketBreadthPct}%).`,
       isManualOrUrgent: false,
     }).catch(() => {});
   }
@@ -4174,7 +4286,7 @@ app.post('/api/bots/reset-brain', (req: Request, res: Response) => {
   const { agentId } = req.body;
   const bot = systemState.agents.find((a) => a.agentId === agentId);
   if (!bot) {
-    res.status(404).json({ error: 'ИИ-бот не найден' });
+    res.status(404).json({ error: 'Стратегия не найдена' });
     return;
   }
 
@@ -4184,7 +4296,7 @@ app.post('/api/bots/reset-brain', (req: Request, res: Response) => {
     botName: bot.name,
     action: 'SCAN_PASS',
     symbol: 'BRAIN_RESET',
-    message: `Нейро-веса бота «${bot.name}» сброшены к заводскому профилю (${bot.engineType}).`,
+    message: `Веса факторов стратегии «${bot.name}» сброшены к заводскому профилю.`,
     rttMs: systemState.pings.bybit,
   });
 
@@ -4192,7 +4304,7 @@ app.post('/api/bots/reset-brain', (req: Request, res: Response) => {
   res.json({ success: true, bot, agents: systemState.agents });
 });
 
-// Update individual AI bot configuration (pause/resume, risk %, leverage, allowed symbols, TP/SL ratio, brain hyperparameters)
+// Update individual bot configuration (pause/resume, risk %, leverage, allowed symbols, TP/SL ratio, brain hyperparameters)
 app.post('/api/bots/config', (req: Request, res: Response) => {
   const {
     agentId,
@@ -4210,7 +4322,7 @@ app.post('/api/bots/config', (req: Request, res: Response) => {
 
   const bot = systemState.agents.find((a) => a.agentId === agentId);
   if (!bot) {
-    res.status(404).json({ error: 'ИИ-бот не найден' });
+    res.status(404).json({ error: 'Стратегия не найдена' });
     return;
   }
 
@@ -4280,7 +4392,7 @@ app.post('/api/bots/config', (req: Request, res: Response) => {
     botName: bot.name,
     action: 'SCAN_PASS',
     symbol: 'CONFIG',
-    message: `Обновлены параметры бота ${bot.name}: Статус=${bot.isEnabled ? 'АКТИВЕН' : 'ПАУЗА'}, Риск=${bot.riskPerTradePct}%, Плечо=${bot.leverage}x, RR=1:${bot.tpSlRatio}, Порог ИИ=${bot.brain.confidenceThreshold}, ATRx=${bot.brain.atrMultiplier}.`,
+    message: `Обновлены параметры стратегии ${bot.name}: Статус=${bot.isEnabled ? 'АКТИВЕН' : 'ПАУЗА'}, Риск=${bot.riskPerTradePct}%, Плечо=${bot.leverage}x, RR=1:${bot.tpSlRatio}, Порог=${bot.brain.confidenceThreshold}, ATRx=${bot.brain.atrMultiplier}.`,
     rttMs: systemState.pings.bybit,
   });
 
@@ -4779,7 +4891,7 @@ function executeSystemFactoryReset(): {
       type: 'DEPOSIT_RESET',
       amountUsdt: 10000.0,
       balanceAfterUsdt: 10000.0,
-      description: 'Чистый старт торговой системы ZimaTrade AI: базовый баланс $10,000.00 USDT',
+      description: 'Чистый старт торговой системы ZimaTrade: базовый баланс $10,000.00 USDT',
       mode: systemState.mode,
     },
   ];
@@ -4930,27 +5042,12 @@ app.post('/api/signals/parse', async (req: Request, res: Response) => {
   const obi = (bidVol - askVol) / Math.max(0.001, bidVol + askVol);
   const spreadBps = bestBid > 0 ? ((bestAsk - bestBid) / bestBid) * 10000 : 1.0;
 
-  let aiExplanation = '';
-  const poolStatus = ollamaCloud.getPoolStatus();
-  if (poolStatus.totalKeys > 0) {
-    const prompt = `Ты — ведущий Quant-аналитик ZimaTrade AI. В 2 кратких профессиональных предложениях на русском языке проанализируй торговый сетап:
-Инструмент: ${symbol}, Направление: ${side}, Вход: ${entryPrice}, Стоп: ${stopLoss}, TP1: ${tpGrid[0].price}.
-Стакан Bybit: OBI=${(obi * 100).toFixed(1)}%, спред=${spreadBps.toFixed(1)} б.п., R:R=1:${freshness.riskRewardRatio.toFixed(2)}. Текст: "${rawText.slice(0, 200)}"`;
-    const ollamaRes = await callOllamaCloud(prompt);
-    if (ollamaRes.ok && ollamaRes.text) {
-      aiExplanation = `[Ollama Cloud / ${ollamaRes.modelUsed || poolStatus.selectedModel}]: ${ollamaRes.text}`;
-    }
-  }
-
-  // Quantitative AI fallback (used when Ollama Cloud key is not set or cloud endpoint times out)
-  if (!aiExplanation) {
-    const obiAligned = (side === 'LONG' && obi >= -0.05) || (side === 'SHORT' && obi <= 0.05);
-    const verdictText = freshness.valid
-      ? `Сетап ${symbol} [${side}] прошел двухступенчатую верификацию: соотношение Risk/Reward составляет 1:${freshness.riskRewardRatio.toFixed(2)}, текущая цена Bybit ($${(side === 'LONG' ? bestAsk : bestBid).toFixed(2)}), пройдено ${(freshness.pathProgressionPct * 100).toFixed(1)}% пути к TP1.`
-      : `Внимание: сетап ${symbol} [${side}] отклонен фильтром безопасности (${freshness.reason || 'недостаточный R:R или цена ушла от ТВХ'}).`;
-    const bookText = `В живом стакане Bybit L2 дисбаланс заявок OBI равен ${obi >= 0 ? '+' : ''}${(obi * 100).toFixed(1)}% (${obiAligned ? 'подтверждает направление сигнала' : 'требует осторожности против потока ордеров'}), спред ${spreadBps.toFixed(1)} б.п. — риск на сделку ограничен 1.5% депозита.`;
-    aiExplanation = `${verdictText} ${bookText}`;
-  }
+  const obiAligned = (side === 'LONG' && obi >= -0.05) || (side === 'SHORT' && obi <= 0.05);
+  const verdictText = freshness.valid
+    ? `Сетап ${symbol} [${side}] прошел двухступенчатую верификацию: соотношение Risk/Reward составляет 1:${freshness.riskRewardRatio.toFixed(2)}, текущая цена Bybit ($${(side === 'LONG' ? bestAsk : bestBid).toFixed(2)}), пройдено ${(freshness.pathProgressionPct * 100).toFixed(1)}% пути к TP1.`
+    : `Внимание: сетап ${symbol} [${side}] отклонен фильтром безопасности (${freshness.reason || 'недостаточный R:R или цена ушла от ТВХ'}).`;
+  const bookText = `В живом стакане Bybit L2 дисбаланс заявок OBI равен ${obi >= 0 ? '+' : ''}${(obi * 100).toFixed(1)}% (${obiAligned ? 'подтверждает направление сигнала' : 'требует осторожности против потока ордеров'}), спред ${spreadBps.toFixed(1)} б.п. — риск на сделку ограничен 1.5% депозита.`;
+  const aiExplanation = `${verdictText} ${bookText}`;
 
   res.json({
     success: true,
@@ -5324,7 +5421,7 @@ async function scanActiveNewsChannelOnce(notifyTelegram: boolean = true, preferr
     dispatchTelegramNotification({
       category: 'SIGNAL',
       title: `📡 СИГНАЛ ПАРСЕРА · ${pickedChannel.username} (#${sym})`,
-      htmlBody: `• <b>Источник:</b> ${pickedChannel.title} (${pickedChannel.username} · ${originLabel})\n• <b>Сетап:</b> ${side} #${sym} @ $${entryPrice} (SL $${stopLoss}, TP1 $${tp1})\n• <b>Сентимент ИИ:</b> ${isBullish ? `🟢 БЫЧИЙ (+${Math.round(Math.abs(sentimentObj.score) * 100)}%)` : `🔴 МЕДВЕЖИЙ (-${Math.round(Math.abs(sentimentObj.score) * 100)}%)`}\n• <b>Текст:</b> ${finalRawText}`,
+      htmlBody: `• <b>Источник:</b> ${pickedChannel.title} (${pickedChannel.username} · ${originLabel})\n• <b>Сетап:</b> ${side} #${sym} @ $${entryPrice} (SL $${stopLoss}, TP1 $${tp1})\n• <b>Индекс сентимента:</b> ${isBullish ? `🟢 БЫЧИЙ (+${Math.round(Math.abs(sentimentObj.score) * 100)}%)` : `🔴 МЕДВЕЖИЙ (-${Math.round(Math.abs(sentimentObj.score) * 100)}%)`}\n• <b>Текст:</b> ${finalRawText}`,
       plainPreview: `${pickedChannel.username}: ${side} #${sym} @ $${entryPrice} (TP1 $${tp1})`,
       symbol: sym,
       isManualOrUrgent: true,
@@ -5703,7 +5800,7 @@ app.post('/api/telegram/test', async (req: Request, res: Response) => {
   const equity = (systemState.capitalUsdt + systemState.totalRealizedPnlUsdt).toFixed(2);
   const result = await dispatchTelegramNotification({
     category: 'TEST',
-    title: `🔔 ТЕСТОВОЕ УВЕДОМЛЕНИЕ · ZimaTrade AI`,
+    title: `🔔 ТЕСТОВОЕ УВЕДОМЛЕНИЕ · ZimaTrade`,
     htmlBody: `Связь с ботом <b>${tg.botUsername}</b> успешно установлена!\n\n💰 <b>Текущий баланс:</b> $${equity} USDT\n📊 <b>Открытых сделок:</b> ${systemState.activePositions.length}\n🛡 <b>Риск-Файрвол:</b> 1.5% на сделку / 5.0% дневной лимит\n📡 <b>Источников новостей в парсере:</b> ${systemState.channels.filter((c) => c.isEnabled !== false && c.status !== 'BANNED').length}`,
     plainPreview: `Тест соединения ${tg.botUsername}: Баланс $${equity} USDT, открыто ${systemState.activePositions.length} поз.`,
     isManualOrUrgent: true,
@@ -6224,8 +6321,8 @@ const backupsList: BackupRecord[] = [
 
 let quarantineWeightsList = [
   {
-    modelId: 'ppo-transformer-v3-epoch48',
-    source: 'Node B: GPU Forge (Ryzen 5 5600X, 8GB GPU via WireGuard)',
+    modelId: 'delta-l2-profile-v3',
+    source: 'Node B: Модуль калибровки весов (WireGuard)',
     sha256: '7c42b8e91024af002847cbfa90123efb78291048291048291048291048291048',
     sizeMb: 28.4,
     valLoss: 0.0134,
@@ -6234,8 +6331,8 @@ let quarantineWeightsList = [
     trainedAt: Date.now() - 7200000,
   },
   {
-    modelId: 'lgbm-l2-orderbook-nightly',
-    source: 'Node B: LightGBM Multi-thread',
+    modelId: 'momentum-scalper-nightly',
+    source: 'Node B: Калибровка импульсных факторов',
     sha256: '38a9bc12849201f8290192840192840192840192840192840192840192840192',
     sizeMb: 4.2,
     valLoss: 0.021,
@@ -6255,7 +6352,7 @@ const availableUpdates: UpdatePackageInfo[] = [
     breakingChanges: false,
     changelog: [
       'Hot-Reload движок: обновление ядра без переустановки и без потери активных позиций',
-      'Интеграция шлюза Ollama Cloud с поддержкой моделей gpt-oss:20b и gpt-oss:120b',
+      'Оптимизация двустороннего Telegram-шлюза и фильтрации уведомлений',
       'Динамический расчет VWAP-проскальзывания по живым срезам стакана L2-50 Bybit v5',
       'Автоматическая ротация Parquet Ring Storage (квота 10 ГБ) с выгрузкой в Cloud.ru S3',
       'Калибровка задержек времени NTP delta_ms с Bybit API каждые 10 минут',
@@ -6707,8 +6804,7 @@ app.post('/api/updates/hot-swap-weights', (req: Request, res: Response) => {
 
   const promoted = quarantineWeightsList.splice(itemIdx, 1)[0];
 
-  // Match target agent by model architecture (LightGBM vs ONNX RL)
-  const isLgbm = promoted.modelId.toLowerCase().includes('lgbm');
+  const isLgbm = promoted.modelId.toLowerCase().includes('lgbm') || promoted.modelId.toLowerCase().includes('momentum');
   const targetAgent =
     systemState.agents.find((a) => (isLgbm ? a.engineType === 'LIGHTGBM' : a.engineType === 'ONNX_RL')) ||
     systemState.agents.find((a) => a.engineType === 'ONNX_RL' || a.engineType === 'LIGHTGBM');
@@ -6716,8 +6812,8 @@ app.post('/api/updates/hot-swap-weights', (req: Request, res: Response) => {
   if (targetAgent) {
     targetAgent.sha256 = promoted.sha256;
     targetAgent.name = isLgbm
-      ? `LightGBM Micro-Scalper (${promoted.modelId})`
-      : `ONNX PyTorch RL (${promoted.modelId})`;
+      ? `Momentum · Импульсный Скальпер (${promoted.modelId})`
+      : `Delta-L2 · Стакан и Объемы (${promoted.modelId})`;
     targetAgent.sharpeRatio = promoted.sharpeRatio || targetAgent.sharpeRatio;
     targetAgent.tpSlRatio = Math.max(targetAgent.tpSlRatio || 2.1, 2.2);
     if (targetAgent.brain) {
@@ -6736,7 +6832,7 @@ app.post('/api/updates/hot-swap-weights', (req: Request, res: Response) => {
 
   res.json({
     success: true,
-    message: `Веса и гиперпараметры модели ${promoted.modelId} (Node B GPU) проверены по SHA256 и успешно подгружены в инференс-память!`,
+    message: `Веса и параметры профиля ${promoted.modelId} проверены по SHA256 и применены к стратегии!`,
     promoted,
     updatedAgent: targetAgent,
   });
@@ -6752,7 +6848,7 @@ app.post('/api/updates/maintenance', async (req: Request, res: Response) => {
     res.json({
       success: true,
       walSizeBytes: walBytes,
-      message: `Выполнен атомарный сброс состояния на диск (${PERSIST_FILE}, ${(walBytes / 1024).toFixed(1)} КБ). Все сделки, веса ИИ и настройки синхронизированы.`,
+      message: `Выполнен атомарный сброс состояния на диск (${PERSIST_FILE}, ${(walBytes / 1024).toFixed(1)} КБ). Все сделки, веса стратегий и настройки синхронизированы.`,
     });
   } else if (action === 'CLOCK_SYNC') {
     await measureRealExchangePings(true);

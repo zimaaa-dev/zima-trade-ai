@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header.tsx';
-import { BeginnerGuideBanner } from './components/BeginnerGuideBanner.tsx';
 import { L2Terminal } from './components/L2Terminal.tsx';
 import { RiskFirewallView } from './components/RiskFirewallView.tsx';
 import { IntelligenceView } from './components/IntelligenceView.tsx';
@@ -8,17 +7,13 @@ import { AiArenaView } from './components/AiArenaView.tsx';
 import { TopologyView } from './components/TopologyView.tsx';
 import { SettingsConfigView } from './components/SettingsConfigView.tsx';
 import { UpdatesManagerView } from './components/UpdatesManagerView.tsx';
-import { CodeExplorerView } from './components/CodeExplorerView.tsx';
 import { WalletPortfolioView } from './components/WalletPortfolioView.tsx';
-import { AiChatView } from './components/AiChatView.tsx';
-import { OnboardingModal } from './components/OnboardingModal.tsx';
 import { NotificationCenter } from './components/NotificationCenter.tsx';
 import {
   AuthLoginScreen,
   AuthSettingsModal,
   type OperatorProfile,
 } from './components/AuthLoginModal.tsx';
-import { Bot } from 'lucide-react';
 import type { SystemHealth, ExecutionMode } from './types.ts';
 import { DEFAULT_SYSTEM_HEALTH } from './types.ts';
 
@@ -27,9 +22,6 @@ const AUTH_STORAGE_KEY = 'zima_auth_token';
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('terminal');
   const [health, setHealth] = useState<SystemHealth>(DEFAULT_SYSTEM_HEALTH);
-  const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(false);
-  const [isBeginnerMode, setIsBeginnerMode] = useState<boolean>(true);
-  const [isAiChatOpen, setIsAiChatOpen] = useState<boolean>(false);
   const [isNotificationCenterOpen, setIsNotificationCenterOpen] = useState<boolean>(false);
   const [unreadNotifCount, setUnreadNotifCount] = useState<number>(0);
 
@@ -76,7 +68,6 @@ export default function App() {
 
   const fetchHealth = async () => {
     try {
-      // 1. Try primary endpoint /api/system/health
       let res: Response | null = null;
       try {
         res = await fetch('/api/system/health', {
@@ -86,7 +77,6 @@ export default function App() {
         res = null;
       }
 
-      // 2. Fallback to /api/health if system/health did not return a valid response
       if (!res || !res.ok) {
         try {
           const altRes = await fetch('/api/health', {
@@ -101,12 +91,10 @@ export default function App() {
       }
 
       if (!res) {
-        // Dev server or reverse-proxy is spinning up: keep existing health state
         return;
       }
 
       const contentType = res.headers.get('content-type') || '';
-      // CRITICAL: verify content-type is json before calling res.json() to avoid "Unexpected token '<'"
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         if (data && typeof data === 'object') {
@@ -122,7 +110,7 @@ export default function App() {
         }
       }
     } catch {
-      // Graceful degradation: never log unhandled console.error to avoid error banner triggers in preview iframe
+      // Graceful degradation
     }
   };
 
@@ -229,23 +217,10 @@ export default function App() {
         onKillSwitchReset={handleKillSwitchReset}
         activeTab={activeTab}
         onSelectTab={setActiveTab}
-        onOpenGuide={() => setIsOnboardingOpen(true)}
-        isBeginnerMode={isBeginnerMode}
-        onToggleBeginnerMode={() => setIsBeginnerMode((prev) => !prev)}
-        onOpenAiChat={() => setIsAiChatOpen(true)}
         operatorUsername={operator?.username || 'admin'}
         onOpenAuthSettings={() => setIsAuthSettingsOpen(true)}
         unreadNotificationsCount={unreadNotifCount}
         onOpenNotifications={() => setIsNotificationCenterOpen(true)}
-      />
-
-      <BeginnerGuideBanner
-        activeTab={activeTab}
-        health={health}
-        isBeginnerMode={isBeginnerMode}
-        onToggleBeginnerMode={() => setIsBeginnerMode((prev) => !prev)}
-        onSelectTab={setActiveTab}
-        onRefreshHealth={fetchHealth}
       />
 
       <main className="flex-1 w-full max-w-[100vw] overflow-x-hidden pb-12">
@@ -273,54 +248,18 @@ export default function App() {
 
         {activeTab === 'arena' && <AiArenaView />}
 
-        {activeTab === 'aichat' && <AiChatView health={health} isOverlay={false} />}
-
         {activeTab === 'topology' && <TopologyView health={health} />}
 
         {activeTab === 'settings' && <SettingsConfigView />}
 
         {activeTab === 'updates' && <UpdatesManagerView />}
-
-        {activeTab === 'explorer' && <CodeExplorerView />}
       </main>
-
-      {/* Floating Quick AI Analyst Summon Button (always accessible from any tab, opens overlay) */}
-      {!isAiChatOpen && (
-        <button
-          type="button"
-          onClick={() => setIsAiChatOpen(true)}
-          className="fixed bottom-5 right-5 z-40 px-3.5 py-2.5 rounded-full bg-gradient-to-r from-cyan-500 via-cyan-600 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-semibold text-xs shadow-2xl shadow-cyan-500/40 flex items-center gap-2 border border-cyan-300/40 transition transform hover:scale-105 active:scale-95 cursor-pointer"
-          title="Открыть ИИ-Аналитик поверх текущего экрана: аудит портфеля, тренды Bybit и ответы о системе"
-        >
-          <Bot className="w-4 h-4 text-white" />
-          <span className="font-medium">ИИ-Аналитик</span>
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-        </button>
-      )}
-
-      {/* Global AI Analyst Modal / Drawer Overlay (Opens ON TOP of current screen) */}
-      <AiChatView
-        health={health}
-        isOverlay={true}
-        isOpen={isAiChatOpen}
-        onClose={() => setIsAiChatOpen(false)}
-      />
 
       {/* Global Notification Center & Floating Toasts */}
       <NotificationCenter
         isOpen={isNotificationCenterOpen}
         onClose={() => setIsNotificationCenterOpen(false)}
         onUnreadCountChange={setUnreadNotifCount}
-      />
-
-      {/* Interactive Onboarding / Educational Guide Modal */}
-      <OnboardingModal
-        isOpen={isOnboardingOpen}
-        onClose={() => setIsOnboardingOpen(false)}
-        onSelectTab={(tab) => {
-          setActiveTab(tab);
-          setIsOnboardingOpen(false);
-        }}
       />
 
       {/* Operator Security & Credentials Modal */}
@@ -343,7 +282,7 @@ export default function App() {
       <footer className="border-t border-white/[0.06] bg-[#070A12] px-4 py-3 text-slate-500 text-xs">
         <div className="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <span className="text-slate-400 font-medium">ZimaTrade AI</span>
+            <span className="text-slate-400 font-medium">ZimaTrade</span>
             <span aria-hidden="true">·</span>
             <span>Bybit V5 Orderbook Engine</span>
           </div>
@@ -359,4 +298,3 @@ export default function App() {
     </div>
   );
 }
-

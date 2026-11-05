@@ -3,14 +3,7 @@ import {
   Server,
   Cpu,
   Database,
-  Cloud,
   Shield,
-  Radio,
-  ArrowRight,
-  Wifi,
-  HardDrive,
-  Activity,
-  CheckCircle2,
 } from 'lucide-react';
 import type { SystemHealth } from '../types.ts';
 
@@ -29,29 +22,29 @@ export const TopologyView: React.FC<TopologyViewProps> = ({ health }) => {
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-base font-extrabold text-white">Распределенная топология инфраструктуры из 5 узлов</h2>
+              <h2 className="text-base font-extrabold text-white">Состояние узлов и сетевых шлюзов</h2>
               <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-500/30">
                 АКТИВНАЯ СЕТЬ
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Многоуровневая архитектура, разделяющая боевое ядро реального времени (Node A), GPU-обучение (Node B), облачный NLP и память (Node C/D) и внешний контур безопасности (Node E).
+              Мониторинг задержек до биржевых шлюзов Bybit V5 и состояния серверных сервисов
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 text-xs font-mono">
           <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300">
-            Туннель: <strong className="text-emerald-400">WireGuard & cloudflared</strong>
+            Bybit V5 RTT: <strong className="text-emerald-400">{health?.pings?.bybit ?? 24} мс</strong>
           </span>
           <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300">
-            DCP: <strong className="text-cyan-400">Авто-отмена ордеров при обрыве &gt; 10с</strong>
+            OKX Backup RTT: <strong className="text-cyan-400">{health?.pings?.okx ?? 38} мс</strong>
           </span>
         </div>
       </div>
 
-      {/* The 5 Node Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+      {/* Node Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         {/* Node A */}
         <div className="bg-slate-900/80 border border-cyan-500/30 rounded-2xl p-5 relative overflow-hidden">
           <div className="flex items-center justify-between mb-3">
@@ -60,9 +53,9 @@ export const TopologyView: React.FC<TopologyViewProps> = ({ health }) => {
                 <Server className="w-4 h-4" />
               </div>
               <div>
-                <h3 className="font-bold text-sm text-white">Node A: web-app-prod (Cloud.ru 24/7)</h3>
+                <h3 className="font-bold text-sm text-white">Node A: Боевое ядро терминала (Cloud.ru 24/7)</h3>
                 <span className="text-[10px] font-mono text-cyan-400">
-                  Зона ru.AZ-1 • 194.113.34.230 / 10.0.0.5 • Ubuntu 24.04
+                  Зона ru.AZ-1 • 194.113.34.230 • Ubuntu 24.04
                 </span>
               </div>
             </div>
@@ -72,26 +65,26 @@ export const TopologyView: React.FC<TopologyViewProps> = ({ health }) => {
           <div className="space-y-2 text-xs font-mono text-slate-300 my-4">
             <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
               <span className="text-[10px] text-cyan-400 font-bold block mb-1">
-                Процесс 1 (привязан к vCPU 0):
+                Поток котировок и исполнение:
               </span>
               <p className="text-[11px] text-slate-400">
-                Прием WebSocket, сборка стаканов L2-50 в SharedMemory, Виртуальный движок (Режим 1), Боевой роутер, быстрый инференс onnxruntime на CPU.
+                Прием стаканов L2-50, расчет VWAP и OBI, исполнение ордеров и контроль стоп-лоссов.
               </p>
             </div>
 
             <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
               <span className="text-[10px] text-purple-400 font-bold block mb-1">
-                Процесс 2 (привязан к vCPU 1):
+                Хранилище и аналитика:
               </span>
               <p className="text-[11px] text-slate-400">
-                База SQLite WAL, кольцевой буфер Parquet (квота 10 ГБ), Telethon UserBot, аналитика DuckDB (лимит 768 МБ), FastAPI и ночной LightGBM.
+                Журнал сделок, история котировок, парсер каналов и REST API терминала.
               </p>
             </div>
           </div>
 
           <div className="text-[10px] font-mono text-slate-400 flex items-center justify-between pt-2 border-t border-slate-800">
-            <span>2 vCPU (1:10) • 4 ГБ ОЗУ (2 ГБ Heap) • 30 ГБ SSD</span>
-            <span className="text-emerald-400 font-bold">100% SLA</span>
+            <span>2 vCPU • 4 ГБ ОЗУ • 30 ГБ SSD</span>
+            <span className="text-emerald-400 font-bold">ОНЛАЙН</span>
           </div>
         </div>
 
@@ -103,87 +96,38 @@ export const TopologyView: React.FC<TopologyViewProps> = ({ health }) => {
                 <Cpu className="w-4 h-4" />
               </div>
               <div>
-                <h3 className="font-bold text-sm text-white">Node B: Кузница ИИ (Спящий узел)</h3>
-                <span className="text-[10px] font-mono text-purple-400">Домашняя GPU-станция</span>
+                <h3 className="font-bold text-sm text-white">Node B: Внешний узел калибровки</h3>
+                <span className="text-[10px] font-mono text-purple-400">Вычислительная станция</span>
               </div>
             </div>
             <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-400">
-              ПО РАСПИСАНИЮ (30-60 мин/день)
+              ПО ЗАПРОСУ
             </span>
           </div>
 
           <div className="space-y-2 text-xs font-mono text-slate-300 my-4">
             <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
               <span className="text-[10px] text-amber-400 font-bold block mb-1">
-                Аппаратные характеристики:
+                Назначение:
               </span>
               <p className="text-[11px] text-slate-400">
-                AMD Ryzen 5 5600X (6C/12T), 32 ГБ ОЗУ, видеокарта NVIDIA 8 ГБ VRAM.
+                Пакетное тестирование исторических свечей Bybit V5 и пересчет весов факторов стратегий.
               </p>
             </div>
 
             <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
               <span className="text-[10px] text-purple-400 font-bold block mb-1">
-                Автоматический цикл обучения:
+                Синхронизация:
               </span>
               <p className="text-[11px] text-slate-400">
-                Скачивает архивы Parquet по WireGuard (<code className="text-cyan-300">bwlimit=5MB/s, ionice -c 3</code>), обучает PyTorch PPO/SAC и LSTM, выгружает веса .onnx с манифестом SHA256.
+                Обмен параметрами стратегий с основным сервером и проверка контрольных сумм SHA256.
               </p>
             </div>
           </div>
 
           <div className="text-[10px] font-mono text-slate-400 flex items-center justify-between pt-2 border-t border-slate-800">
-            <span>Сеть: WireGuard / Tailscale</span>
+            <span>Протокол: HTTPS / WireGuard</span>
             <span className="text-purple-400 font-bold">Режим ожидания</span>
-          </div>
-        </div>
-
-        {/* Node C */}
-        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 relative overflow-hidden">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-amber-950 text-amber-400 flex items-center justify-center">
-                <Cloud className="w-4 h-4" />
-              </div>
-              <div>
-                <h3 className="font-bold text-sm text-white">Node C: Пул Cloud Ollama</h3>
-                <span className="text-[10px] font-mono text-amber-400">Мульти-аккаунт ротация</span>
-              </div>
-            </div>
-            {health?.nodes?.nodeC?.status === 'READY' ? (
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Ollama Cloud активен" />
-            ) : (
-              <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-amber-950 text-amber-400 border border-amber-800/40">
-                НЕТ КЛЮЧА
-              </span>
-            )}
-          </div>
-
-          <div className="space-y-2 text-xs font-mono text-slate-300 my-4">
-            <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-              <span className="text-[10px] text-cyan-400 font-bold block mb-1">
-                Уровень 1: Быстрый NLP-парсер (20b / 30b):
-              </span>
-              <p className="text-[11px] text-slate-400">
-                Модели gpt-oss:20b / nemotron-3-nano:30b переводят отфильтрованные сигналы Telegram в строгий Pydantic JSON за &lt;500 мс.
-              </p>
-            </div>
-
-            <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-              <span className="text-[10px] text-amber-400 font-bold block mb-1">
-                Уровень 2: Макро-Аналитика (120b / ultra):
-              </span>
-              <p className="text-[11px] text-slate-400">
-                Модели gpt-oss:120b / nemotron-3-ultra анализируют макро-новости, сентимент и корректируют глобальные веса стратегий.
-              </p>
-            </div>
-          </div>
-
-          <div className="text-[10px] font-mono text-slate-400 flex items-center justify-between pt-2 border-t border-slate-800">
-            <span>Отказоустойчивость: Ротация при HTTP 429</span>
-            <span className={health?.nodes?.nodeC?.status === 'READY' ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
-              {health?.nodes?.nodeC?.status === 'READY' ? 'Активный пул' : 'Не настроен (требуется ключ)'}
-            </span>
           </div>
         </div>
 
@@ -195,44 +139,27 @@ export const TopologyView: React.FC<TopologyViewProps> = ({ health }) => {
                 <Database className="w-4 h-4" />
               </div>
               <div>
-                <h3 className="font-bold text-sm text-white">Node D: Семантическая память (RAG)</h3>
-                <span className="text-[10px] font-mono text-cyan-400">Ollama Cloud API</span>
+                <h3 className="font-bold text-sm text-white">Индекс исторических сетапов</h3>
+                <span className="text-[10px] font-mono text-cyan-400">Локальное хранилище</span>
               </div>
             </div>
-            {health?.nodes?.nodeD?.status === 'ACTIVE' ? (
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Семантическая память активна" />
-            ) : (
-              <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-amber-950 text-amber-400 border border-amber-800/40">
-                ОЖИДАНИЕ КЛЮЧА
-              </span>
-            )}
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
           </div>
 
           <div className="space-y-2 text-xs font-mono text-slate-300 my-4">
             <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
               <span className="text-[10px] text-cyan-400 font-bold block mb-1">
-                Векторные эмбеддинги (bge-m3):
+                Архив сделок и сигналов:
               </span>
               <p className="text-[11px] text-slate-400">
-                Генерация 1024-мерных векторов через <code className="text-cyan-300">bge-m3</code> в Ollama Cloud для разбора сделок и кластеризации каналов.
-              </p>
-            </div>
-
-            <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-              <span className="text-[10px] text-purple-400 font-bold block mb-1">
-                Локальный индекс DuckDB VSS:
-              </span>
-              <p className="text-[11px] text-slate-400">
-                Локальный векторный поиск HNSW для мгновенного нахождения исторических прецедентов без сетевых задержек внешних БД.
+                Хранение закрытых позиций, статистики каналов и параметров риска в <code className="text-cyan-300">data/runtime_state.json</code>.
               </p>
             </div>
           </div>
 
           <div className="text-[10px] font-mono text-slate-400 flex items-center justify-between pt-2 border-t border-slate-800">
-            <span>Модели: bge-m3 + gpt-oss:20b / 120b</span>
-            <span className={health?.nodes?.nodeD?.status === 'ACTIVE' ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
-              {health?.nodes?.nodeD?.status === 'ACTIVE' ? 'Память активна' : 'Ожидание ключа'}
-            </span>
+            <span>Синхронизация на диск</span>
+            <span className="text-emerald-400 font-bold">Активно</span>
           </div>
         </div>
 
@@ -244,8 +171,8 @@ export const TopologyView: React.FC<TopologyViewProps> = ({ health }) => {
                 <Shield className="w-4 h-4" />
               </div>
               <div>
-                <h3 className="font-bold text-sm text-white">Node E: Внешний Щит Cloudflare</h3>
-                <span className="text-[10px] font-mono text-rose-400">Zero-Trust и Dead-Man&apos;s Switch</span>
+                <h3 className="font-bold text-sm text-white">Внешний шлюз Cloudflare</h3>
+                <span className="text-[10px] font-mono text-rose-400">Geo-Proxy & Туннель</span>
               </div>
             </div>
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
@@ -254,25 +181,16 @@ export const TopologyView: React.FC<TopologyViewProps> = ({ health }) => {
           <div className="space-y-2 text-xs font-mono text-slate-300 my-4">
             <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
               <span className="text-[10px] text-rose-400 font-bold block mb-1">
-                Dead-Man&apos;s Switch (Cron каждую 1 мин):
+                Контроль доступности:
               </span>
               <p className="text-[11px] text-slate-400">
-                Cloudflare Worker пингует /health на Node A каждые 60с. Если цикл vCPU 0 завис &gt; 5с, шлет экстренный алерт в Telegram и отменяет ордера Bybit.
-              </p>
-            </div>
-
-            <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-              <span className="text-[10px] text-amber-400 font-bold block mb-1">
-                Безопасный доступ Zero-Trust:
-              </span>
-              <p className="text-[11px] text-slate-400">
-                Шифрованный туннель Cloudflare (<code className="text-cyan-300">cloudflared</code>) для управления со смартфона без открытия портов на сервере.
+                Проверка отклика ядра каждые 60с и доставка уведомлений через резервный контур.
               </p>
             </div>
           </div>
 
           <div className="text-[10px] font-mono text-slate-400 flex items-center justify-between pt-2 border-t border-slate-800">
-            <span>Сбоев подряд: 0</span>
+            <span>Сбоев подряд: {health?.nodes?.nodeE?.dead_man_failures ?? 0}</span>
             <span className="text-emerald-400 font-bold">Защита активна</span>
           </div>
         </div>

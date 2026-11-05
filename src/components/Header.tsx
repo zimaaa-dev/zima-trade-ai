@@ -4,16 +4,12 @@ import {
   ShieldCheck,
   Activity,
   Zap,
-  Flame,
   Radio,
   Server,
   RefreshCw,
   Key,
-  BookOpen,
   Wallet,
-  Sparkles,
   Power,
-  Bot,
   Lock,
   Bell,
 } from 'lucide-react';
@@ -27,10 +23,6 @@ interface HeaderProps {
   onKillSwitchReset: () => void;
   activeTab: string;
   onSelectTab: (tab: string) => void;
-  onOpenGuide: () => void;
-  isBeginnerMode?: boolean;
-  onToggleBeginnerMode?: () => void;
-  onOpenAiChat?: () => void;
   operatorUsername?: string;
   onOpenAuthSettings?: () => void;
   unreadNotificationsCount?: number;
@@ -44,10 +36,6 @@ export const Header: React.FC<HeaderProps> = ({
   onKillSwitchReset,
   activeTab,
   onSelectTab,
-  onOpenGuide,
-  isBeginnerMode = true,
-  onToggleBeginnerMode,
-  onOpenAiChat,
   operatorUsername,
   onOpenAuthSettings,
   unreadNotificationsCount = 0,
@@ -73,16 +61,9 @@ export const Header: React.FC<HeaderProps> = ({
     },
     {
       id: 'arena',
-      label: 'ИИ-Арена',
+      label: 'Стратегии',
       icon: Zap,
-      hint: 'Управление 3 нейро-ботами, RL-обучение и сравнение стратегий',
-    },
-    {
-      id: 'aichat',
-      label: 'ИИ-Аналитик',
-      icon: Bot,
-      badge: 'AI',
-      hint: 'Чат-аналитик: аудит портфеля, сканер трендов Bybit и ответы о системе',
+      hint: 'Торговые боты, веса факторов и калибровка параметров',
     },
     {
       id: 'firewall',
@@ -114,12 +95,6 @@ export const Header: React.FC<HeaderProps> = ({
       icon: RefreshCw,
       hint: 'Резервные копии и версии модулей',
     },
-    {
-      id: 'explorer',
-      label: 'Код',
-      icon: Flame,
-      hint: 'Исходная архитектура и формулы',
-    },
   ];
 
   return (
@@ -134,7 +109,7 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
             <div className="flex items-center gap-2">
               <span className="font-bold tracking-tight text-sm sm:text-[15px] text-white whitespace-nowrap">
-                ZimaTrade <span className="text-cyan-400 font-semibold">AI</span>
+                ZimaTrade
               </span>
               <span className="hidden md:inline-flex items-center gap-1.5 text-[11px] font-mono text-slate-400">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
@@ -150,7 +125,7 @@ export const Header: React.FC<HeaderProps> = ({
                 type="button"
                 onClick={() => onModeChange('SHADOW')}
                 aria-pressed={currentMode === 'SHADOW'}
-                title="Безопасная торговля на виртуальные $10,000 по реальным котировкам Bybit"
+                title="Торговля на виртуальные $10,000 по реальным котировкам Bybit"
                 className={`px-2.5 sm:px-3.5 py-1 rounded-lg text-[11px] sm:text-xs transition-all flex items-center gap-1.5 whitespace-nowrap ${
                   currentMode === 'SHADOW'
                     ? 'bg-gradient-to-r from-cyan-500/30 to-blue-600/30 text-white font-bold border-2 border-cyan-400 shadow-[0_0_14px_rgba(34,211,238,0.28)]'
@@ -201,7 +176,7 @@ export const Header: React.FC<HeaderProps> = ({
               <button
                 type="button"
                 onClick={() => onSelectTab('arena')}
-                title="Текущий активный профиль всех ИИ-ботов (нажмите для тонкой настройки в ИИ-Арене)"
+                title="Текущий активный профиль всех стратегий"
                 className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-400/35 text-xs transition shrink-0"
               >
                 <Zap className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
@@ -240,38 +215,6 @@ export const Header: React.FC<HeaderProps> = ({
               </MetricTooltip>
             </div>
 
-            {/* Quick AI Analyst Launcher */}
-            <button
-              type="button"
-              onClick={() => (onOpenAiChat ? onOpenAiChat() : onSelectTab('aichat'))}
-              className={`p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 border ${
-                activeTab === 'aichat'
-                  ? 'bg-gradient-to-r from-cyan-500/25 to-blue-600/25 text-cyan-200 border-cyan-400/50 shadow-sm'
-                  : 'bg-slate-900/80 text-slate-300 border-white/[0.07] hover:bg-slate-800 hover:text-white'
-              }`}
-              title="Открыть ИИ-Аналитик поверх текущего экрана: аудит портфеля и ответы на вопросы"
-            >
-              <Bot className="w-3.5 h-3.5 text-cyan-400" />
-              <span className="hidden sm:inline">ИИ-Чат</span>
-            </button>
-
-            {/* Smart Assistant Toggle */}
-            {onToggleBeginnerMode && (
-              <button
-                type="button"
-                onClick={onToggleBeginnerMode}
-                className={`p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 border ${
-                  isBeginnerMode
-                    ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-500/15'
-                    : 'bg-slate-900/80 text-slate-400 border-white/[0.07] hover:text-slate-200'
-                }`}
-                title="Показать или скрыть быстрые пресеты и подсказки"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                <span className="hidden sm:inline">Помощник</span>
-              </button>
-            )}
-
             {/* Notification Center Bell */}
             <button
               type="button"
@@ -293,16 +236,6 @@ export const Header: React.FC<HeaderProps> = ({
                   {unreadNotificationsCount > 9 ? '9+' : unreadNotificationsCount}
                 </span>
               )}
-            </button>
-
-            {/* Guide Modal */}
-            <button
-              type="button"
-              onClick={onOpenGuide}
-              className="p-1.5 rounded-lg bg-slate-900/80 hover:bg-slate-800 text-slate-400 hover:text-white border border-white/[0.07] transition"
-              title="Открыть краткую инструкцию по платформе"
-            >
-              <BookOpen className="w-4 h-4" />
             </button>
 
             {/* Operator Security & Auth Settings Button */}
@@ -352,13 +285,7 @@ export const Header: React.FC<HeaderProps> = ({
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => {
-                  if (tab.id === 'aichat' && onOpenAiChat) {
-                    onOpenAiChat();
-                  } else {
-                    onSelectTab(tab.id);
-                  }
-                }}
+                onClick={() => onSelectTab(tab.id)}
                 title={tab.hint}
                 className={`px-3 sm:px-3.5 py-2.5 text-xs font-medium transition-all flex items-center gap-1.5 sm:gap-2 border-b-2 whitespace-nowrap shrink-0 ${
                   isActive
@@ -368,11 +295,6 @@ export const Header: React.FC<HeaderProps> = ({
               >
                 <Icon className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-cyan-400' : 'text-slate-500'}`} />
                 <span>{tab.label}</span>
-                {(tab as any).badge && (
-                  <span className="px-1.5 py-0.2 rounded text-[9px] font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-400/30">
-                    {(tab as any).badge}
-                  </span>
-                )}
               </button>
             );
           })}

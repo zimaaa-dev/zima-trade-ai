@@ -262,7 +262,7 @@ export const IntelligenceView: React.FC = () => {
         }
         setStatusBanner({
           type: 'success',
-          text: `Источник «${data.added?.title || targetUsername}» (${data.added?.username || targetUsername}) подключен к ИИ-агенту TG Alpha Parser!`,
+          text: `Источник «${data.added?.title || targetUsername}» (${data.added?.username || targetUsername}) подключен к парсеру сигналов.`,
         });
       }
     } catch (err: any) {
@@ -288,7 +288,7 @@ export const IntelligenceView: React.FC = () => {
         setChannels(data.channels || []);
         setStatusBanner({
           type: 'info',
-          text: `Источник «${ch.title}» ${nextEnabled ? 'включен для чтения сигналов' : 'отключен от ИИ-парсера'}.`,
+          text: `Источник «${ch.title}» ${nextEnabled ? 'включен для чтения сигналов' : 'отключен от парсера'}.`,
         });
       }
     } catch (err) {
@@ -345,7 +345,7 @@ export const IntelligenceView: React.FC = () => {
         setStatusBanner({
           type: 'success',
           text: data.scannedItem
-            ? `Получена свежая сводка из «${data.scannedItem.sourceTitle}» по ${data.scannedItem.symbol}! Сентимент передан в ИИ-Арену и в @zimatradeai_bot.`
+            ? `Получена свежая сводка из «${data.scannedItem.sourceTitle}» по ${data.scannedItem.symbol}.`
             : 'Сканирование завершено.',
         });
       }
@@ -412,21 +412,21 @@ export const IntelligenceView: React.FC = () => {
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-base sm:text-lg font-extrabold text-white leading-snug">
-                Источники Новостей, Telegram-Каналы и 2-Ступенчатый Парсер ИИ
+                Источники Новостей, Telegram-Каналы и Парсер Сигналов
               </h2>
               <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-500/30 whitespace-nowrap shrink-0">
                 TG ALPHA PARSER + RSS
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-              Подключайте свои Telegram-каналы (@channel), новостные RSS и анонсы бирж — сигналы автоматически усиливают фактор Sentiment у ИИ-ботов.
+              Подключайте Telegram-каналы (@channel), новостные RSS и анонсы бирж для формирования индекса сентимента и поиска сетапов.
             </p>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
           <div className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono flex items-center gap-2">
-            <span className="text-slate-400">Сентимент ИИ:</span>
+            <span className="text-slate-400">Индекс сентимента:</span>
             <span
               className={`font-bold ${
                 weightedSentiment > 0.05
@@ -615,7 +615,7 @@ export const IntelligenceView: React.FC = () => {
 
                 <div>
                   <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 mb-1">
-                    <span>Вес влияния на ИИ:</span>
+                    <span>Вес источника:</span>
                     <span className="text-cyan-300 font-bold">{Math.round(newInfluenceWeight * 100)}%</span>
                   </div>
                   <input
@@ -636,7 +636,7 @@ export const IntelligenceView: React.FC = () => {
                 className="w-full py-2.5 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-cyan-900/20 transition flex items-center justify-center gap-2"
               >
                 <Plus className="w-4 h-4 shrink-0" />
-                <span>{addingSource ? 'Подключение источника...' : 'Добавить источник в ИИ-парсер'}</span>
+                <span>{addingSource ? 'Подключение источника...' : 'Добавить источник в парсер'}</span>
               </button>
             </form>
 
@@ -753,7 +753,7 @@ export const IntelligenceView: React.FC = () => {
                         <span className="text-[10px] text-slate-400">
                           {item.extractedSetup
                             ? `Сетап: ${item.extractedSetup.side} @ $${item.extractedSetup.entryPrice} · SL $${item.extractedSetup.stopLoss} · TP1 $${item.extractedSetup.tp1}`
-                            : `Вес влияния на ИИ: ${Math.round(item.impactWeight * 100)}%`}
+                            : `Вес источника: ${Math.round(item.impactWeight * 100)}%`}
                         </span>
                         <button
                           type="button"
@@ -783,7 +783,7 @@ export const IntelligenceView: React.FC = () => {
             </span>
           </div>
           <span className="text-[11px] text-slate-400 font-mono">
-            Управление статусом, весом влияния на ИИ и фильтрацией фейк-правок
+            Управление статусом, весом источника и фильтрацией сигналов
           </span>
         </div>
 
@@ -833,7 +833,7 @@ export const IntelligenceView: React.FC = () => {
                     <span className="font-bold text-white">{ch.trustScore.toFixed(0)}%</span>
                   </div>
                   <div>
-                    <span className="text-slate-500 block text-[10px]">Вес ИИ</span>
+                    <span className="text-slate-500 block text-[10px]">Вес</span>
                     <span className="font-bold text-cyan-300">{Math.round((ch.influenceWeight ?? 0.75) * 100)}%</span>
                   </div>
                   <div>
@@ -853,7 +853,7 @@ export const IntelligenceView: React.FC = () => {
                     }`}
                   >
                     <Power className="w-3.5 h-3.5" />
-                    <span>{isEnabled ? 'Активен в ИИ' : 'Отключен'}</span>
+                    <span>{isEnabled ? 'Активен' : 'Отключен'}</span>
                   </button>
 
                   <button
@@ -879,7 +879,7 @@ export const IntelligenceView: React.FC = () => {
                 <th className="py-2.5 px-3">Тип</th>
                 <th className="py-2.5 px-3">Статус (Клик для смены)</th>
                 <th className="py-2.5 px-3">Рейтинг доверия</th>
-                <th className="py-2.5 px-3">Вес влияния ИИ</th>
+                <th className="py-2.5 px-3">Вес источника</th>
                 <th className="py-2.5 px-3">Сигналов / WinRate</th>
                 <th className="py-2.5 px-3">Профит-фактор</th>
                 <th className="py-2.5 px-3 text-right">Управление</th>
@@ -1034,7 +1034,7 @@ export const IntelligenceView: React.FC = () => {
               className="w-full sm:w-auto justify-center px-5 py-2.5 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-cyan-900/30 transition flex items-center gap-2"
             >
               <Sparkles className="w-4 h-4 shrink-0" />
-              <span>{parsing ? 'Разбор через ИИ...' : 'Запустить 2-ступенчатый парсер'}</span>
+              <span>{parsing ? 'Разбор сигнала...' : 'Запустить 2-ступенчатый парсер'}</span>
             </button>
           </div>
         </div>
@@ -1047,12 +1047,12 @@ export const IntelligenceView: React.FC = () => {
                 <Filter className="w-4 h-4 text-emerald-400 shrink-0" />
                 <span>Результат парсинга и проверки свежести цены</span>
               </span>
-              <span className="text-[11px] font-mono text-slate-400">Строгий Pydantic JSON</span>
+              <span className="text-[11px] font-mono text-slate-400">Строгий JSON</span>
             </div>
 
             {!parseResult ? (
               <div className="text-center py-12 text-slate-500 text-xs font-mono">
-                Нажмите «Запустить 2-ступенчатый парсер» или выберите сигнал из живой ленты выше для проверки структуры и фильтрации устаревшей цены.
+                Нажмите «Запустить 2-ступенчатый парсер» или выберите сигнал из ленты выше.
               </div>
             ) : (
               <div className="space-y-3 font-mono text-xs">
@@ -1122,13 +1122,13 @@ export const IntelligenceView: React.FC = () => {
                   </div>
                 </div>
 
-                {/* AI / Quantitative L2 Orderbook Context */}
+                {/* Quantitative L2 Orderbook Context */}
                 {parseResult.parsed.aiExplanation && (
                   <div className="bg-cyan-950/20 border border-cyan-800/30 p-3 rounded-lg text-[11px] text-cyan-200 leading-relaxed">
                     <span className="font-bold text-cyan-400 block mb-1">Аналитическое заключение по сигналу:</span>
                     {parseResult.parsed.aiExplanation.includes('aborted due to timeout') ||
                     parseResult.parsed.aiExplanation.includes('Не удалось связаться')
-                      ? `Квантовый аудит ZimaTrade AI (${parseResult.parsed.symbol} ${parseResult.parsed.side}): соотношение Risk/Reward = ${parseResult.freshness.riskRewardRatio?.toFixed(2) || '1.90'}, пройдено ${(parseResult.freshness.pathProgressionPct * 100).toFixed(1)}% пути к TP1. ${
+                      ? `Аудит сигнала ZimaTrade (${parseResult.parsed.symbol} ${parseResult.parsed.side}): соотношение Risk/Reward = ${parseResult.freshness.riskRewardRatio?.toFixed(2) || '1.90'}, пройдено ${(parseResult.freshness.pathProgressionPct * 100).toFixed(1)}% пути к TP1. ${
                           parseResult.freshness.valid
                             ? 'Сигнал соответствует критериям свежести (<30% пути) и минимальному R:R >= 1.20 — одобрен для сопровождения с частичной фиксацией 60% на TP1 и переводом стопа в безубыток.'
                             : `Сигнал отклонен фильтром риска (${parseResult.freshness.reason}).`
