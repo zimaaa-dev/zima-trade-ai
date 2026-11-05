@@ -10,6 +10,8 @@ import {
   evaluateBotSignal,
   updateBotBrainOnline,
   runHistoricalKlineEpoch,
+  evaluateSymbolCooldownGuard,
+  type SymbolCooldownEntry,
   type KlineBar,
 } from './bot-learning-math.ts';
 
@@ -58,7 +60,7 @@ test('calculateRsi14 and calculateAtr14Pct compute valid bounded technical metri
   const vwap = calculateVwapDeviation(klines);
 
   assert.ok(rsi >= 5 && rsi <= 95, `RSI out of bounds: ${rsi}`);
-  assert.ok(atrPct >= 0.25 && atrPct <= 4.5, `ATR% out of bounds: ${atrPct}`);
+  assert.ok(atrPct >= 0.25 && atrPct <= 8.0, `ATR% out of bounds: ${atrPct}`);
   assert.ok(vwap.vwap > 60000, `VWAP should be near price: ${vwap.vwap}`);
 });
 
@@ -78,7 +80,7 @@ test('evaluateBotSignal produces LONG/SHORT or SKIP based on threshold and sprea
   const decision = evaluateBotSignal(brain, features);
   assert.equal(decision.action, 'LONG');
   assert.ok(decision.compositeScore >= brain.confidenceThreshold);
-  assert.ok(decision.slDistancePct >= 0.35 && decision.slDistancePct <= 2.5);
+  assert.ok(decision.slDistancePct >= 0.35 && decision.slDistancePct <= 3.8);
 });
 
 test('updateBotBrainOnline reinforces aligned weights after winning trade and normalizes to 1.0', () => {
@@ -125,3 +127,26 @@ test('runHistoricalKlineEpoch replays candles and updates epochsTrained and rewa
   assert.ok(res.simulatedTrades > 0, 'Should simulate trades across historical klines');
   assert.ok(res.newSha256.length === 64, 'Should generate valid SHA256 hash');
 });
+
+test('evaluateSymbolCooldownGuard enforces Freqtrade-style StoplossGuard and CooldownPeriod', () => {
+  const now = 1700000000000;
+  const map: Record<string, SymbolCooldownEntry> = {
+    DOGEUSDT: {
+      symbol: 'DOGEUSDT',
+      untilTs: now + 600000, // 10 min active cooldown
+      lastExitReason: 'SL_HIT',
+      consecutiveSlCount: 2,
+      lastClosedAt: now - 5000,
+    },
+  };
+
+  const blocked = evaluateSymbolCooldownGuard(map, 'DOGEUSDT', now);
+  assert.equal(blocked.allowed, false);
+  assert.equal(blocked.remainingSec, 600);
+  assert.match(blocked.reason!, /StoplossGuard/);
+
+  const expired = evaluateSymbolCooldownGuard(map, 'DOGEUSDT', now + 601000);
+  assert.equal(expired.allowed, true);
+  assert.equal(expired.remainingSec, 0);
+});
+

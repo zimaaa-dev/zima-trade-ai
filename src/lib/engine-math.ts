@@ -472,3 +472,97 @@ export function validateSignalFreshness(params: {
     pathProgressionPct,
   };
 }
+
+/**
+ * 8. High-Water-Mark (HWM) Dynamic ATR Trailing Stop & Fee-Safe Break-Even
+ * Inspired by Hummingbot V2 Triple-Barrier Executor & Jesse custom_stoploss:
+ * - Tracks `peakPrice` (highest mark price for LONG, lowest for SHORT).
+ * - Once favorable excursion from entry >= `activationPct` (default 0.65%), activates trailing stop.
+ * - Guarantees a minimum fee-safe Break-Even floor (`entryVwap * (1 ± 0.0018)`) covering round-trip taker fees (0.11%) + 0.07% net profit cushion.
+ * - Trails behind `peakPrice` by `trailingCallbackPct` (or locks 60% of peak excursion), and strictly ratchets only in the favorable direction.
+ */
+export interface TrailingStopUpdate {
+  newSlPrice: number;
+  newPeakPrice: number;
+  updated: boolean;
+  isBreakEven: boolean;
+  isTrailing: boolean;
+}
+
+export function computeTrailingStopPrice(params: {
+  side: 'LONG' | 'SHORT';
+  entryPrice: number;
+  currentPrice: number;
+  currentSlPrice: number;
+  previousPeakPrice?: number;
+  priceDecimals?: number;
+  activationPct?: number; // default 0.65%
+  feeBufferPct?: number; // default 0.18% (0.11% round-trip fee + 0.07% net lock)
+  lockFraction?: number; // default 0.60 (locks 60% of peak excursion)
+}): TrailingStopUpdate {
+  const {
+    side,
+    entryPrice,
+    currentPrice,
+    currentSlPrice,
+    previousPeakPrice,
+    priceDecimals = 4,
+    activationPct = 0.65,
+    feeBufferPct = 0.18,
+    lockFraction = 0.60,
+  } = params;
+
+  const dirSign = side === 'LONG' ? 1 : -1;
+  const prevPeak =
+    typeof previousPeakPrice === 'number' && previousPeakPrice > 0
+      ? previousPeakPrice
+      : entryPrice;
+
+  const newPeakPrice =
+    side === 'LONG'
+      ? Math.max(prevPeak, currentPrice)
+      : Math.min(prevPeak, currentPrice);
+
+  const peakExcursionPct = ((newPeakPrice - entryPrice) / Math.max(1e-9, entryPrice)) * dirSign * 100;
+
+  if (peakExcursionPct < activationPct) {
+    return {
+      newSlPrice: currentSlPrice,
+      newPeakPrice,
+      updated: false,
+      isBreakEven: false,
+      isTrailing: false,
+    };
+  }
+
+  const minFeeCushion = entryPrice * (feeBufferPct / 100) * dirSign;
+  const rawTrailPrice = entryPrice + (newPeakPrice - entryPrice) * lockFraction;
+
+  const candidateSl =
+    side === 'LONG'
+      ? Math.max(entryPrice + minFeeCushion, rawTrailPrice)
+      : Math.min(entryPrice + minFeeCushion, rawTrailPrice);
+
+  const roundedSl = Number(candidateSl.toFixed(priceDecimals));
+  const isBetterSl =
+    side === 'LONG' ? roundedSl > currentSlPrice : roundedSl < currentSlPrice;
+
+  if (isBetterSl) {
+    return {
+      newSlPrice: roundedSl,
+      newPeakPrice,
+      updated: true,
+      isBreakEven: true,
+      isTrailing: true,
+    };
+  }
+
+  return {
+    newSlPrice: currentSlPrice,
+    newPeakPrice,
+    updated: false,
+    isBreakEven: side === 'LONG' ? currentSlPrice > entryPrice : currentSlPrice < entryPrice,
+    isTrailing: true,
+  };
+}
+

@@ -8,6 +8,7 @@ import {
   checkLimitOrderFill,
   dynamicTPCollapse,
   validateSignalFreshness,
+  computeTrailingStopPrice,
   type OrderbookL2,
   type InstrumentRules,
 } from './engine-math.ts';
@@ -214,3 +215,31 @@ test('Signal Freshness: Stale filter rejects signal when price has progressed > 
   assert.equal(fresh.status, 'ACCEPTED');
   assert.equal(fresh.riskRewardRatio, 2.0); // Reward 1000 / Risk 500 = 2.0
 });
+
+test('High-Water-Mark Trailing Stop: ratchets monotonically and preserves peak on pullback', () => {
+  // LONG entry at 100.0, initial SL at 98.5
+  const step1 = computeTrailingStopPrice({
+    side: 'LONG',
+    entryPrice: 100.0,
+    currentPrice: 101.0, // +1.0% >= 0.65% activation
+    currentSlPrice: 98.5,
+    priceDecimals: 2,
+  });
+  assert.equal(step1.updated, true);
+  assert.equal(step1.newPeakPrice, 101.0);
+  assert.equal(step1.newSlPrice, 100.6); // 60% of +1.0 move locked above entry
+
+  // Price pulls back to 100.7 — peakPrice must remain 101.0 and SL must NOT move down
+  const step2 = computeTrailingStopPrice({
+    side: 'LONG',
+    entryPrice: 100.0,
+    currentPrice: 100.7,
+    currentSlPrice: step1.newSlPrice,
+    previousPeakPrice: step1.newPeakPrice,
+    priceDecimals: 2,
+  });
+  assert.equal(step2.updated, false);
+  assert.equal(step2.newPeakPrice, 101.0);
+  assert.equal(step2.newSlPrice, 100.6);
+});
+

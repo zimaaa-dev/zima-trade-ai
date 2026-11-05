@@ -131,6 +131,7 @@ import {
   executeMarketOrderL2,
   dynamicTPCollapse,
   validateSignalFreshness,
+  computeTrailingStopPrice,
   type OrderbookL2,
   type InstrumentRules,
 } from './src/lib/engine-math.ts';
@@ -156,6 +157,8 @@ import {
   updateBotBrainOnline,
   runHistoricalKlineEpoch,
   normalizeWeights,
+  evaluateSymbolCooldownGuard,
+  type SymbolCooldownEntry,
   type KlineBar,
   type BotBrainState,
   type XaiDecisionRecord,
@@ -1464,6 +1467,52 @@ let cachedTickers: any[] = [];
 let lastTickersFetchTs = 0;
 const cachedOrderbooks: Record<string, { book: OrderbookL2; fetchedAt: number }> = {};
 
+const BYBIT_PUBLIC_HEADERS: Record<string, string> = {
+  'User-Agent':
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  Accept: 'application/json',
+};
+
+async function fetchBybitPublicJson(pathAndQuery: string, timeoutMs = 4500): Promise<{ ok: boolean; data: any; rttMs: number }> {
+  const endpoints = ['https://api.bybit.com', 'https://api.bytick.com'];
+  for (const base of endpoints) {
+    try {
+      const t0 = Date.now();
+      const res = await fetch(`${base}${pathAndQuery}`, {
+        headers: BYBIT_PUBLIC_HEADERS,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const rttMs = Date.now() - t0;
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.retCode === 0) {
+          return { ok: true, data, rttMs };
+        }
+      }
+    } catch {
+      // try next mirror
+    }
+  }
+  return { ok: false, data: null, rttMs: 100 };
+}
+
+function resolveSafeSymbolFallbackPrice(symbol: string): number {
+  const fromScreener = systemState.screenerSymbols.find((s) => s.symbol === symbol)?.price;
+  if (fromScreener && fromScreener > 0) return fromScreener;
+  const fromPos = systemState.activePositions.find((p) => p.symbol === symbol);
+  if (fromPos) {
+    if (fromPos.currentPrice && fromPos.currentPrice > 0) return fromPos.currentPrice;
+    if (fromPos.entryVwap && fromPos.entryVwap > 0) return fromPos.entryVwap;
+  }
+  const fromOrd = systemState.limitOrdersQueue.find((o) => o.symbol === symbol);
+  if (fromOrd && fromOrd.limitPrice > 0) return fromOrd.limitPrice;
+  if (symbol === 'BTCUSDT') return 68500.0;
+  if (symbol === 'ETHUSDT') return 2550.0;
+  if (symbol === 'SOLUSDT') return 145.0;
+  if (symbol === 'BNBUSDT') return 580.0;
+  return 1.0;
+}
+
 // Fetch real 24h tickers from Bybit v5 Linear
 async function fetchRealBybitTickers(): Promise<any[]> {
   const now = Date.now();
@@ -1472,13 +1521,9 @@ async function fetchRealBybitTickers(): Promise<any[]> {
   }
 
   try {
-    const t0 = Date.now();
-    const res = await fetch('https://api.bybit.com/v5/market/tickers?category=linear');
-    const rtt = Date.now() - t0;
-    systemState.pings.bybit = Math.min(150, Math.max(10, rtt));
-
-    if (res.ok) {
-      const data = await res.json();
+    const { ok, data, rttMs } = await fetchBybitPublicJson('/v5/market/tickers?category=linear', 5000);
+    if (ok && data) {
+      systemState.pings.bybit = Math.min(150, Math.max(10, rttMs));
       const list = data?.result?.list || [];
       const filtered = list
         .filter((t: any) => t.symbol.endsWith('USDT'))
@@ -1745,27 +1790,26 @@ async function fetchRealBybitOrderbook(symbol: string): Promise<OrderbookL2> {
   }
 
   try {
-    const t0 = Date.now();
-    const res = await fetch(`https://api.bybit.com/v5/market/orderbook?category=linear&symbol=${symbol}&limit=50`);
-    const rtt = Date.now() - t0;
-    systemState.pings.bybit = Math.min(150, Math.max(10, rtt));
+    const { ok, data, rttMs } = await fetchBybitPublicJson(
+      `/v5/market/orderbook?category=linear&symbol=${encodeURIComponent(symbol)}&limit=50`,
+      4000
+    );
+    if (ok && data?.result) {
+      systemState.pings.bybit = Math.min(150, Math.max(10, rttMs));
+      const rawBids = data.result.b || [];
+      const rawAsks = data.result.a || [];
 
-    if (res.ok) {
-      const data = await res.json();
-      if (data.retCode === 0 && data.result) {
-        const rawBids = data.result.b || [];
-        const rawAsks = data.result.a || [];
+      const bids = rawBids.map((b: string[]) => ({
+        price: parseFloat(b[0]),
+        qty: parseFloat(b[1]),
+      }));
 
-        const bids = rawBids.map((b: string[]) => ({
-          price: parseFloat(b[0]),
-          qty: parseFloat(b[1]),
-        }));
+      const asks = rawAsks.map((a: string[]) => ({
+        price: parseFloat(a[0]),
+        qty: parseFloat(a[1]),
+      }));
 
-        const asks = rawAsks.map((a: string[]) => ({
-          price: parseFloat(a[0]),
-          qty: parseFloat(a[1]),
-        }));
-
+      if (bids.length > 0 && asks.length > 0) {
         const book: OrderbookL2 = {
           timestamp: parseInt(data.result.ts || Date.now().toString()),
           seqId: parseInt(data.result.u || Math.floor(Date.now() / 100).toString()),
@@ -1784,14 +1828,21 @@ async function fetchRealBybitOrderbook(symbol: string): Promise<OrderbookL2> {
   // Graceful fallback to cached or synthesized depth if rate-limited
   if (cached) return cached.book;
 
-  const ticker = systemState.screenerSymbols.find((s) => s.symbol === symbol) || { price: 77500.0 };
-  const mid = ticker.price;
-  const tick = instrumentRules[symbol]?.tickSize || 0.1;
+  const mid = resolveSafeSymbolFallbackPrice(symbol);
+  const inst = resolveInstrumentRules(symbol, mid);
+  const tick = inst.tickSize;
+  const priceDecimals = tick < 0.01 ? 4 : tick < 0.1 ? 2 : 1;
   const bids = [];
   const asks = [];
   for (let i = 0; i < 50; i++) {
-    bids.push({ price: Number((mid - (i + 1) * tick).toFixed(2)), qty: Number((0.2 + (i % 3) * 0.1).toFixed(3)) });
-    asks.push({ price: Number((mid + (i + 1) * tick).toFixed(2)), qty: Number((0.2 + (i % 3) * 0.1).toFixed(3)) });
+    bids.push({
+      price: Number(Math.max(tick, mid - (i + 1) * tick).toFixed(priceDecimals)),
+      qty: Number(Math.max(inst.minQty, (250 / Math.max(0.0001, mid)) * (1 + (i % 3) * 0.25)).toFixed(3)),
+    });
+    asks.push({
+      price: Number((mid + (i + 1) * tick).toFixed(priceDecimals)),
+      qty: Number(Math.max(inst.minQty, (250 / Math.max(0.0001, mid)) * (1 + (i % 3) * 0.25)).toFixed(3)),
+    });
   }
   return { timestamp: Date.now(), seqId: Date.now(), bids, asks };
 }
@@ -1808,10 +1859,11 @@ async function fetchRealBybitKlines(symbol: string, interval: string = '5', limi
   }
 
   try {
-    const url = `https://api.bybit.com/v5/market/kline?category=linear&symbol=${symbol}&interval=${interval}&limit=${limit}`;
-    const res = await fetch(url);
-    if (res.ok) {
-      const data = await res.json();
+    const { ok, data } = await fetchBybitPublicJson(
+      `/v5/market/kline?category=linear&symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${limit}`,
+      4500
+    );
+    if (ok && data) {
       const rawList = data?.result?.list;
       if (Array.isArray(rawList) && rawList.length > 0) {
         // Bybit returns newest first; reverse to chronological (oldest -> newest)
@@ -1841,9 +1893,8 @@ async function fetchRealBybitKlines(symbol: string, interval: string = '5', limi
 
   if (cached) return cached.bars;
 
-  // Deterministic fallback klines anchored to live screener price
-  const ticker = systemState.screenerSymbols.find((s) => s.symbol === symbol) || { price: 68500.0 };
-  const basePrice = ticker.price || 68500.0;
+  // Deterministic fallback klines anchored to live screener / position price for this exact symbol
+  const basePrice = resolveSafeSymbolFallbackPrice(symbol);
   const fallbackBars: KlineBar[] = [];
   let p = basePrice * 0.992;
   for (let i = 0; i < limit; i++) {
@@ -2430,12 +2481,20 @@ app.post('/api/orders/execute', async (req: Request, res: Response) => {
   }
 });
 
+// Freqtrade-style Symbol Cooldown & StoplossGuard Map (prevents whipsaw/revenge re-entry after SL)
+const symbolCooldowns: Record<string, SymbolCooldownEntry> = {};
+
+// Mutex lock preventing overlapping concurrent executions of runBotEngineCycle
+let isBotCycleRunning = false;
+
 // Helper to record a closed position into closedTrades, walletLedger, and trigger Online RL Brain Adaptation
 function recordClosedPosition(
   pos: any,
   exitPrice: number,
-  exitReason: 'TP_HIT' | 'SL_HIT' | 'MANUAL_CLOSE'
+  exitReason: 'TP_HIT' | 'SL_HIT' | 'MANUAL_CLOSE',
+  options?: { isPartialScaleOut?: boolean }
 ): ClosedTradeRecord {
+  const isPartial = options?.isPartialScaleOut === true;
   const metrics = calculateClosedTradeMetrics({
     side: pos.side,
     qty: pos.qty,
@@ -2468,20 +2527,48 @@ function recordClosedPosition(
   };
 
   systemState.closedTrades.unshift(trade);
-  if (systemState.closedTrades.length > 150) {
+  if (systemState.closedTrades.length > 500) {
     systemState.closedTrades.pop();
   }
 
   systemState.totalRealizedPnlUsdt = Number((systemState.totalRealizedPnlUsdt + trade.netPnlUsdt).toFixed(2));
   recalculateRolling24hPnl();
 
+  // Update Freqtrade-inspired CooldownPeriod & StoplossGuard on full trade exit
+  if (!isPartial && pos.symbol) {
+    const nowTs = Date.now();
+    const prevCd = symbolCooldowns[pos.symbol];
+    if (exitReason === 'SL_HIT' && trade.netPnlUsdt < 0) {
+      const nextConsecutiveSl = (prevCd?.consecutiveSlCount || 0) + 1;
+      // 10 min cooldown after 1st SL; 25 min StoplossGuard after 2+ consecutive SLs on the same coin
+      const cooldownMs = nextConsecutiveSl >= 2 ? 25 * 60 * 1000 : 10 * 60 * 1000;
+      symbolCooldowns[pos.symbol] = {
+        symbol: pos.symbol,
+        untilTs: nowTs + cooldownMs,
+        lastExitReason: 'SL_HIT',
+        consecutiveSlCount: nextConsecutiveSl,
+        lastClosedAt: nowTs,
+      };
+    } else if (exitReason === 'TP_HIT' || trade.netPnlUsdt >= 0) {
+      // 90s post-TP cooldown to prevent FOMO re-entry on the exact same candle spike
+      symbolCooldowns[pos.symbol] = {
+        symbol: pos.symbol,
+        untilTs: nowTs + 90 * 1000,
+        lastExitReason: exitReason,
+        consecutiveSlCount: 0,
+        lastClosedAt: nowTs,
+      };
+    }
+  }
+
   const currentWalletBalance = Number((systemState.capitalUsdt + systemState.totalRealizedPnlUsdt).toFixed(2));
-  const reasonLabel =
-    exitReason === 'TP_HIT'
-      ? 'Take-Profit'
-      : exitReason === 'SL_HIT'
-      ? 'Stop-Loss'
-      : 'Ручное закрытие';
+  const reasonLabel = isPartial
+    ? 'TP1 Частичный фиксаж (60%)'
+    : exitReason === 'TP_HIT'
+    ? 'Take-Profit'
+    : exitReason === 'SL_HIT'
+    ? 'Stop-Loss'
+    : 'Ручное закрытие';
 
   systemState.walletLedger.unshift({
     id: `led-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
@@ -2494,96 +2581,103 @@ function recordClosedPosition(
     mode: trade.mode,
   });
 
-  if (systemState.walletLedger.length > 150) {
+  if (systemState.walletLedger.length > 500) {
     systemState.walletLedger.pop();
   }
 
   // Online Reinforcement Learning (Contextual Bandit Policy Update) for AI Bot
   const agent = systemState.agents.find((a) => a.agentId === pos.botId);
   if (agent) {
-    agent.tradesCount = (agent.tradesCount || 0) + 1;
     agent.virtualBalance = Number(((agent.virtualBalance || 1500) + trade.netPnlUsdt).toFixed(2));
 
-    if (trade.netPnlUsdt >= 0) {
-      agent.profitFactor = Number(Math.min(3.5, (agent.profitFactor || 1.5) + 0.02).toFixed(2));
-      agent.sharpeRatio = Number(Math.min(4.0, (agent.sharpeRatio || 1.6) + 0.015).toFixed(2));
-    } else {
-      agent.profitFactor = Number(Math.max(0.85, (agent.profitFactor || 1.5) - 0.015).toFixed(2));
-      agent.maxDrawdownPct = Math.min(4.9, Math.max(1.0, Number(((agent.maxDrawdownPct || 3.5) + 0.1).toFixed(1))));
-    }
+    // Only increment tradesCount and run full RL weight update once per full position lifecycle
+    if (!isPartial) {
+      agent.tradesCount = (agent.tradesCount || 0) + 1;
+      const combinedTradeNetPnl = Number(((pos.realizedScaleOutPnlUsdt || 0) + trade.netPnlUsdt).toFixed(2));
 
-    const currentBrain: BotBrainState =
-      agent.brain || createDefaultBotBrain(agent.engineType, agent.agentId);
+      if (combinedTradeNetPnl >= 0) {
+        agent.profitFactor = Number(Math.min(3.5, (agent.profitFactor || 1.5) + 0.02).toFixed(2));
+        agent.sharpeRatio = Number(Math.min(4.0, (agent.sharpeRatio || 1.6) + 0.015).toFixed(2));
+      } else {
+        agent.profitFactor = Number(Math.max(0.85, (agent.profitFactor || 1.5) - 0.015).toFixed(2));
+        agent.maxDrawdownPct = Math.min(4.9, Math.max(1.0, Number(((agent.maxDrawdownPct || 3.5) + 0.1).toFixed(1))));
+      }
 
-    const dirSign = pos.side === 'LONG' ? 1 : -1;
-    const entryFeatures = pos.entryFeatures || {
-      obi: 0.32 * dirSign,
-      momentum: 0.28 * dirSign,
-      vwap: 0.18 * dirSign,
-      sentiment: 0.24 * dirSign,
-    };
+      const currentBrain: BotBrainState =
+        agent.brain || createDefaultBotBrain(agent.engineType, agent.agentId);
 
-    const riskBudgetUsdt = Math.max(
-      15.0,
-      systemState.capitalUsdt * ((agent.riskPerTradePct || 1.5) / 100)
-    );
-
-    const rlUpdate = updateBotBrainOnline({
-      agentId: agent.agentId,
-      brain: currentBrain,
-      entryFeatures,
-      side: pos.side,
-      netPnlUsdt: trade.netPnlUsdt,
-      riskBudgetUsdt,
-      symbol: pos.symbol,
-    });
-
-    agent.brain = rlUpdate.updatedBrain;
-    agent.sha256 = rlUpdate.newSha256;
-
-    // Attach rlOutcome to matching XAI decision record if found
-    const xaiRecord = systemState.xaiDecisions.find(
-      (d) =>
-        (pos.xaiDecisionId && d.id === pos.xaiDecisionId) ||
-        (d.botId === agent.agentId && d.symbol === pos.symbol && !d.rlOutcome)
-    );
-    if (xaiRecord) {
-      xaiRecord.rlOutcome = {
-        closedAt: Date.now(),
-        exitReason,
-        netPnlUsdt: trade.netPnlUsdt,
-        reward: rlUpdate.reward,
-        weightDelta: rlUpdate.weightDelta,
-        newThreshold: rlUpdate.updatedBrain.confidenceThreshold,
+      const dirSign = pos.side === 'LONG' ? 1 : -1;
+      const entryFeatures = pos.entryFeatures || {
+        obi: 0.32 * dirSign,
+        momentum: 0.28 * dirSign,
+        vwap: 0.18 * dirSign,
+        sentiment: 0.24 * dirSign,
       };
-    }
 
-    addBotLog({
-      botId: agent.agentId,
-      botName: agent.name,
-      action: 'SCAN_PASS',
-      symbol: pos.symbol,
-      side: pos.side,
-      pnl: trade.netPnlUsdt,
-      message: `RL-Адаптация весов [Reward ${rlUpdate.reward >= 0 ? '+' : ''}${rlUpdate.reward.toFixed(2)}R]: Δw(OBI=${rlUpdate.weightDelta.obiWeight >= 0 ? '+' : ''}${(rlUpdate.weightDelta.obiWeight * 100).toFixed(1)}%, Mom=${rlUpdate.weightDelta.momentumWeight >= 0 ? '+' : ''}${(rlUpdate.weightDelta.momentumWeight * 100).toFixed(1)}%, VWAP=${rlUpdate.weightDelta.vwapWeight >= 0 ? '+' : ''}${(rlUpdate.weightDelta.vwapWeight * 100).toFixed(1)}%) · Порог=${rlUpdate.updatedBrain.confidenceThreshold.toFixed(2)}.`,
-      rttMs: systemState.pings.bybit,
-    });
+      const riskBudgetUsdt = Math.max(
+        15.0,
+        systemState.capitalUsdt * ((agent.riskPerTradePct || 1.5) / 100)
+      );
+
+      const rlUpdate = updateBotBrainOnline({
+        agentId: agent.agentId,
+        brain: currentBrain,
+        entryFeatures,
+        side: pos.side,
+        netPnlUsdt: combinedTradeNetPnl,
+        riskBudgetUsdt,
+        symbol: pos.symbol,
+      });
+
+      agent.brain = rlUpdate.updatedBrain;
+      agent.sha256 = rlUpdate.newSha256;
+
+      // Attach rlOutcome to matching XAI decision record if found
+      const xaiRecord = systemState.xaiDecisions.find(
+        (d) =>
+          (pos.xaiDecisionId && d.id === pos.xaiDecisionId) ||
+          (d.botId === agent.agentId && d.symbol === pos.symbol && !d.rlOutcome)
+      );
+      if (xaiRecord) {
+        xaiRecord.rlOutcome = {
+          closedAt: Date.now(),
+          exitReason,
+          netPnlUsdt: combinedTradeNetPnl,
+          reward: rlUpdate.reward,
+          weightDelta: rlUpdate.weightDelta,
+          newThreshold: rlUpdate.updatedBrain.confidenceThreshold,
+        };
+      }
+
+      addBotLog({
+        botId: agent.agentId,
+        botName: agent.name,
+        action: 'SCAN_PASS',
+        symbol: pos.symbol,
+        side: pos.side,
+        pnl: combinedTradeNetPnl,
+        message: `RL-Адаптация весов [Reward ${rlUpdate.reward >= 0 ? '+' : ''}${rlUpdate.reward.toFixed(2)}R]: Δw(OBI=${rlUpdate.weightDelta.obiWeight >= 0 ? '+' : ''}${(rlUpdate.weightDelta.obiWeight * 100).toFixed(1)}%, Mom=${rlUpdate.weightDelta.momentumWeight >= 0 ? '+' : ''}${(rlUpdate.weightDelta.momentumWeight * 100).toFixed(1)}%, VWAP=${rlUpdate.weightDelta.vwapWeight >= 0 ? '+' : ''}${(rlUpdate.weightDelta.vwapWeight * 100).toFixed(1)}%) · Порог=${rlUpdate.updatedBrain.confidenceThreshold.toFixed(2)}.`,
+        rttMs: systemState.pings.bybit,
+      });
+    }
   }
 
-  const pnlSign = trade.netPnlUsdt >= 0 ? '+' : '';
-  const isSL = exitReason === 'SL_HIT';
-  const isTP = exitReason === 'TP_HIT';
+  if (!isPartial) {
+    const pnlSign = trade.netPnlUsdt >= 0 ? '+' : '';
+    const isSL = exitReason === 'SL_HIT';
+    const isTP = exitReason === 'TP_HIT';
 
-  emitAppNotification({
-    category: isSL ? 'STOP_LOSS' : isTP ? 'TAKE_PROFIT' : 'TRADE_CLOSE',
-    severity: isSL ? 'CRITICAL' : trade.netPnlUsdt > 0 ? 'SUCCESS' : 'WARNING',
-    title: `${isSL ? '🛑 Stop-Loss' : isTP ? '💰 Take-Profit' : 'Сделка закрыта'}: ${trade.symbol}`,
-    message: `${trade.botName || 'Оператор'} закрыл ${trade.side} ${trade.symbol}. Итог PnL: ${pnlSign}$${trade.netPnlUsdt.toFixed(2)} USDT (${pnlSign}${trade.roePct.toFixed(2)}%)`,
-    symbol: trade.symbol,
-    botName: trade.botName,
-    pnl: trade.netPnlUsdt,
-    isUrgent: isSL, // SL is critical, immediate Telegram push
-  });
+    emitAppNotification({
+      category: isSL ? 'STOP_LOSS' : isTP ? 'TAKE_PROFIT' : 'TRADE_CLOSE',
+      severity: isSL ? 'CRITICAL' : trade.netPnlUsdt > 0 ? 'SUCCESS' : 'WARNING',
+      title: `${isSL ? '🛑 Stop-Loss' : isTP ? '💰 Take-Profit' : 'Сделка закрыта'}: ${trade.symbol}`,
+      message: `${trade.botName || 'Оператор'} закрыл ${trade.side} ${trade.symbol}. Итог PnL: ${pnlSign}$${trade.netPnlUsdt.toFixed(2)} USDT (${pnlSign}${trade.roePct.toFixed(2)}%)`,
+      symbol: trade.symbol,
+      botName: trade.botName,
+      pnl: trade.netPnlUsdt,
+      isUrgent: isSL, // SL is critical, immediate Telegram push
+    });
+  }
 
   savePersistedState();
   return trade;
@@ -2664,6 +2758,10 @@ async function runBotEngineCycle() {
   if (!systemState.botTradingEnabled || systemState.isKillSwitchActive) {
     return;
   }
+  if (isBotCycleRunning) {
+    return;
+  }
+  isBotCycleRunning = true;
 
   try {
     // 1. Fetch real Bybit tickers for live prices
@@ -2692,7 +2790,7 @@ async function runBotEngineCycle() {
           systemState.activePositions.splice(i, 1);
           const tradeRecord = recordClosedPosition(pos, pos.currentPrice, 'SL_HIT');
           const slTag = pos.isTrailing
-            ? 'Трейлинг-Стоп (защита профита)'
+            ? 'Трейлинг-Стоп HWM (защита профита)'
             : pos.isBreakEven
             ? 'Стоп в Безубытке (Break-Even после TP1)'
             : 'Адаптивный ATR Stop-Loss';
@@ -2725,17 +2823,20 @@ async function runBotEngineCycle() {
                 qty: partialQty,
                 fundingPaid: Number(((pos.fundingPaid || 0) * 0.6).toFixed(4)),
               };
-              const partialTrade = recordClosedPosition(partialSnapshot, pos.currentPrice, 'TP_HIT');
+              const partialTrade = recordClosedPosition(partialSnapshot, pos.currentPrice, 'TP_HIT', {
+                isPartialScaleOut: true,
+              });
 
               pos.qty = remainingQty;
+              pos.realizedScaleOutPnlUsdt = Number(((pos.realizedScaleOutPnlUsdt || 0) + partialTrade.netPnlUsdt).toFixed(2));
               pos.fundingPaid = Number(((pos.fundingPaid || 0) * 0.4).toFixed(4));
               pos.tpGrid.shift();
               if (pos.tpGrid[0]) {
                 pos.tpGrid[0].qty = remainingQty;
               }
 
-              // Move SL to Break-Even + 0.14% fee/profit cushion
-              const beBuffer = pos.entryVwap * 0.0014 * dirSign;
+              // Move SL to Break-Even + 0.18% fee/profit cushion
+              const beBuffer = pos.entryVwap * 0.0018 * dirSign;
               pos.slPrice = Number((pos.entryVwap + beBuffer).toFixed(priceDecimals));
               pos.isBreakEven = true;
               pos.unrealizedPnl = Number((diff * pos.qty).toFixed(2));
@@ -2786,22 +2887,24 @@ async function runBotEngineCycle() {
           }
         }
 
-        // 2c. Institutional Dynamic ATR Trailing Stop (locks in 55% of favorable move once excursion >= 0.65% from entry, covering 0.11% round-trip fee)
-        const movePct = ((pos.currentPrice - pos.entryVwap) / pos.entryVwap) * dirSign * 100;
-        if (movePct >= 0.65) {
-          const minFeeCushion = pos.entryVwap * 0.0018 * dirSign;
-          const rawLockPrice = pos.entryVwap + (pos.currentPrice - pos.entryVwap) * 0.55;
-          const feeSafeLock =
-            pos.side === 'LONG'
-              ? Math.max(pos.entryVwap + minFeeCushion, rawLockPrice)
-              : Math.min(pos.entryVwap + minFeeCushion, rawLockPrice);
-          const lockPrice = Number(feeSafeLock.toFixed(priceDecimals));
-          const isBetterSl = pos.side === 'LONG' ? lockPrice > pos.slPrice : lockPrice < pos.slPrice;
-          if (isBetterSl) {
-            pos.slPrice = lockPrice;
-            pos.isBreakEven = true;
-            pos.isTrailing = true;
-          }
+        // 2c. Hummingbot V2 / Jesse High-Water-Mark (HWM) Dynamic Trailing Stop
+        // Tracks `pos.peakPrice` on every tick and locks 60% of peak excursion once >= 0.65% from entry, with a 0.18% fee-safe Break-Even floor
+        const trailUpdate = computeTrailingStopPrice({
+          side: pos.side,
+          entryPrice: pos.entryVwap,
+          currentPrice: pos.currentPrice,
+          currentSlPrice: pos.slPrice,
+          previousPeakPrice: pos.peakPrice,
+          priceDecimals,
+          activationPct: 0.65,
+          feeBufferPct: 0.18,
+          lockFraction: 0.60,
+        });
+        pos.peakPrice = trailUpdate.newPeakPrice;
+        if (trailUpdate.updated) {
+          pos.slPrice = trailUpdate.newSlPrice;
+          pos.isBreakEven = true;
+          pos.isTrailing = true;
         }
 
         // 2d. Fee-Aware Intraday Scalp Profit-Lock & Stale Position Expiration Guard
@@ -2866,6 +2969,7 @@ async function runBotEngineCycle() {
           qty: ord.qty,
           entryVwap: ord.limitPrice,
           currentPrice: livePrice,
+          peakPrice: livePrice,
           unrealizedPnl: 0.0,
           leverage: 10,
           marginType: 'ISOLATED',
@@ -2947,9 +3051,12 @@ async function runBotEngineCycle() {
           ? Array.from(new Set([...topTrendingSymbols, ...baseAllowedSymbols.filter((s) => s !== 'ALL' && s !== 'DYNAMIC_TRENDS')]))
           : baseAllowedSymbols;
 
-        // 5. Select symbol not currently in position to enforce portfolio diversification
+        // 5. Select symbol not currently in position AND not in Cooldown / StoplossGuard
+        const nowCycleTs = Date.now();
         const openSymbols = new Set(systemState.activePositions.map((p) => p.symbol));
-        const availableCandidates = combinedUniverse.filter((s) => !openSymbols.has(s));
+        const availableCandidates = combinedUniverse.filter(
+          (s) => !openSymbols.has(s) && evaluateSymbolCooldownGuard(symbolCooldowns, s, nowCycleTs).allowed
+        );
 
         // Prioritize coins with hot trend / momentum (80% probability to trade the hottest trending mover)
         let targetSymbol: string;
@@ -2966,6 +3073,12 @@ async function runBotEngineCycle() {
           }
         } else {
           targetSymbol = combinedUniverse[Math.floor(Math.random() * combinedUniverse.length)] || 'BTCUSDT';
+        }
+
+        // Enforce CooldownGuard even if fallback symbol was picked
+        const cooldownCheck = evaluateSymbolCooldownGuard(symbolCooldowns, targetSymbol, nowCycleTs);
+        if (!cooldownCheck.allowed) {
+          return;
         }
 
         const [book, klines] = await Promise.all([
@@ -3201,6 +3314,7 @@ async function runBotEngineCycle() {
           qty: Number(qty.toFixed(qtyDecimals)),
           entryVwap: Number(entryPrice.toFixed(priceDecimals)),
           currentPrice: Number(entryPrice.toFixed(priceDecimals)),
+          peakPrice: Number(entryPrice.toFixed(priceDecimals)),
           unrealizedPnl: 0.0,
           leverage: sizeCalc.effectiveLeverage,
           marginType: 'ISOLATED',
@@ -3291,6 +3405,8 @@ async function runBotEngineCycle() {
 
   } catch (err) {
     console.warn('Bot engine cycle error:', err);
+  } finally {
+    isBotCycleRunning = false;
   }
 }
 
@@ -4176,7 +4292,8 @@ app.get('/api/wallet', (_req: Request, res: Response) => {
   const summary = calculatePortfolioSummary(
     systemState.capitalUsdt,
     systemState.activePositions,
-    systemState.closedTrades
+    systemState.closedTrades,
+    systemState.totalRealizedPnlUsdt
   );
   const riskTelemetry = buildWalletRiskTelemetry(summary);
 
@@ -4229,7 +4346,8 @@ app.post('/api/wallet/simulate-risk-stress', (req: Request, res: Response) => {
   const summary = calculatePortfolioSummary(
     systemState.capitalUsdt,
     systemState.activePositions,
-    systemState.closedTrades
+    systemState.closedTrades,
+    systemState.totalRealizedPnlUsdt
   );
   const riskTelemetry = buildWalletRiskTelemetry(summary);
 
@@ -4273,6 +4391,9 @@ function executeSystemFactoryReset(): {
   systemState.killSwitchTriggerReason = null;
   systemState.lastUnblockedAt = Date.now();
   systemState.botTradingEnabled = true;
+  for (const k of Object.keys(symbolCooldowns)) {
+    delete symbolCooldowns[k];
+  }
 
   // Reset all agents to fresh default brains and 0 trades
   systemState.agents = systemState.agents.map((agent) => ({

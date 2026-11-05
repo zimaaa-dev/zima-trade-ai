@@ -105,11 +105,16 @@ export function calculateClosedTradeMetrics(params: {
 export function calculatePortfolioSummary(
   baseCapitalUsdt: number,
   activePositions: ActivePositionInput[],
-  closedTrades: ClosedTradeRecord[]
+  closedTrades: ClosedTradeRecord[],
+  authoritativeRealizedPnlUsdt?: number
 ): PortfolioSummary {
-  const totalRealizedPnlUsdt = Number(
+  const summedFromHistory = Number(
     closedTrades.reduce((acc, t) => acc + t.netPnlUsdt, 0).toFixed(2)
   );
+  const totalRealizedPnlUsdt =
+    typeof authoritativeRealizedPnlUsdt === 'number' && Number.isFinite(authoritativeRealizedPnlUsdt)
+      ? Number(authoritativeRealizedPnlUsdt.toFixed(2))
+      : summedFromHistory;
   const totalFeesPaidUsdt = Number(
     closedTrades.reduce((acc, t) => acc + t.feeUsdt, 0).toFixed(2)
   );

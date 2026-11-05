@@ -238,23 +238,34 @@ export function calculateDeepObi(
 }
 
 /**
- * Calculates Wilder's RSI-14 from an array of close prices (chronological order: oldest -> newest).
+ * Calculates Wilder's RSI-14 using true Wilder RMA exponential smoothing
+ * from an array of close prices (chronological order: oldest -> newest).
  */
 export function calculateRsi14(closes: number[], period: number = 14): number {
   if (closes.length < 3) return 50.0;
   const len = closes.length;
-  const lookback = Math.min(period, len - 1);
-  let gains = 0;
-  let losses = 0;
+  const seedPeriod = Math.min(period, len - 1);
 
-  for (let i = len - lookback; i < len; i++) {
+  let avgGain = 0;
+  let avgLoss = 0;
+
+  // Initial seed average over first `seedPeriod` deltas
+  for (let i = 1; i <= seedPeriod; i++) {
     const diff = closes[i] - closes[i - 1];
-    if (diff > 0) gains += diff;
-    else losses += Math.abs(diff);
+    if (diff > 0) avgGain += diff;
+    else avgLoss += Math.abs(diff);
   }
+  avgGain /= seedPeriod;
+  avgLoss /= seedPeriod;
 
-  const avgGain = gains / lookback;
-  const avgLoss = losses / lookback;
+  // Apply Wilder's smoothing (RMA) across remaining bars
+  for (let i = seedPeriod + 1; i < len; i++) {
+    const diff = closes[i] - closes[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    avgGain = (avgGain * (seedPeriod - 1) + gain) / seedPeriod;
+    avgLoss = (avgLoss * (seedPeriod - 1) + loss) / seedPeriod;
+  }
 
   if (avgLoss === 0 && avgGain === 0) return 50.0;
   if (avgLoss === 0) return 85.0;
@@ -311,7 +322,8 @@ export function calculateVwapDeviation(klines: KlineBar[]): { vwap: number; devi
 }
 
 /**
- * Calculates 14-period Average True Range (ATR) as percentage of latest close price.
+ * Calculates 14-period Average True Range (ATR) using Wilder's smoothing
+ * as percentage of latest close price. Supports high-volatility altcoins up to 8.0%.
  */
 export function calculateAtr14Pct(klines: KlineBar[], period: number = 14): number {
   if (klines.length < 2) return 0.85;
@@ -328,13 +340,51 @@ export function calculateAtr14Pct(klines: KlineBar[], period: number = 14): numb
     trs.push(tr);
   }
 
-  const recent = trs.slice(-period);
-  const avgTr = recent.reduce((acc, v) => acc + v, 0) / recent.length;
+  const seedLen = Math.min(period, trs.length);
+  let atr = trs.slice(0, seedLen).reduce((acc, v) => acc + v, 0) / seedLen;
+  for (let i = seedLen; i < trs.length; i++) {
+    atr = (atr * (seedLen - 1) + trs[i]) / seedLen;
+  }
+
   const lastClose = klines[klines.length - 1].close;
   if (lastClose <= 0) return 0.85;
 
-  const atrPct = (avgTr / lastClose) * 100;
-  return Number(clamp(atrPct, 0.25, 4.5).toFixed(3));
+  const atrPct = (atr / lastClose) * 100;
+  return Number(clamp(atrPct, 0.25, 8.0).toFixed(3));
+}
+
+/**
+ * Freqtrade-inspired CooldownPeriod & StoplossGuard protection state per symbol.
+ */
+export interface SymbolCooldownEntry {
+  symbol: string;
+  untilTs: number;
+  lastExitReason: 'TP_HIT' | 'SL_HIT' | 'MANUAL_CLOSE';
+  consecutiveSlCount: number;
+  lastClosedAt: number;
+}
+
+export function evaluateSymbolCooldownGuard(
+  cooldownMap: Record<string, SymbolCooldownEntry>,
+  symbol: string,
+  nowTs: number = Date.now()
+): { allowed: boolean; reason?: string; remainingSec: number } {
+  const entry = cooldownMap[symbol];
+  if (!entry || nowTs >= entry.untilTs) {
+    return { allowed: true, remainingSec: 0 };
+  }
+  const remainingSec = Math.max(1, Math.ceil((entry.untilTs - nowTs) / 1000));
+  const tag =
+    entry.consecutiveSlCount >= 2
+      ? `StoplossGuard (${entry.consecutiveSlCount} SL подряд)`
+      : entry.lastExitReason === 'SL_HIT'
+      ? 'Cooldown после Stop-Loss'
+      : 'Cooldown после сделки';
+  return {
+    allowed: false,
+    remainingSec,
+    reason: `Защита от реванш-трейдинга [${tag}]: пауза по ${symbol} ещё ${remainingSec}с.`,
+  };
 }
 
 /**
@@ -424,7 +474,8 @@ export function evaluateBotSignal(
   }
 
   const compositeScore = Number(clamp(rawScore, -1, 1).toFixed(4));
-  const slDistancePct = Number(clamp(features.atrPct * (brain.atrMultiplier || 1.45), 0.35, 2.5).toFixed(3));
+  // Allow adaptive ATR SL up to 3.8% for volatile trending altcoins
+  const slDistancePct = Number(clamp(features.atrPct * (brain.atrMultiplier || 1.45), 0.35, 3.8).toFixed(3));
 
   // 3. L2 Spread Guard
   if (features.spreadBps > (brain.maxSpreadBps || 18.0)) {
