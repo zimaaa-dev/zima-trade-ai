@@ -3666,6 +3666,18 @@ app.get(['/api/ai/trend-audit', '/api/market/trend-audit'], async (_req: Request
   }
 });
 
+app.get(['/api/market/klines', '/api/bybit/klines'], async (req: Request, res: Response) => {
+  try {
+    const symbol = String(req.query.symbol || 'BTCUSDT').toUpperCase();
+    const interval = String(req.query.interval || '5');
+    const limit = Math.min(200, Math.max(10, parseInt(String(req.query.limit || '100'), 10)));
+    const bars = await fetchRealBybitKlines(symbol, interval, limit);
+    res.json({ success: true, symbol, interval, count: bars.length, list: bars });
+  } catch (err: any) {
+    res.status(500).json({ error: `Klines fetch error: ${err.message}` });
+  }
+});
+
 app.post(['/api/ai/trend-audit/check-now', '/api/market/trend-audit/check-now'], async (_req: Request, res: Response) => {
   try {
     lastRetrainingAlertTs = 0; // force notification dispatch

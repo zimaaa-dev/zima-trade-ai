@@ -61,30 +61,53 @@ class ActorCritic(nn.Module):
 
 # ---------------------------------------------------------------------------
 # 2. Загрузка реальных исторических свечей с Bybit V5 Public Linear API
+#    (Поддерживает: api.bytick.com, api.bybit.com и прокси через торговый сервер)
 # ---------------------------------------------------------------------------
-def fetch_bybit_klines(symbol: str = "BTCUSDT", interval: str = "5", limit: int = 200):
-    url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={interval}&limit={limit}"
-    req = urllib.request.Request(url, headers={"User-Agent": "ZimaTrade-PC-Trainer/4.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            raw_list = data.get("result", {}).get("list", [])
-            # Bybit отдаёт от новых к старым; переворачиваем в хронологический порядок
-            bars = []
-            for row in reversed(raw_list):
-                bars.append({
-                    "timestamp": int(row[0]),
-                    "open": float(row[1]),
-                    "high": float(row[2]),
-                    "low": float(row[3]),
-                    "close": float(row[4]),
-                    "volume": float(row[5]),
-                    "turnover": float(row[6]),
-                })
-            return bars
-    except Exception as e:
-        print(f"⚠️ Ошибка загрузки свечей Bybit для {symbol}: {e}")
-        return []
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+}
+
+def fetch_bybit_klines(symbol: str = "BTCUSDT", interval: str = "5", limit: int = 200, target_server: str = None):
+    urls = [
+        f"https://api.bytick.com/v5/market/kline?category=linear&symbol={symbol}&interval={interval}&limit={limit}",
+        f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={interval}&limit={limit}",
+    ]
+    if target_server and target_server.startswith("http"):
+        urls.append(f"{target_server}/api/market/klines?symbol={symbol}&interval={interval}&limit={limit}")
+
+    for url in urls:
+        try:
+            req = urllib.request.Request(url, headers=BROWSER_HEADERS)
+            with urllib.request.urlopen(req, timeout=7) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                
+                # Формат Bybit V5: { "result": { "list": [[timestamp, open, high, low, close, vol, turnover], ...] } }
+                raw_list = data.get("result", {}).get("list") or data.get("list", [])
+                if isinstance(raw_list, list) and len(raw_list) > 0:
+                    bars = []
+                    # Если формат уже объект {timestamp, open, close...} (наш прокси)
+                    if isinstance(raw_list[0], dict):
+                        bars = raw_list
+                    else:
+                        for row in reversed(raw_list):
+                            bars.append({
+                                "timestamp": int(row[0]),
+                                "open": float(row[1]),
+                                "high": float(row[2]),
+                                "low": float(row[3]),
+                                "close": float(row[4]),
+                                "volume": float(row[5]),
+                                "turnover": float(row[6]),
+                            })
+                    if len(bars) >= 15:
+                        return bars
+        except Exception:
+            continue
+
+    print(f"⚠️ Ошибка загрузки свечей для {symbol} со всех зеркал Bybit и сервера.")
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +177,7 @@ def discover_market_trends(target_server: str = "http://127.0.0.1:3000", limit: 
     symbols = []
     # 1. Запрос трендового аудита с сервера ZimaTrade AI
     try:
-        req = urllib.request.Request(f"{target_server}/api/ai/trend-audit", headers={"User-Agent": "ZimaTrade-PC-Trainer/4.0"})
+        req = urllib.request.Request(f"{target_server}/api/ai/trend-audit", headers=BROWSER_HEADERS)
         with urllib.request.urlopen(req, timeout=4) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             trend_syms = data.get("topTrendingSymbols", [])
@@ -165,34 +188,37 @@ def discover_market_trends(target_server: str = "http://127.0.0.1:3000", limit: 
     except Exception:
         pass
 
-    # 2. Если сервер недоступен — сканируем Bybit V5 Linear API напрямую
+    # 2. Если сервер вернул мало символов — сканируем Bybit V5 Linear API напрямую (зеркала bytick / bybit)
     if len(symbols) < 4:
-        try:
-            url = "https://api.bybit.com/v5/market/tickers?category=linear"
-            req = urllib.request.Request(url, headers={"User-Agent": "ZimaTrade-PC-Trainer/4.0"})
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                list_raw = data.get("result", {}).get("list", [])
-                
-                valid_tickers = []
-                blacklist = {"ESPORTSUSDT", "APRUSDT", "TRUMPUSDT"}
-                for t in list_raw:
-                    sym = t.get("symbol", "")
-                    if not sym.endswith("USDT") or sym in blacklist:
-                        continue
-                    turnover = float(t.get("turnover24h") or 0)
-                    price = float(t.get("lastPrice") or 0)
-                    chg = float(t.get("price24hPcnt") or 0) * 100.0
-                    if turnover >= 2000000 and price > 0:
-                        valid_tickers.append({"symbol": sym, "turnover": turnover, "chg": chg, "abs_chg": abs(chg)})
+        for domain in ["api.bytick.com", "api.bybit.com"]:
+            try:
+                url = f"https://{domain}/v5/market/tickers?category=linear"
+                req = urllib.request.Request(url, headers=BROWSER_HEADERS)
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    list_raw = data.get("result", {}).get("list", [])
+                    
+                    valid_tickers = []
+                    blacklist = {"ESPORTSUSDT", "APRUSDT", "TRUMPUSDT"}
+                    for t in list_raw:
+                        sym = t.get("symbol", "")
+                        if not sym.endswith("USDT") or sym in blacklist:
+                            continue
+                        turnover = float(t.get("turnover24h") or 0)
+                        price = float(t.get("lastPrice") or 0)
+                        chg = float(t.get("price24hPcnt") or 0) * 100.0
+                        if turnover >= 2000000 and price > 0:
+                            valid_tickers.append({"symbol": sym, "turnover": turnover, "chg": chg, "abs_chg": abs(chg)})
 
-                # Сортируем по максимальному трендовому импульсу
-                valid_tickers.sort(key=lambda x: x["abs_chg"], reverse=True)
-                top_movers = [x["symbol"] for x in valid_tickers[:limit]]
-                symbols.extend(top_movers)
-                print(f"🔥 Просканирован рынок Bybit ({len(valid_tickers)} пар). Топ тренды: {', '.join(top_movers[:6])}")
-        except Exception as e:
-            print(f"⚠️ Не удалось просканировать тикеры Bybit: {e}")
+                    if len(valid_tickers) > 10:
+                        # Сортируем по максимальному трендовому импульсу
+                        valid_tickers.sort(key=lambda x: x["abs_chg"], reverse=True)
+                        top_movers = [x["symbol"] for x in valid_tickers[:limit]]
+                        symbols.extend(top_movers)
+                        print(f"🔥 Просканирован рынок Bybit через {domain} ({len(valid_tickers)} пар). Топ тренды: {', '.join(top_movers[:6])}")
+                        break
+            except Exception as e:
+                continue
 
     # Добавляем базовые якоря ликвидности
     anchors = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
@@ -241,14 +267,14 @@ def run_trainer(target_server: str = "http://127.0.0.1:3000", epochs: int = 15, 
 
     print(f"📥 Сбор реальных исторических свечей Bybit V5 Linear для {len(symbols)} инструментов:")
     for sym in symbols:
-        bars = fetch_bybit_klines(sym, interval="5", limit=200)
+        bars = fetch_bybit_klines(sym, interval="5", limit=200, target_server=target_server)
         if bars:
             x_arr, y_arr = extract_dataset_from_klines(bars, seq_len=10)
             if x_arr is not None and len(x_arr) > 0:
                 all_x.append(x_arr)
                 all_y.append(y_arr)
                 print(f"   -> {sym}: загружено {len(bars)} свечей (образцов: {len(x_arr)})")
-        time.sleep(0.3)
+        time.sleep(0.2)
 
     if not all_x:
         print("❌ Не удалось получить рыночные данные с Bybit. Проверьте интернет-соединение.")
