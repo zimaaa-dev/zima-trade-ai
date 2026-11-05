@@ -671,7 +671,7 @@ export const UpdatesManagerView: React.FC = () => {
           </div>
 
           <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800">
-            <span className="text-slate-400 text-[10px] block mb-0.5">КАЛИБРОВКА BYBIT NTP</span>
+            <span className="text-slate-400 text-[10px] block mb-0.5">СИНХРОНИЗАЦИЯ БИРЖЕВОГО NTP</span>
             <div className="flex items-center gap-1.5">
               <span className="text-emerald-400 font-bold text-sm">+{status?.clockSync.driftDeltaMs || 4} мс</span>
               <span className="text-emerald-500 text-[10px]">СИНХРОНИЗИРОВАНО</span>

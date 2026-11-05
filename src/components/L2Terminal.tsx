@@ -21,15 +21,22 @@ import {
 } from 'lucide-react';
 import { Tooltip } from './Tooltip.tsx';
 import { MetricTooltip } from './MetricTooltip.tsx';
-import type { OrderbookData, ScreenerPair, Position, LimitOrder, ExecutionMode, BotLogEntry, AgentItem } from '../types.ts';
+import type { OrderbookData, ScreenerPair, Position, LimitOrder, ExecutionMode, ExchangeId, BotLogEntry, AgentItem } from '../types.ts';
 
 interface L2TerminalProps {
   mode: ExecutionMode;
   isKillSwitchActive: boolean;
+  activeExchange?: ExchangeId;
   onRefreshHealth: () => void;
 }
 
-export const L2Terminal: React.FC<L2TerminalProps> = ({ mode, isKillSwitchActive, onRefreshHealth }) => {
+export const L2Terminal: React.FC<L2TerminalProps> = ({
+  mode,
+  isKillSwitchActive,
+  activeExchange = 'BYBIT',
+  onRefreshHealth,
+}) => {
+  const exchangeLabel = activeExchange === 'OKX' ? 'OKX' : 'Bybit';
   const [selectedSymbol, setSelectedSymbol] = useState<string>('BTCUSDT');
   const [orderbook, setOrderbook] = useState<OrderbookData | null>(null);
   const [screener, setScreener] = useState<ScreenerPair[]>([]);
@@ -47,7 +54,7 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({ mode, isKillSwitchActive
   // Form State
   const [orderType, setOrderType] = useState<'MARKET' | 'LIMIT'>('MARKET');
   const [side, setSide] = useState<'LONG' | 'SHORT'>('LONG');
-  const [qty, setQty] = useState<string>('0.15');
+  const [qty, setQty] = useState<string>('0.0001');
   const [limitPrice, setLimitPrice] = useState<string>('68500.0');
   const [stopLoss, setStopLoss] = useState<string>('67500.0');
   const [tp1, setTp1] = useState<string>('69800.0');
@@ -150,9 +157,9 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({ mode, isKillSwitchActive
     fetchMarketData();
     const interval = setInterval(fetchMarketData, 2000);
     return () => clearInterval(interval);
-  }, [selectedSymbol]);
+  }, [selectedSymbol, activeExchange]);
 
-  // Auto-calibrate order entry form (limitPrice, SL, TP1/TP2/TP3) to live Bybit price when symbol or side changes
+  // Auto-calibrate order entry form (limitPrice, SL, TP1/TP2/TP3) to live exchange price when symbol or side changes
   const [lastSyncedKey, setLastSyncedKey] = useState<string>('');
   useEffect(() => {
     const livePair = screener.find((s) => s.symbol === selectedSymbol);
@@ -369,11 +376,11 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({ mode, isKillSwitchActive
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-extrabold text-white text-base font-mono">{selectedSymbol}</span>
                   <span className="text-xs text-slate-300 font-semibold leading-snug">
-                    Живая очередь заявок с биржи Bybit (Биржевой стакан)
+                    Живая очередь заявок с биржи {exchangeLabel} (Биржевой стакан L2)
                   </span>
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-500/40 font-bold inline-flex items-center gap-1 shrink-0">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    ОНЛАЙН
+                    {exchangeLabel.toUpperCase()} LIVE
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
@@ -386,7 +393,7 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({ mode, isKillSwitchActive
                   <span>Отклик:</span> <strong className="text-cyan-300">~44 мс</strong>
                   <Tooltip
                     title="Реалистичная скорость сделки"
-                    text="Даже на учебном счете сделка открывается с учетом реального времени прохождения сигнала до сервера биржи Bybit (~44 миллисекунды)."
+                    text={`Даже на учебном счете сделка открывается с учетом реального времени прохождения сигнала до сервера биржи ${exchangeLabel} (~44 миллисекунды).`}
                   />
                 </span>
               </div>
@@ -784,7 +791,7 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({ mode, isKillSwitchActive
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-xs sm:text-sm font-extrabold text-white uppercase tracking-wider">
-                  Автономные ИИ-Боты (Теневой Форвард-Тест)
+                  Автономные торговые боты (Форвард-Тест)
                 </h3>
                 <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold inline-flex items-center gap-1.5 shrink-0 ${
                   botsState?.isRunning
@@ -796,7 +803,7 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({ mode, isKillSwitchActive
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 font-mono mt-0.5 leading-snug">
-                Боты непрерывно сканируют стакан Bybit L2-50, открывают сделки и фиксируют TP/SL под защитой Risk Firewall.
+                Боты непрерывно сканируют стакан {exchangeLabel} L2, открывают сделки и фиксируют TP/SL под защитой Risk Firewall.
               </p>
             </div>
           </div>
@@ -809,7 +816,7 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({ mode, isKillSwitchActive
               title="Форсировать немедленный тик анализа рынка и генерацию сделки"
             >
               <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${tickingBot ? 'animate-spin text-cyan-400' : ''}`} />
-              <span>{tickingBot ? 'Анализ...' : 'Сделать тик ИИ'}</span>
+              <span>{tickingBot ? 'Анализ...' : 'Сделать тик'}</span>
             </button>
 
             <button
@@ -921,7 +928,7 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({ mode, isKillSwitchActive
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shrink-0" />
               <span className="text-xs font-bold font-mono text-slate-300 uppercase tracking-wide">
-                Живая лента действий и решений ИИ-ботов
+                Живая лента действий и решений торговых ботов
               </span>
             </div>
             <span className="text-[10px] text-slate-500 font-mono">
@@ -991,7 +998,7 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({ mode, isKillSwitchActive
           <span className="text-[11px] text-slate-400 font-mono">
             Режим: {mode === 'SHADOW' ? 'Учебный (Forward-Test)' : 'Реальный (LIVE)'} •{' '}
             <MetricTooltip metric="BYBIT_FEE" showIcon={false}>
-              <span>Bybit Taker 0.055%</span>
+              <span>{exchangeLabel} Taker 0.055%</span>
             </MetricTooltip>
           </span>
         </div>
@@ -1006,7 +1013,7 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({ mode, isKillSwitchActive
               <thead className="text-[11px] text-slate-400 border-b border-slate-800 bg-slate-950/40">
                 <tr>
                   <th className="py-2 px-3">Пара</th>
-                  <th className="py-2 px-3">Инициатор / ИИ-Бот</th>
+                  <th className="py-2 px-3">Инициатор / Стратегия</th>
                   <th className="py-2 px-3">Сторона</th>
                   <th className="py-2 px-3">Объем</th>
                   <th className="py-2 px-3">
@@ -1014,7 +1021,7 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({ mode, isKillSwitchActive
                       <span>Цена входа (VWAP)</span>
                     </MetricTooltip>
                   </th>
-                  <th className="py-2 px-3">Текущая цена (Bybit)</th>
+                  <th className="py-2 px-3">Текущая цена ({exchangeLabel})</th>
                   <th className="py-2 px-3">
                     <MetricTooltip metric="UNREALIZED_PNL">
                       <span>Нереализ. PnL</span>

@@ -1,8 +1,11 @@
 export type ExecutionMode = 'SHADOW' | 'LIVE';
 
+export type ExchangeId = 'BYBIT' | 'OKX';
+
 export interface SystemHealth {
   status: string;
   mode: ExecutionMode;
+  activeExchange?: ExchangeId;
   isKillSwitchActive: boolean;
   killSwitchTriggerReason: string | null;
   capitalUsdt: number;
@@ -32,13 +35,14 @@ export interface SystemHealth {
 export const DEFAULT_SYSTEM_HEALTH: SystemHealth = {
   status: 'ONLINE',
   mode: 'SHADOW',
+  activeExchange: 'BYBIT',
   isKillSwitchActive: false,
   killSwitchTriggerReason: null,
-  capitalUsdt: 10000,
+  capitalUsdt: 10,
   rolling24hPnlUsdt: 0,
   drawdownPct: 0,
   totalRealizedPnlUsdt: 0,
-  pings: { bybit: 140, okx: 210, mexc: 230 },
+  pings: { bybit: 24, okx: 32, mexc: 35 },
   nodes: {
     nodeA: {
       name: 'Node A: web-app-prod (Cloud.ru ru.AZ-1)',
@@ -49,21 +53,21 @@ export const DEFAULT_SYSTEM_HEALTH: SystemHealth = {
       shm_buffer_kb: 512,
     },
     nodeB: {
-      name: 'Node B: GPU Forge (Ryzen 5 5600X, 8GB GPU)',
+      name: 'Node B: Модуль калибровки весов',
       status: 'STANDBY',
       sync_limit_mbps: 5.0,
       last_export_sha: '9f7b9a9e49a248fc...',
     },
     nodeC: {
-      name: 'Node C: Ollama Pool',
-      status: 'NOT_CONFIGURED',
-      models: ['gpt-oss:20b', 'gpt-oss:120b'],
-      active_account_idx: 0,
+      name: 'Node C: Поток сигналов',
+      status: 'READY',
+      models: ['regex-filter', 'sentiment-index'],
+      active_account_idx: 1,
     },
     nodeD: {
-      name: 'Node D: Semantic Memory & Embeddings',
+      name: 'Node D: Индексатор стакана L2',
       status: 'ACTIVE',
-      provider: 'Квантовый L2-анализатор (локальный режим)',
+      provider: 'Квантовый L2-анализатор',
     },
     nodeE: {
       name: 'Node E: Cloudflare Shield',

@@ -25,20 +25,20 @@ export const RiskFirewallView: React.FC<RiskFirewallViewProps> = ({
 }) => {
   const isKillSwitch = health?.isKillSwitchActive ?? false;
   const drawdownPct = health?.drawdownPct ?? -1.42;
-  const capital = health?.capitalUsdt ?? 10000;
+  const capital = health?.capitalUsdt ?? 10;
 
   // Simulator State
-  const [simCapital, setSimCapital] = useState<string>('10000');
+  const [simCapital, setSimCapital] = useState<string>('10');
   const [simEntry, setSimEntry] = useState<string>('68500');
   const [simSL, setSimSL] = useState<string>('67500');
-  const [simSide, setSimSide] = useState<'LONG' | 'SHORT'>('LONG');
-  const [simLeverage, setSimLeverage] = useState<string>('15');
-  const [simSpreadPct, setSimSpreadPct] = useState<string>('0.15');
-  const [simFundingRate, setSimFundingRate] = useState<string>('0.05');
-  const [simMinutesToFunding, setSimMinutesToFunding] = useState<string>('20');
+  const [simSide] = useState<'LONG' | 'SHORT'>('LONG');
+  const [simLeverage, setSimLeverage] = useState<string>('10');
+  const [simSpreadPct] = useState<string>('0.15');
+  const [simFundingRate] = useState<string>('0.05');
+  const [simMinutesToFunding] = useState<string>('20');
 
   // Compute test verdict
-  const testCapital = parseFloat(simCapital) || 10000;
+  const testCapital = parseFloat(simCapital) || 10;
   const testEntry = parseFloat(simEntry) || 68500;
   const testSL = parseFloat(simSL) || 67500;
   const testLev = parseInt(simLeverage) || 15;
@@ -91,7 +91,7 @@ export const RiskFirewallView: React.FC<RiskFirewallViewProps> = ({
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                Правила жестко зашиты в процедурный код ядра. Ни одна ИИ-модель или внешняя настройка не может отключить или обойти эту защиту.
+                Правила жестко зашиты в процедурный код ядра. Ни одна стратегия или внешняя настройка не может отключить или обойти эту защиту.
               </p>
             </div>
           </div>
@@ -168,7 +168,7 @@ export const RiskFirewallView: React.FC<RiskFirewallViewProps> = ({
             </p>
           </div>
           <div className="mt-3 text-[10px] font-mono text-emerald-400 bg-emerald-950/40 p-1.5 rounded border border-emerald-900/40">
-            Активно: Макс. $150 / $10k
+            Активно: Макс. ${(capital * 0.015).toFixed(2)} / ${capital.toFixed(0)} USDT
           </div>
         </div>
 
@@ -323,7 +323,7 @@ export const RiskFirewallView: React.FC<RiskFirewallViewProps> = ({
             </div>
             <div>
               <span className="text-slate-500 block">Расчетный объем позиции</span>
-              <span className="font-bold">{maxQty.toFixed(4)} ед.</span>
+              <span className="font-bold">{maxQty.toFixed(5)} ед.</span>
             </div>
             <div>
               <span className="text-slate-500 block">Итоговое плечо (с учетом лимита)</span>

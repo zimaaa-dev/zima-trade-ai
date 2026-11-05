@@ -14,7 +14,7 @@ import {
   AuthSettingsModal,
   type OperatorProfile,
 } from './components/AuthLoginModal.tsx';
-import type { SystemHealth, ExecutionMode } from './types.ts';
+import type { SystemHealth, ExecutionMode, ExchangeId } from './types.ts';
 import { DEFAULT_SYSTEM_HEALTH } from './types.ts';
 
 const AUTH_STORAGE_KEY = 'zima_auth_token';
@@ -169,6 +169,22 @@ export default function App() {
     }
   };
 
+  const handleExchangeChange = async (exchange: ExchangeId) => {
+    try {
+      setHealth((prev) => ({ ...prev, activeExchange: exchange }));
+      const res = await fetch('/api/exchange/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ exchange }),
+      }).catch(() => null);
+      if (res && res.ok) {
+        fetchHealth();
+      }
+    } catch {
+      // safe fallback
+    }
+  };
+
   const handleKillSwitchTrigger = async () => {
     try {
       const res = await fetch('/api/kill-switch/trigger', {
@@ -213,6 +229,7 @@ export default function App() {
       <Header
         health={health}
         onModeChange={handleModeChange}
+        onExchangeChange={handleExchangeChange}
         onKillSwitchTrigger={handleKillSwitchTrigger}
         onKillSwitchReset={handleKillSwitchReset}
         activeTab={activeTab}
@@ -228,6 +245,7 @@ export default function App() {
           <L2Terminal
             mode={health?.mode ?? 'SHADOW'}
             isKillSwitchActive={health?.isKillSwitchActive ?? false}
+            activeExchange={health?.activeExchange ?? 'BYBIT'}
             onRefreshHealth={fetchHealth}
           />
         )}
@@ -284,10 +302,16 @@ export default function App() {
           <div className="flex items-center gap-2">
             <span className="text-slate-400 font-medium">ZimaTrade</span>
             <span aria-hidden="true">·</span>
-            <span>Bybit V5 Orderbook Engine</span>
+            <span>
+              Мультибиржевой поток L2 ({health?.activeExchange === 'OKX' ? 'OKX V5' : 'Bybit V5'})
+            </span>
           </div>
           <div className="flex items-center gap-2 font-mono text-[11px]">
-            <span>{health?.mode === 'LIVE' ? 'Режим: LIVE' : 'Режим: Учебный ($10,000)'}</span>
+            <span>
+              {health?.mode === 'LIVE'
+                ? 'Режим: LIVE'
+                : `Режим: Учебный ($${(health?.capitalUsdt ?? 10).toFixed(2)})`}
+            </span>
             <span aria-hidden="true">·</span>
             <span className={health?.isKillSwitchActive ? 'text-rose-400' : 'text-emerald-400'}>
               {health?.isKillSwitchActive ? 'Kill-Switch Активен' : 'Риск-Контроль 1.5% / 5.0%'}

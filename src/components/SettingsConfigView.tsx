@@ -492,7 +492,7 @@ export const SettingsConfigView: React.FC = () => {
           <div className="flex items-center gap-2">
             <Key className="w-5 h-5 text-cyan-400" />
             <h3 className="font-extrabold text-sm text-white uppercase tracking-wider">
-              Статус подключений и API ключей
+              Статус подключений и биржевых шлюзов (Bybit V5 & OKX V5)
             </h3>
           </div>
           <button
@@ -523,7 +523,7 @@ export const SettingsConfigView: React.FC = () => {
                   <span className="text-[10px] text-cyan-400">api.bybit.com</span>
                 </td>
                 <td className="py-3 px-3 text-slate-300 text-[11px]">
-                  Поток стаканов L2-50, тикеры, сделки, фандинг
+                  Поток стаканов L2-50, тикеры, свечи и фандинг (Linear USDT)
                 </td>
                 <td className="py-3 px-3">
                   <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 w-fit">
@@ -541,6 +541,31 @@ export const SettingsConfigView: React.FC = () => {
                 </td>
               </tr>
 
+              {/* OKX Public Data Feed */}
+              <tr className="hover:bg-slate-800/30">
+                <td className="py-3 px-3">
+                  <div className="font-bold text-white">OKX v5 Public Gateway</div>
+                  <span className="text-[10px] text-cyan-400">www.okx.com</span>
+                </td>
+                <td className="py-3 px-3 text-slate-300 text-[11px]">
+                  Поток стаканов L2, тикеры SWAP, свечи и мультибиржевой фейловер
+                </td>
+                <td className="py-3 px-3">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 w-fit">
+                    <CheckCircle2 className="w-3 h-3" /> ПОДКЛЮЧЕНО (LIVE)
+                  </span>
+                </td>
+                <td className="py-3 px-3 text-right">
+                  <button
+                    onClick={() => runTest('okx')}
+                    disabled={testingTarget === 'okx'}
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-cyan-300 rounded text-[11px] transition"
+                  >
+                    {testingTarget === 'okx' ? 'Пинг...' : 'Проверить OKX'}
+                  </button>
+                </td>
+              </tr>
+
               {/* Bybit Live Orders */}
               <tr className="hover:bg-slate-800/30">
                 <td className="py-3 px-3">
@@ -548,10 +573,35 @@ export const SettingsConfigView: React.FC = () => {
                   <span className="text-[10px] text-amber-400">Bybit v5 REST / Private WS</span>
                 </td>
                 <td className="py-3 px-3 text-slate-300 text-[11px]">
-                  Боевое исполнение ордеров в Live Mode
+                  Боевое исполнение ордеров на Bybit в Live Mode
                 </td>
                 <td className="py-3 px-3">
                   {config?.credentials?.bybitTrading?.configured ? (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 w-fit">
+                      <CheckCircle2 className="w-3 h-3" /> НАСТРОЕН
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-950 text-amber-400 border border-amber-800/40 flex items-center gap-1 w-fit">
+                      <HelpCircle className="w-3 h-3" /> ТОЛЬКО УЧЕБНЫЙ РЕЖИМ
+                    </span>
+                  )}
+                </td>
+                <td className="py-3 px-3 text-right">
+                  <span className="text-[10px] text-slate-500">Private API</span>
+                </td>
+              </tr>
+
+              {/* OKX Live Orders */}
+              <tr className="hover:bg-slate-800/30">
+                <td className="py-3 px-3">
+                  <div className="font-bold text-white">OKX_API_KEY, SECRET & PASSPHRASE</div>
+                  <span className="text-[10px] text-amber-400">OKX v5 REST / Private WS</span>
+                </td>
+                <td className="py-3 px-3 text-slate-300 text-[11px]">
+                  Боевое исполнение ордеров на OKX в Live Mode
+                </td>
+                <td className="py-3 px-3">
+                  {config?.credentials?.okxTrading?.configured ? (
                     <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 w-fit">
                       <CheckCircle2 className="w-3 h-3" /> НАСТРОЕН
                     </span>
@@ -622,7 +672,7 @@ export const SettingsConfigView: React.FC = () => {
           <div className="flex items-center gap-2">
             <Key className="w-5 h-5 text-emerald-400" />
             <h3 className="font-extrabold text-sm text-white uppercase tracking-wider">
-              API ключи Bybit V5 (Live Mode)
+              API ключи бирж Bybit V5 & OKX V5 (Live Mode)
             </h3>
           </div>
         </div>
@@ -663,6 +713,9 @@ export const SettingsConfigView: React.FC = () => {
 
             const bybitKey = getVal('bybitKey');
             const bybitSecret = getVal('bybitSecret');
+            const okxKey = getVal('okxKey');
+            const okxSecret = getVal('okxSecret');
+            const okxPassphrase = getVal('okxPassphrase');
 
             setIsSaving(true);
             setSaveStatus(null);
@@ -674,6 +727,9 @@ export const SettingsConfigView: React.FC = () => {
                 body: JSON.stringify({
                   bybitApiKey: bybitKey || undefined,
                   bybitApiSecret: bybitSecret || undefined,
+                  okxApiKey: okxKey || undefined,
+                  okxApiSecret: okxSecret || undefined,
+                  okxPassphrase: okxPassphrase || undefined,
                 }),
               });
               const data = await res.json();
@@ -728,6 +784,56 @@ export const SettingsConfigView: React.FC = () => {
                   config?.credentials?.bybitTrading?.configured
                     ? '•••••••• (Bybit Secret сохранен)'
                     : 'Необязательно для учебного счета'
+                }
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2 border-t border-slate-800/80">
+            <div>
+              <label className="block text-slate-300 font-bold mb-1.5">
+                OKX_API_KEY (Live Mode)
+              </label>
+              <input
+                name="okxKey"
+                type="password"
+                placeholder={
+                  config?.credentials?.okxTrading?.configured
+                    ? '•••••••• (OKX Key сохранен)'
+                    : 'Необязательно для учебного счета'
+                }
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-slate-300 font-bold mb-1.5">
+                OKX_API_SECRET (Live Mode)
+              </label>
+              <input
+                name="okxSecret"
+                type="password"
+                placeholder={
+                  config?.credentials?.okxTrading?.configured
+                    ? '•••••••• (OKX Secret сохранен)'
+                    : 'Необязательно для учебного счета'
+                }
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-slate-300 font-bold mb-1.5">
+                OKX_PASSPHRASE (Live Mode)
+              </label>
+              <input
+                name="okxPassphrase"
+                type="password"
+                placeholder={
+                  config?.credentials?.okxTrading?.configured
+                    ? '•••••••• (Passphrase сохранен)'
+                    : 'Пароль API ключа OKX'
                 }
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
               />

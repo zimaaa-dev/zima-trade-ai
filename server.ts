@@ -318,6 +318,7 @@ export interface BotLogEntry {
 
 interface AppSystemState {
   mode: 'SHADOW' | 'LIVE';
+  activeExchange: 'BYBIT' | 'OKX';
   isKillSwitchActive: boolean;
   killSwitchTriggerReason: string | null;
   lastUnblockedAt?: number;
@@ -347,37 +348,37 @@ const initialLogs: BotLogEntry[] = [
     id: 'log-init-01',
     timestamp: Date.now() - 35000,
     botId: 'agent-onnx-ppo-v2',
-    botName: 'ONNX PyTorch RL',
+    botName: 'Delta-L2 · Стакан и Объемы',
     action: 'ORDER_OPEN',
     symbol: 'BTCUSDT',
     side: 'LONG',
     price: 68420.5,
-    message: 'ONNX RL: Дисбаланс стакана L2-50 (OBI = +0.34). Открыта теневая позиция LONG по $68,420.5. SL: $67,420, TP: $69,500.',
+    message: 'Дисбаланс стакана L2-50 (OBI = +0.34). Открыта позиция LONG по $68,420.5. SL: $67,420, TP: $69,500.',
     rttMs: 24,
   },
   {
     id: 'log-init-02',
     timestamp: Date.now() - 78000,
     botId: 'agent-lgbm-nightly',
-    botName: 'LightGBM Momentum',
+    botName: 'Momentum · Импульсный Скальпер',
     action: 'ORDER_OPEN',
     symbol: 'SOLUSDT',
     side: 'SHORT',
     price: 178.4,
-    message: 'LightGBM: Импульс волатильности (ATR = 4.9%). Скальпинг SHORT по $178.40. SL: $184.0, TP: $172.0.',
+    message: 'Импульс волатильности (ATR = 4.9%). Скальпинг SHORT по $178.40. SL: $184.0, TP: $172.0.',
     rttMs: 31,
   },
   {
     id: 'log-init-03',
     timestamp: Date.now() - 145000,
     botId: 'agent-tg-crypto-alpha',
-    botName: 'TG Alpha Parser',
+    botName: 'Alpha-Signal · Индекс Каналов',
     action: 'TP_HIT',
     symbol: 'ETHUSDT',
     side: 'LONG',
     price: 3495.0,
-    pnl: 42.5,
-    message: 'Take-Profit 1 ($3,495.0) достигнут по сетапу @crypto_alpha_vip. Зафиксирован профит +$42.50 USDT.',
+    pnl: 0.18,
+    message: 'Take-Profit 1 ($3,495.0) достигнут по сетапу @crypto_alpha_vip. Зафиксирован профит +$0.18 USDT.',
     rttMs: 27,
   },
 ];
@@ -392,7 +393,7 @@ const initialXaiDecisions: XaiDecisionRecord[] = [
     id: 'xai-init-01',
     timestamp: Date.now() - 145000,
     botId: 'agent-tg-crypto-alpha',
-    botName: 'TG Channel Alpha Parser Agent',
+    botName: 'Alpha-Signal · Индекс Каналов',
     engineType: 'TG_CHANNEL',
     symbol: 'ETHUSDT',
     action: 'LONG',
@@ -497,13 +498,14 @@ const initialXaiDecisions: XaiDecisionRecord[] = [
 
 const systemState: AppSystemState = {
   mode: 'SHADOW',
+  activeExchange: 'BYBIT',
   isKillSwitchActive: false,
   killSwitchTriggerReason: null,
   lastUnblockedAt: 0,
-  capitalUsdt: 10000.0,
-  rolling24hPnlUsdt: 381.79,
-  totalRealizedPnlUsdt: 381.79,
-  pings: { bybit: 24, okx: 36, mexc: 31 },
+  capitalUsdt: 10.0,
+  rolling24hPnlUsdt: 0.65,
+  totalRealizedPnlUsdt: 0.65,
+  pings: { bybit: 24, okx: 32, mexc: 31 },
   botTradingEnabled: true,
   botEngineSpeedMs: 3500,
   botTradeLogs: initialLogs,
@@ -515,19 +517,19 @@ const systemState: AppSystemState = {
       id: 'pos-btc-01',
       symbol: 'BTCUSDT',
       side: 'LONG',
-      qty: 0.15,
+      qty: 0.00015,
       entryVwap: 68420.5,
       currentPrice: 68650.0,
-      unrealizedPnl: 34.42,
+      unrealizedPnl: 0.03,
       leverage: 10,
       marginType: 'ISOLATED',
       mode: 'SHADOW',
       slPrice: 67920.0,
-      tpGrid: [{ price: 69320.0, qty: 0.09 }, { price: 69850.0, qty: 0.06 }],
-      fundingPaid: -0.84,
+      tpGrid: [{ price: 69320.0, qty: 0.00009 }, { price: 69850.0, qty: 0.00006 }],
+      fundingPaid: 0.0,
       openedAt: Date.now() - 3600000,
       botId: 'agent-onnx-ppo-v2',
-      botName: 'ONNX PyTorch RL',
+      botName: 'Delta-L2 · Стакан и Объемы',
       xaiDecisionId: 'xai-init-03',
       entryFeatures: { obi: 0.44, momentum: 0.34, vwap: 0.17, sentiment: 0.25 },
     },
@@ -535,19 +537,19 @@ const systemState: AppSystemState = {
       id: 'pos-sol-02',
       symbol: 'SOLUSDT',
       side: 'SHORT',
-      qty: 25.0,
+      qty: 0.05,
       entryVwap: 178.4,
       currentPrice: 176.2,
-      unrealizedPnl: 55.0,
+      unrealizedPnl: 0.11,
       leverage: 8,
       marginType: 'ISOLATED',
       mode: 'SHADOW',
       slPrice: 180.05,
-      tpGrid: [{ price: 175.7, qty: 15.0 }, { price: 174.1, qty: 10.0 }],
-      fundingPaid: 0.32,
+      tpGrid: [{ price: 175.7, qty: 0.03 }, { price: 174.1, qty: 0.02 }],
+      fundingPaid: 0.0,
       openedAt: Date.now() - 7200000,
       botId: 'agent-lgbm-nightly',
-      botName: 'LightGBM Momentum',
+      botName: 'Momentum · Импульсный Скальпер',
       xaiDecisionId: 'xai-init-02',
       entryFeatures: { obi: -0.32, momentum: -0.35, vwap: -0.29, sentiment: -0.18 },
     },
@@ -558,9 +560,9 @@ const systemState: AppSystemState = {
       symbol: 'ETHUSDT',
       side: 'BUY',
       limitPrice: 3450.0,
-      qty: 2.0,
-      queueAheadQty: 14.5,
-      volumeSincePlacement: 8.2,
+      qty: 0.003,
+      queueAheadQty: 1.5,
+      volumeSincePlacement: 0.8,
       status: 'PENDING_LIMIT',
       createdTs: Date.now() - 900000,
     },
@@ -748,8 +750,8 @@ const systemState: AppSystemState = {
       profitFactor: 1.76,
       sharpeRatio: 2.14,
       maxDrawdownPct: 3.8,
-      virtualBalance: 2450.0,
-      liveAllocation: 4000.0,
+      virtualBalance: 10.0,
+      liveAllocation: 10.0,
       isEnabled: true,
       riskPerTradePct: 1.5,
       leverage: 10,
@@ -768,7 +770,7 @@ const systemState: AppSystemState = {
       profitFactor: 1.48,
       sharpeRatio: 1.62,
       maxDrawdownPct: 4.1,
-      virtualBalance: 1280.0,
+      virtualBalance: 10.0,
       liveAllocation: 0.0,
       isEnabled: true,
       riskPerTradePct: 1.2,
@@ -788,8 +790,8 @@ const systemState: AppSystemState = {
       profitFactor: 1.69,
       sharpeRatio: 1.88,
       maxDrawdownPct: 4.4,
-      virtualBalance: 1820.0,
-      liveAllocation: 3000.0,
+      virtualBalance: 10.0,
+      liveAllocation: 10.0,
       isEnabled: true,
       riskPerTradePct: 1.5,
       leverage: 10,
@@ -977,43 +979,79 @@ function loadPersistedState(): void {
     if (fs.existsSync(PERSIST_FILE)) {
       const raw = fs.readFileSync(PERSIST_FILE, 'utf-8');
       const parsed = JSON.parse(raw);
-      if (typeof parsed.capitalUsdt === 'number') systemState.capitalUsdt = parsed.capitalUsdt;
-      if (typeof parsed.rolling24hPnlUsdt === 'number') systemState.rolling24hPnlUsdt = parsed.rolling24hPnlUsdt;
-      if (typeof parsed.totalRealizedPnlUsdt === 'number') systemState.totalRealizedPnlUsdt = parsed.totalRealizedPnlUsdt;
+      if (parsed.activeExchange === 'OKX' || parsed.activeExchange === 'BYBIT') {
+        systemState.activeExchange = parsed.activeExchange;
+      }
+      const isLegacy10k = typeof parsed.capitalUsdt === 'number' && parsed.capitalUsdt >= 1000;
+      if (typeof parsed.capitalUsdt === 'number' && !isLegacy10k) {
+        systemState.capitalUsdt = parsed.capitalUsdt;
+      } else {
+        systemState.capitalUsdt = 10.0;
+      }
       if (typeof parsed.botTradingEnabled === 'boolean') systemState.botTradingEnabled = parsed.botTradingEnabled;
       if (typeof parsed.lastUnblockedAt === 'number') systemState.lastUnblockedAt = parsed.lastUnblockedAt;
-      if (typeof parsed.isKillSwitchActive === 'boolean') systemState.isKillSwitchActive = parsed.isKillSwitchActive;
-      if (parsed.killSwitchTriggerReason !== undefined) systemState.killSwitchTriggerReason = parsed.killSwitchTriggerReason;
-      if (Array.isArray(parsed.activePositions)) {
-        systemState.activePositions = parsed.activePositions.map((p: any) => ({
-          ...p,
-          botName: p.botName ? sanitizeBotName(p.botId, p.botName) : p.botName,
-        }));
-      }
-      if (Array.isArray(parsed.limitOrdersQueue)) systemState.limitOrdersQueue = parsed.limitOrdersQueue;
-      
-      if (Array.isArray(parsed.closedTrades)) {
-        systemState.closedTrades = parsed.closedTrades.map((t: any) => ({
-          ...t,
-          botName: sanitizeBotName(t.botId, t.botName),
-        }));
-      }
-
-      if (Array.isArray(parsed.walletLedger)) {
-        systemState.walletLedger = parsed.walletLedger.map((l: any) => ({
-          ...l,
-          description: sanitizeCleanText(l.description),
-        }));
-      }
-
-      if (systemState.closedTrades.length > 0) {
-        systemState.totalRealizedPnlUsdt = Number(
-          systemState.closedTrades.reduce((acc, t) => acc + (Number(t.netPnlUsdt) || 0), 0).toFixed(2)
-        );
-        recalculateRolling24hPnl();
+      if (typeof parsed.isKillSwitchActive === 'boolean' && !isLegacy10k) {
+        systemState.isKillSwitchActive = parsed.isKillSwitchActive;
       } else {
+        systemState.isKillSwitchActive = false;
+      }
+      if (parsed.killSwitchTriggerReason !== undefined && !isLegacy10k) {
+        systemState.killSwitchTriggerReason = parsed.killSwitchTriggerReason;
+      } else {
+        systemState.killSwitchTriggerReason = null;
+      }
+
+      if (isLegacy10k) {
+        // Clean migration from $10,000 to $10.00 micro-capital account
+        systemState.activePositions = [];
+        systemState.limitOrdersQueue = [];
+        systemState.closedTrades = [];
         systemState.totalRealizedPnlUsdt = 0.0;
         systemState.rolling24hPnlUsdt = 0.0;
+        systemState.lastUnblockedAt = Date.now();
+        systemState.walletLedger = [
+          {
+            id: `led-init-10-${Date.now()}`,
+            timestamp: Date.now(),
+            type: 'DEPOSIT_RESET',
+            amountUsdt: 10.0,
+            balanceAfterUsdt: 10.0,
+            description: 'Стартовый депозит торгового счета: $10.00 USDT',
+            mode: systemState.mode,
+          },
+        ];
+      } else {
+        if (Array.isArray(parsed.activePositions)) {
+          systemState.activePositions = parsed.activePositions.map((p: any) => ({
+            ...p,
+            botName: p.botName ? sanitizeBotName(p.botId, p.botName) : p.botName,
+          }));
+        }
+        if (Array.isArray(parsed.limitOrdersQueue)) systemState.limitOrdersQueue = parsed.limitOrdersQueue;
+
+        if (Array.isArray(parsed.closedTrades)) {
+          systemState.closedTrades = parsed.closedTrades.map((t: any) => ({
+            ...t,
+            botName: sanitizeBotName(t.botId, t.botName),
+          }));
+        }
+
+        if (Array.isArray(parsed.walletLedger)) {
+          systemState.walletLedger = parsed.walletLedger.map((l: any) => ({
+            ...l,
+            description: sanitizeCleanText(l.description),
+          }));
+        }
+
+        if (systemState.closedTrades.length > 0) {
+          systemState.totalRealizedPnlUsdt = Number(
+            systemState.closedTrades.reduce((acc, t) => acc + (Number(t.netPnlUsdt) || 0), 0).toFixed(2)
+          );
+          recalculateRolling24hPnl();
+        } else {
+          systemState.totalRealizedPnlUsdt = 0.0;
+          systemState.rolling24hPnlUsdt = 0.0;
+        }
       }
       if (Array.isArray(parsed.botTradeLogs)) {
         systemState.botTradeLogs = parsed.botTradeLogs.map((log: any) => ({
@@ -1094,6 +1132,10 @@ function loadPersistedState(): void {
           return {
             ...defaultAgent,
             ...saved,
+            virtualBalance:
+              isLegacy10k || typeof saved.virtualBalance !== 'number' || saved.virtualBalance > 500
+                ? 10.0
+                : saved.virtualBalance,
             name: sanitizeBotName(defaultAgent.agentId, saved.name),
             brain: saved.brain
               ? {
@@ -1763,7 +1805,7 @@ async function runProductionTelegramRelayBridge(): Promise<void> {
           const text = String(msg.text || '').trim();
           if (text.startsWith('/')) {
             const cmd = text.split(' ')[0].split('@')[0].toLowerCase();
-            const cap = prodHealth?.capitalUsdt ?? 10000;
+            const cap = prodHealth?.capitalUsdt ?? 10;
             const realPnl = prodHealth?.totalRealizedPnlUsdt ?? 0;
             const eq = (cap + realPnl).toFixed(2);
             const modeStr = prodHealth?.mode || 'SHADOW';
@@ -1911,23 +1953,44 @@ const instrumentRules: Record<string, InstrumentRules> = {
 };
 
 function resolveInstrumentRules(symbol: string, referencePrice?: number): InstrumentRules {
-  if (instrumentRules[symbol]) {
-    return instrumentRules[symbol];
-  }
+  const isMicroAccount = (systemState.capitalUsdt + systemState.totalRealizedPnlUsdt) < 500;
+  const exName = (systemState.activeExchange || 'BYBIT').toLowerCase();
+
   const price =
     referencePrice ||
     systemState.screenerSymbols.find((s) => s.symbol === symbol)?.price ||
-    10.0;
+    (symbol === 'BTCUSDT' ? 68500 : symbol === 'ETHUSDT' ? 2500 : symbol === 'SOLUSDT' ? 145 : 10.0);
+
+  if (isMicroAccount) {
+    // Micro-lot rules for small capital ($10 USDT) so fractional contracts on BTC/ETH/SOL/Alts execute within 1.5% risk
+    if (price >= 10000) {
+      return { exchange: exName, symbol, tickSize: 0.1, qtyStep: 0.00001, minQty: 0.00001, minNotional: 0.5, maxLeverage: 20 };
+    }
+    if (price >= 500) {
+      return { exchange: exName, symbol, tickSize: 0.01, qtyStep: 0.0001, minQty: 0.0001, minNotional: 0.5, maxLeverage: 20 };
+    }
+    if (price >= 50) {
+      return { exchange: exName, symbol, tickSize: 0.01, qtyStep: 0.001, minQty: 0.001, minNotional: 0.5, maxLeverage: 20 };
+    }
+    if (price >= 1) {
+      return { exchange: exName, symbol, tickSize: 0.001, qtyStep: 0.01, minQty: 0.05, minNotional: 0.5, maxLeverage: 20 };
+    }
+    return { exchange: exName, symbol, tickSize: 0.0001, qtyStep: 1, minQty: 1, minNotional: 0.5, maxLeverage: 20 };
+  }
+
+  if (instrumentRules[symbol]) {
+    return { ...instrumentRules[symbol], exchange: exName };
+  }
   if (price >= 10000) {
-    return { exchange: 'bybit', symbol, tickSize: 0.1, qtyStep: 0.001, minQty: 0.001, minNotional: 5.0, maxLeverage: 20 };
+    return { exchange: exName, symbol, tickSize: 0.1, qtyStep: 0.001, minQty: 0.001, minNotional: 5.0, maxLeverage: 20 };
   }
   if (price >= 100) {
-    return { exchange: 'bybit', symbol, tickSize: 0.01, qtyStep: 0.01, minQty: 0.01, minNotional: 5.0, maxLeverage: 20 };
+    return { exchange: exName, symbol, tickSize: 0.01, qtyStep: 0.01, minQty: 0.01, minNotional: 5.0, maxLeverage: 20 };
   }
   if (price >= 1) {
-    return { exchange: 'bybit', symbol, tickSize: 0.001, qtyStep: 0.1, minQty: 0.5, minNotional: 5.0, maxLeverage: 20 };
+    return { exchange: exName, symbol, tickSize: 0.001, qtyStep: 0.1, minQty: 0.5, minNotional: 5.0, maxLeverage: 20 };
   }
-  return { exchange: 'bybit', symbol, tickSize: 0.0001, qtyStep: 10, minQty: 10, minNotional: 5.0, maxLeverage: 20 };
+  return { exchange: exName, symbol, tickSize: 0.0001, qtyStep: 10, minQty: 10, minNotional: 5.0, maxLeverage: 20 };
 }
 
 function recalculateRolling24hPnl(): number {
@@ -1990,11 +2053,110 @@ function resolveSafeSymbolFallbackPrice(symbol: string): number {
   return 1.0;
 }
 
-// Fetch real 24h tickers from Bybit v5 Linear
+function toOkxSwapInstId(symbol: string): string {
+  const clean = symbol.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (clean.endsWith('USDT')) {
+    return `${clean.slice(0, -4)}-USDT-SWAP`;
+  }
+  return `${clean}-USDT-SWAP`;
+}
+
+function fromOkxSwapInstId(instId: string): string {
+  const parts = String(instId || '').toUpperCase().split('-');
+  if (parts.length >= 2 && parts[1] === 'USDT') {
+    return `${parts[0]}USDT`;
+  }
+  return String(instId || '').replace(/[^A-Z0-9]/g, '');
+}
+
+async function fetchOkxPublicJson(pathAndQuery: string, timeoutMs = 4500): Promise<{ ok: boolean; data: any; rttMs: number }> {
+  const endpoints = ['https://www.okx.com', 'https://aws.okx.com'];
+  for (const base of endpoints) {
+    try {
+      const t0 = Date.now();
+      const res = await fetch(`${base}${pathAndQuery}`, {
+        headers: BYBIT_PUBLIC_HEADERS,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const rttMs = Date.now() - t0;
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.code === '0') {
+          return { ok: true, data, rttMs };
+        }
+      }
+    } catch {
+      // try next mirror
+    }
+  }
+  return { ok: false, data: null, rttMs: 120 };
+}
+
+async function fetchRealOkxTickers(): Promise<any[]> {
+  try {
+    const { ok, data, rttMs } = await fetchOkxPublicJson('/api/v5/market/tickers?instType=SWAP', 5000);
+    if (ok && Array.isArray(data?.data)) {
+      systemState.pings.okx = Math.min(200, Math.max(10, rttMs));
+      const filtered = data.data
+        .filter((t: any) => typeof t.instId === 'string' && t.instId.endsWith('-USDT-SWAP'))
+        .map((t: any) => {
+          const sym = fromOkxSwapInstId(t.instId);
+          const price = parseFloat(t.last || '0');
+          const bid = parseFloat(t.bidPx || '0') || price;
+          const ask = parseFloat(t.askPx || '0') || price;
+          const open24h = parseFloat(t.open24h || '0') || price;
+          // OKX volCcy24h on SWAP is in base coin; multiply by price for USDT turnover
+          const volBase = parseFloat(t.volCcy24h || '0');
+          const turnover = volBase * price;
+          const spreadBps = bid > 0 ? ((ask - bid) / bid) * 10000 : 1.0;
+          const priceChangePct = open24h > 0 ? Number((((price - open24h) / open24h) * 100).toFixed(2)) : 0;
+          const absChange = Math.abs(priceChangePct);
+          const trendDirection = priceChangePct >= 1.0 ? 'BULLISH' : priceChangePct <= -1.0 ? 'BEARISH' : 'NEUTRAL';
+          const isTrendHot = absChange >= 2.0 && turnover >= 2000000;
+          return {
+            symbol: sym,
+            exchange: 'OKX',
+            turnover24h: turnover,
+            spreadBps: Number(Math.max(0.2, spreadBps).toFixed(1)),
+            atrPct: Number((absChange + 1.5).toFixed(1)),
+            priceChangePct,
+            trendDirection,
+            isTrendHot,
+            status: isTrendHot ? 'TREND' : turnover >= 3000000 ? 'READY' : 'WARMING_UP',
+            price,
+            fundingRate: 0.0001,
+            nextFundingTime: Date.now() + 3600000,
+          };
+        })
+        .filter((t: any) => t.price > 0 && t.turnover24h >= 1500000 && t.spreadBps <= 35.0)
+        .sort((a: any, b: any) => b.turnover24h - a.turnover24h)
+        .slice(0, 150);
+
+      if (filtered.length > 0) {
+        return filtered;
+      }
+    }
+  } catch {
+    // ignore OKX fetch error
+  }
+  return [];
+}
+
+// Fetch real 24h tickers from active exchange (Bybit V5 or OKX V5 Swap) with automatic multi-exchange failover
 async function fetchRealBybitTickers(): Promise<any[]> {
   const now = Date.now();
   if (cachedTickers.length > 0 && now - lastTickersFetchTs < 5000) {
     return cachedTickers;
+  }
+
+  if (systemState.activeExchange === 'OKX') {
+    const okxList = await fetchRealOkxTickers();
+    if (okxList.length > 0) {
+      cachedTickers = okxList;
+      systemState.screenerSymbols = okxList;
+      lastTickersFetchTs = now;
+      return cachedTickers;
+    }
   }
 
   try {
@@ -2016,6 +2178,7 @@ async function fetchRealBybitTickers(): Promise<any[]> {
           const isTrendHot = absChange >= 2.0 && turnover >= 2000000;
           return {
             symbol: t.symbol,
+            exchange: 'BYBIT',
             turnover24h: turnover,
             spreadBps: Number(spreadBps.toFixed(1)),
             atrPct: Number((absChange + 1.5).toFixed(1)),
@@ -2036,10 +2199,19 @@ async function fetchRealBybitTickers(): Promise<any[]> {
         cachedTickers = filtered;
         systemState.screenerSymbols = filtered;
         lastTickersFetchTs = now;
+        return cachedTickers;
       }
     }
   } catch (err) {
-    console.warn('Bybit tickers fetch error, using cached state:', err);
+    console.warn('Primary exchange tickers fetch error, trying backup exchange:', err);
+  }
+
+  // Automatic failover to OKX if Bybit failed
+  const backupOkx = await fetchRealOkxTickers();
+  if (backupOkx.length > 0) {
+    cachedTickers = backupOkx;
+    systemState.screenerSymbols = backupOkx;
+    lastTickersFetchTs = now;
   }
   return cachedTickers;
 }
@@ -2258,12 +2430,52 @@ async function executeRealBybitV5Order(params: {
   }
 }
 
-// Fetch real L2-50 orderbook from Bybit v5 Linear
+async function fetchRealOkxOrderbook(symbol: string): Promise<OrderbookL2 | null> {
+  try {
+    const instId = toOkxSwapInstId(symbol);
+    const { ok, data, rttMs } = await fetchOkxPublicJson(`/api/v5/market/books?instId=${encodeURIComponent(instId)}&sz=50`, 4000);
+    if (ok && Array.isArray(data?.data) && data.data.length > 0) {
+      systemState.pings.okx = Math.min(200, Math.max(10, rttMs));
+      const bookData = data.data[0];
+      const rawBids = bookData.bids || [];
+      const rawAsks = bookData.asks || [];
+      const bids = rawBids.map((b: string[]) => ({
+        price: parseFloat(b[0]),
+        qty: parseFloat(b[1]),
+      }));
+      const asks = rawAsks.map((a: string[]) => ({
+        price: parseFloat(a[0]),
+        qty: parseFloat(a[1]),
+      }));
+      if (bids.length > 0 && asks.length > 0) {
+        return {
+          timestamp: parseInt(bookData.ts || Date.now().toString(), 10),
+          seqId: parseInt(bookData.seqId || Math.floor(Date.now() / 100).toString(), 10),
+          bids,
+          asks,
+        };
+      }
+    }
+  } catch {
+    // ignore OKX orderbook error
+  }
+  return null;
+}
+
+// Fetch real L2-50 orderbook from active exchange (Bybit V5 or OKX V5)
 async function fetchRealBybitOrderbook(symbol: string): Promise<OrderbookL2> {
   const now = Date.now();
   const cached = cachedOrderbooks[symbol];
   if (cached && now - cached.fetchedAt < 1000) {
     return cached.book;
+  }
+
+  if (systemState.activeExchange === 'OKX') {
+    const okxBook = await fetchRealOkxOrderbook(symbol);
+    if (okxBook) {
+      cachedOrderbooks[symbol] = { book: okxBook, fetchedAt: now };
+      return okxBook;
+    }
   }
 
   try {
@@ -2302,6 +2514,12 @@ async function fetchRealBybitOrderbook(symbol: string): Promise<OrderbookL2> {
     console.warn(`Failed to fetch real Bybit book for ${symbol}:`, err);
   }
 
+  const fallbackOkxBook = await fetchRealOkxOrderbook(symbol);
+  if (fallbackOkxBook) {
+    cachedOrderbooks[symbol] = { book: fallbackOkxBook, fetchedAt: now };
+    return fallbackOkxBook;
+  }
+
   // Graceful fallback to cached or synthesized depth if rate-limited
   if (cached) return cached.book;
 
@@ -2326,13 +2544,61 @@ async function fetchRealBybitOrderbook(symbol: string): Promise<OrderbookL2> {
 
 const cachedKlines: Record<string, { bars: KlineBar[]; fetchedAt: number }> = {};
 
-// Fetch real historical klines (candles) from Bybit v5 Linear
+async function fetchRealOkxKlines(symbol: string, interval: string = '5', limit: number = 60): Promise<KlineBar[]> {
+  try {
+    const instId = toOkxSwapInstId(symbol);
+    const barMap: Record<string, string> = {
+      '1': '1m',
+      '3': '3m',
+      '5': '5m',
+      '15': '15m',
+      '30': '30m',
+      '60': '1H',
+      '240': '4H',
+      D: '1D',
+    };
+    const bar = barMap[interval] || '5m';
+    const { ok, data } = await fetchOkxPublicJson(
+      `/api/v5/market/candles?instId=${encodeURIComponent(instId)}&bar=${bar}&limit=${limit}`,
+      4500
+    );
+    if (ok && Array.isArray(data?.data) && data.data.length > 0) {
+      const bars: KlineBar[] = data.data
+        .slice()
+        .reverse()
+        .map((row: string[]) => ({
+          timestamp: parseInt(row[0], 10),
+          open: parseFloat(row[1]),
+          high: parseFloat(row[2]),
+          low: parseFloat(row[3]),
+          close: parseFloat(row[4]),
+          volume: parseFloat(row[5]),
+          turnover: parseFloat(row[7] || row[6] || '0'),
+        }))
+        .filter((b: KlineBar) => b.close > 0);
+      if (bars.length >= 15) return bars;
+    }
+  } catch {
+    // ignore OKX klines error
+  }
+  return [];
+}
+
+// Fetch real historical klines (candles) from active exchange (Bybit V5 or OKX V5)
 async function fetchRealBybitKlines(symbol: string, interval: string = '5', limit: number = 60): Promise<KlineBar[]> {
-  const cacheKey = `${symbol}_${interval}_${limit}`;
+  const cacheKey = `${systemState.activeExchange}_${symbol}_${interval}_${limit}`;
   const now = Date.now();
   const cached = cachedKlines[cacheKey];
   if (cached && now - cached.fetchedAt < 12000) {
     return cached.bars;
+  }
+
+  if (systemState.activeExchange === 'OKX') {
+    const okxBars = await fetchRealOkxKlines(symbol, interval, limit);
+    if (okxBars.length >= 15) {
+      cachedKlines[cacheKey] = { bars: okxBars, fetchedAt: now };
+      return okxBars;
+    }
   }
 
   try {
@@ -2365,7 +2631,13 @@ async function fetchRealBybitKlines(symbol: string, interval: string = '5', limi
       }
     }
   } catch (err) {
-    console.warn(`Failed to fetch real Bybit klines for ${symbol}:`, err);
+    console.warn(`Failed to fetch real klines for ${symbol}:`, err);
+  }
+
+  const backupOkxBars = await fetchRealOkxKlines(symbol, interval, limit);
+  if (backupOkxBars.length >= 15) {
+    cachedKlines[cacheKey] = { bars: backupOkxBars, fetchedAt: now };
+    return backupOkxBars;
   }
 
   if (cached) return cached.bars;
@@ -2419,6 +2691,7 @@ function buildFullSystemHealthPayload() {
     uptimeSec: Math.round(process.uptime()),
     timestamp: Date.now(),
     mode: systemState.mode,
+    activeExchange: systemState.activeExchange || 'BYBIT',
     isKillSwitchActive: systemState.isKillSwitchActive,
     killSwitchTriggerReason: systemState.killSwitchTriggerReason,
     capitalUsdt: systemState.capitalUsdt,
@@ -2503,6 +2776,27 @@ function buildFullSystemHealthPayload() {
     })(),
   };
 }
+
+// Switch Active Exchange (BYBIT | OKX)
+app.post('/api/exchange/select', async (req: Request, res: Response) => {
+  const rawEx = String(req.body?.exchange || '').trim().toUpperCase();
+  if (rawEx !== 'BYBIT' && rawEx !== 'OKX') {
+    res.status(400).json({ error: 'Поддерживаемые биржи: BYBIT, OKX' });
+    return;
+  }
+  systemState.activeExchange = rawEx;
+  lastTickersFetchTs = 0;
+  for (const k of Object.keys(cachedOrderbooks)) {
+    delete cachedOrderbooks[k];
+  }
+  await fetchRealBybitTickers().catch(() => {});
+  savePersistedState();
+  res.json({
+    success: true,
+    activeExchange: systemState.activeExchange,
+    health: buildFullSystemHealthPayload(),
+  });
+});
 
 // REST Endpoints
 app.get(['/api/system/health', '/api/health'], (_req: Request, res: Response) => {
@@ -3063,7 +3357,7 @@ function recordClosedPosition(
   // Online Reinforcement Learning (Contextual Bandit Policy Update) for AI Bot
   const agent = systemState.agents.find((a) => a.agentId === pos.botId);
   if (agent) {
-    agent.virtualBalance = Number(((agent.virtualBalance || 1500) + trade.netPnlUsdt).toFixed(2));
+    agent.virtualBalance = Number(((agent.virtualBalance || 10) + trade.netPnlUsdt).toFixed(2));
 
     // Only increment tradesCount and run full RL weight update once per full position lifecycle
     if (!isPartial) {
@@ -3698,7 +3992,7 @@ async function runBotEngineCycle() {
         const slDist = topBookPrice * (effectiveSlPct / 100);
         const slPrice = side === 'LONG' ? topBookPrice - slDist : topBookPrice + slDist;
 
-        const effectiveCapital = Math.max(1000, systemState.capitalUsdt + systemState.totalRealizedPnlUsdt);
+        const effectiveCapital = Math.max(1, systemState.capitalUsdt + systemState.totalRealizedPnlUsdt);
         const usedMargin = systemState.activePositions.reduce(
           (acc, p) => acc + (p.qty * p.entryVwap) / (p.leverage || 10),
           0
@@ -3999,7 +4293,7 @@ const handleTrainBotEpoch = async (req: Request, res: Response) => {
         botName: bot.name,
         action: 'SCAN_PASS',
         symbol: symbols.join(','),
-        message: `Обучена эпоха #${bot.brain.epochsTrained} на свечах Bybit (${epochResult.simulatedTrades} сетапов, WinRate ${epochResult.winRatePct}%, Net Reward ${epochResult.epochReward >= 0 ? '+' : ''}${epochResult.epochReward.toFixed(2)}R). Веса: OBI=${(bot.brain.weights.obiWeight * 100).toFixed(1)}%, Mom=${(bot.brain.weights.momentumWeight * 100).toFixed(1)}%, VWAP=${(bot.brain.weights.vwapWeight * 100).toFixed(1)}%, Sent=${(bot.brain.weights.sentimentWeight * 100).toFixed(1)}%. Гиперпараметры: Порог=${bot.brain.confidenceThreshold}, ATR=${bot.brain.atrMultiplier}x, R:R=1:${bot.tpSlRatio}.`,
+        message: `Цикл калибровки #${bot.brain.epochsTrained} на исторических свечах ${systemState.activeExchange} (${epochResult.simulatedTrades} сетапов, WinRate ${epochResult.winRatePct}%, Net Reward ${epochResult.epochReward >= 0 ? '+' : ''}${epochResult.epochReward.toFixed(2)}R). Веса: OBI=${(bot.brain.weights.obiWeight * 100).toFixed(1)}%, Mom=${(bot.brain.weights.momentumWeight * 100).toFixed(1)}%, VWAP=${(bot.brain.weights.vwapWeight * 100).toFixed(1)}%, Sent=${(bot.brain.weights.sentimentWeight * 100).toFixed(1)}%. Гиперпараметры: Порог=${bot.brain.confidenceThreshold}, ATR=${bot.brain.atrMultiplier}x, R:R=1:${bot.tpSlRatio}.`,
         rttMs: systemState.pings.bybit,
       });
 
@@ -4193,10 +4487,10 @@ export async function analyzeMarketTrendsAndRetrainingNeeds(notifyTelegram = fal
     retrainingReason = `Сдвиг рыночного режима в ${regimeTitle}. Прошло ${hoursSinceLastTrain}ч с последней калибровки — требуется адаптация весов к динамике альткоинов.`;
   } else if (regime === 'HIGH_VOLATILITY' && hoursSinceLastTrain >= 5) {
     isRetrainingRecommended = true;
-    retrainingReason = `Всплеск волатильности рынка (ATR ${avgAtr}%). Требуется калибровка множителей ATR и стоп-лоссов на свежих свечах Bybit.`;
+    retrainingReason = `Всплеск волатильности рынка (ATR ${avgAtr}%). Требуется калибровка множителей ATR и стоп-лоссов на свежих рыночных свечах.`;
   } else if (hoursSinceLastTrain >= 16) {
     isRetrainingRecommended = true;
-    retrainingReason = `Прошло ${hoursSinceLastTrain}ч с последнего цикла калибровки на свечах Bybit. Рекомендуется плановое обновление коэффициентов.`;
+    retrainingReason = `Прошло ${hoursSinceLastTrain}ч с последнего цикла калибровки на исторических свечах. Рекомендуется плановое обновление коэффициентов.`;
   }
 
   const serverUrl = 'http://194.113.34.230:3000';
@@ -4856,7 +5150,7 @@ function executeSystemFactoryReset(): {
   closedTradesCount: number;
   activePositionsCount: number;
 } {
-  systemState.capitalUsdt = 10000.0;
+  systemState.capitalUsdt = 10.0;
   systemState.rolling24hPnlUsdt = 0.0;
   systemState.totalRealizedPnlUsdt = 0.0;
   systemState.activePositions = [];
@@ -4876,7 +5170,7 @@ function executeSystemFactoryReset(): {
   systemState.agents = systemState.agents.map((agent) => ({
     ...agent,
     tradesCount: 0,
-    virtualBalance: 1500.0,
+    virtualBalance: 10.0,
     profitFactor: 1.5,
     sharpeRatio: 1.6,
     maxDrawdownPct: 0.0,
@@ -4889,9 +5183,9 @@ function executeSystemFactoryReset(): {
       id: `led-init-${now}`,
       timestamp: now,
       type: 'DEPOSIT_RESET',
-      amountUsdt: 10000.0,
-      balanceAfterUsdt: 10000.0,
-      description: 'Чистый старт торговой системы ZimaTrade: базовый баланс $10,000.00 USDT',
+      amountUsdt: 10.0,
+      balanceAfterUsdt: 10.0,
+      description: 'Чистый старт торговой системы ZimaTrade: базовый баланс $10.00 USDT',
       mode: systemState.mode,
     },
   ];
@@ -4901,7 +5195,7 @@ function executeSystemFactoryReset(): {
     botName: 'Ядро управления',
     action: 'SCAN_PASS',
     symbol: 'SYSTEM',
-    message: 'Выполнен полный сброс торговой статистики к $10,000.00 USDT. Все сделки обнулены, Kill-Switch снят, система запущена с чистого листа.',
+    message: 'Выполнен полный сброс торговой статистики к $10.00 USDT. Все сделки обнулены, Kill-Switch снят, система запущена с чистого листа.',
     rttMs: systemState.pings.bybit,
   });
 
@@ -4909,7 +5203,7 @@ function executeSystemFactoryReset(): {
     category: 'SYSTEM_UPDATE',
     severity: 'WARNING',
     title: '🔄 Полный сброс системы и статистики',
-    message: 'Баланс сброшен к $10,000 USDT. Все сделки обнулены, Kill-Switch снят, система перезапущена с чистого листа.',
+    message: 'Баланс сброшен к $10.00 USDT. Все сделки обнулены, Kill-Switch снят, система перезапущена с чистого листа.',
     isUrgent: true,
   });
 
@@ -4918,7 +5212,7 @@ function executeSystemFactoryReset(): {
   return {
     success: true,
     capitalUsdt: systemState.capitalUsdt,
-    walletBalance: 10000.0,
+    walletBalance: 10.0,
     totalRealizedPnlUsdt: 0.0,
     rolling24hPnlUsdt: 0.0,
     closedTradesCount: 0,
@@ -4962,7 +5256,7 @@ app.post('/api/wallet/adjust-balance', (req: Request, res: Response) => {
     });
     savePersistedState();
   } else {
-    res.status(400).json({ error: 'Укажите корректную сумму пополнения (от $10 до $1,000,000 USDT)' });
+    res.status(400).json({ error: 'Укажите корректную сумму пополнения (от $1 до $1,000,000 USDT)' });
     return;
   }
 
@@ -5900,21 +6194,23 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
   const bybitKeySet = isKeyValid(process.env.BYBIT_API_KEY);
   const bybitSecretSet = isKeyValid(process.env.BYBIT_API_SECRET);
   const okxKeySet = isKeyValid(process.env.OKX_API_KEY);
+  const okxSecretSet = isKeyValid(process.env.OKX_API_SECRET);
   const mexcKeySet = isKeyValid(process.env.MEXC_API_KEY);
   const tgIdSet = isKeyValid(process.env.TG_API_ID);
   const tgHashSet = isKeyValid(process.env.TG_API_HASH);
 
   res.json({
+    activeExchange: systemState.activeExchange || 'BYBIT',
     dataSources: {
       marketData: {
-        provider: 'Bybit v5 Linear Public Gateway (api.bybit.com)',
+        provider: 'Bybit V5 & OKX V5 Multi-Exchange Gateway',
         type: 'REAL_LIVE_STREAM',
         requiresKey: false,
         status: 'CONNECTED',
-        description: 'Реальные котировки, живой стакан L2-50, тикеры 24ч и ставки фандинга берутся напрямую с Bybit API v5 без ключей.',
+        description: 'Реальные котировки, живой стакан L2-50, тикеры 24ч и ставки фандинга берутся напрямую с Bybit V5 и OKX V5.',
       },
       backupMarketData: {
-        provider: 'OKX & MEXC Public Gateway',
+        provider: 'OKX V5 & MEXC Public Gateway',
         type: 'REAL_LIVE_STREAM',
         requiresKey: false,
         status: 'CONNECTED',
@@ -5923,7 +6219,7 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
     credentials: {
       ollamaCloudKey: {
         name: 'OLLAMA_API_KEYS',
-        purpose: 'Ollama Cloud Pool (Ротация ключей, nemotron-3, gpt-oss, gemma4)',
+        purpose: 'Шлюз обработки сигналов',
         configured: ollamaCloud.getPoolStatus().totalKeys > 0,
         source: ollamaCloud.getPoolStatus().totalKeys > 0
           ? `${ollamaCloud.getPoolStatus().activeKeys} активных ключей в пуле`
@@ -5932,15 +6228,15 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
       },
       bybitTrading: {
         name: 'BYBIT_API_KEY & SECRET',
-        purpose: 'Реальное исполнение ордеров в Режиме 2 (Live Mode)',
+        purpose: 'Боевое исполнение ордеров Bybit V5 (Live Mode)',
         configured: bybitKeySet && bybitSecretSet,
         source: bybitKeySet && bybitSecretSet ? 'Сохранено в .env' : 'Не настроено',
       },
       okxTrading: {
         name: 'OKX_API_KEY & SECRET',
-        purpose: 'Резервный боевой контур (OKX Swaps)',
-        configured: okxKeySet,
-        source: okxKeySet ? 'Сохранено в .env' : 'Не настроено',
+        purpose: 'Боевое исполнение ордеров OKX V5 (USDT Swaps)',
+        configured: okxKeySet && okxSecretSet,
+        source: okxKeySet && okxSecretSet ? 'Сохранено в .env' : okxKeySet ? 'Указан API Key' : 'Не настроено',
       },
       mexcTrading: {
         name: 'MEXC_API_KEY & SECRET',
@@ -5956,7 +6252,7 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
       },
       ollamaEndpoint: {
         name: 'OLLAMA_HOST',
-        purpose: 'Шлюз Ollama Cloud / локальный сервер',
+        purpose: 'Внешний шлюз',
         configured: true,
         source: ollamaCloud.getHost(),
       },
@@ -5976,12 +6272,30 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
       const resp = await fetch('https://api.bybit.com/v5/market/time');
       const latency = Date.now() - t0;
       const data = await resp.json();
+      systemState.pings.bybit = Math.max(8, Math.min(250, latency));
       res.json({
         success: true,
         endpoint: 'https://api.bybit.com/v5/market/time',
         latencyMs: latency,
         serverTime: data?.result?.timeSecond || Date.now(),
-        statusText: 'Bybit API v5 доступен и отвечает в штатном режиме',
+        statusText: `Bybit API v5 доступен (${latency} мс) и отвечает в штатном режиме`,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  } else if (target === 'okx') {
+    try {
+      const t0 = Date.now();
+      const resp = await fetch('https://www.okx.com/api/v5/public/time');
+      const latency = Date.now() - t0;
+      const data = await resp.json();
+      systemState.pings.okx = Math.max(8, Math.min(250, latency));
+      res.json({
+        success: true,
+        endpoint: 'https://www.okx.com/api/v5/public/time',
+        latencyMs: latency,
+        serverTime: data?.data?.[0]?.ts || Date.now(),
+        statusText: `OKX API v5 доступен (${latency} мс) и отвечает в штатном режиме`,
       });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
@@ -6186,6 +6500,9 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
     bybitSecret,
     okxApiKey,
     okxKey,
+    okxApiSecret,
+    okxSecret,
+    okxPassphrase,
     mexcApiKey,
     mexcKey,
     tgApiId,
@@ -6198,6 +6515,8 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
   const rawBybitKey = bybitApiKey ?? bybitKey;
   const rawBybitSecret = bybitApiSecret ?? bybitSecret;
   const rawOkxKey = okxApiKey ?? okxKey;
+  const rawOkxSecret = okxApiSecret ?? okxSecret;
+  const rawOkxPassphrase = okxPassphrase;
   const rawMexcKey = mexcApiKey ?? mexcKey;
   const rawTgId = tgApiId ?? tgId;
   const rawTgHash = tgApiHash ?? tgHash;
@@ -6258,6 +6577,18 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
     else if (val === '') { delete process.env.OKX_API_KEY; updates.OKX_API_KEY = ''; }
   }
 
+  if (rawOkxSecret !== undefined) {
+    const val = typeof rawOkxSecret === 'string' ? rawOkxSecret.trim() : '';
+    if (val && isKeyValid(val)) { process.env.OKX_API_SECRET = val; updates.OKX_API_SECRET = val; }
+    else if (val === '') { delete process.env.OKX_API_SECRET; updates.OKX_API_SECRET = ''; }
+  }
+
+  if (rawOkxPassphrase !== undefined) {
+    const val = typeof rawOkxPassphrase === 'string' ? rawOkxPassphrase.trim() : '';
+    if (val && isKeyValid(val)) { process.env.OKX_PASSPHRASE = val; updates.OKX_PASSPHRASE = val; }
+    else if (val === '') { delete process.env.OKX_PASSPHRASE; updates.OKX_PASSPHRASE = ''; }
+  }
+
   if (rawMexcKey !== undefined) {
     const val = typeof rawMexcKey === 'string' ? rawMexcKey.trim() : '';
     if (val && isKeyValid(val)) { process.env.MEXC_API_KEY = val; updates.MEXC_API_KEY = val; }
@@ -6282,15 +6613,15 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
 
   const poolStatus = ollamaCloud.getPoolStatus();
   const bybitConfigured = isKeyValid(process.env.BYBIT_API_KEY) && isKeyValid(process.env.BYBIT_API_SECRET);
+  const okxConfigured = isKeyValid(process.env.OKX_API_KEY) && isKeyValid(process.env.OKX_API_SECRET);
 
   res.json({
     success: true,
-    message: poolStatus.totalKeys > 0
-      ? `Пул Ollama Cloud обновлен: ${poolStatus.activeKeys} активных ключей, модель: ${poolStatus.selectedModel}!`
-      : 'Ключи успешно обновлены и сохранены в конфигурации!',
+    message: 'Ключи бирж успешно обновлены и сохранены в конфигурации!',
     ollamaConfigured: poolStatus.totalKeys > 0,
     ollamaPool: poolStatus,
     bybitConfigured,
+    okxConfigured,
   });
 });
 
@@ -7027,7 +7358,7 @@ app.post('/api/ai/chat', async (req: Request, res: Response) => {
 7. Если спрашивает про формулы — объясни стакан L2-50 VWAP matching, правило 1.5% риска от депозита по ATR, частичный TP1 на 60% и перенос в безубыток.
 
 ТЕКУЩЕЕ СОСТОЯНИЕ СИСТЕМЫ В РЕАЛЬНОМ ВРЕМЕНИ:
-• Режим: ${systemState.mode} (Shadow-тестирование на $10,000 с реальными котировками Bybit v5)
+• Режим: ${systemState.mode} (Торговля на $${systemState.capitalUsdt.toFixed(2)} с реальными котировками ${systemState.activeExchange})
 • Баланс кошелька: $${activeBal} USDT (Базовый депозит: $${systemState.capitalUsdt}, Реализованный PnL: $${totalRealizedPnl} USDT)
 • Суточный PnL (24h): ${rolling24hPnl >= 0 ? '+' : ''}$${rolling24hPnl} USDT
 • Загрузка маржи: $${usedMargin} USDT (${marginUtilizationPct}% от депозита)

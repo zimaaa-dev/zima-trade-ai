@@ -28,7 +28,7 @@ export const TopologyView: React.FC<TopologyViewProps> = ({ health }) => {
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Мониторинг задержек до биржевых шлюзов Bybit V5 и состояния серверных сервисов
+              Мониторинг задержек до биржевых шлюзов Bybit V5 / OKX V5 и состояния серверных сервисов
             </p>
           </div>
         </div>
@@ -38,7 +38,7 @@ export const TopologyView: React.FC<TopologyViewProps> = ({ health }) => {
             Bybit V5 RTT: <strong className="text-emerald-400">{health?.pings?.bybit ?? 24} мс</strong>
           </span>
           <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300">
-            OKX Backup RTT: <strong className="text-cyan-400">{health?.pings?.okx ?? 38} мс</strong>
+            OKX V5 RTT: <strong className="text-cyan-400">{health?.pings?.okx ?? 32} мс</strong>
           </span>
         </div>
       </div>
@@ -111,7 +111,7 @@ export const TopologyView: React.FC<TopologyViewProps> = ({ health }) => {
                 Назначение:
               </span>
               <p className="text-[11px] text-slate-400">
-                Пакетное тестирование исторических свечей Bybit V5 и пересчет весов факторов стратегий.
+                Пакетное тестирование исторических свечей (Bybit V5 / OKX V5) и пересчет весов факторов стратегий.
               </p>
             </div>
 

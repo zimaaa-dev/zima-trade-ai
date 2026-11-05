@@ -133,7 +133,7 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
   const [isClosingAll, setIsClosingAll] = useState<boolean>(false);
 
   // Balance adjustment & disk snapshot state
-  const [customDeposit, setCustomDeposit] = useState<string>('2500');
+  const [customDeposit, setCustomDeposit] = useState<string>('10');
   const [adjustStatus, setAdjustStatus] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [isAdjusting, setIsAdjusting] = useState<boolean>(false);
   const [isSimulatingTick, setIsSimulatingTick] = useState<boolean>(false);
@@ -248,7 +248,7 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
   };
 
   const equityAnalytics = useMemo(() => {
-    const baseCap = summary?.baseCapitalUsdt ?? 10000;
+    const baseCap = summary?.baseCapitalUsdt ?? 10;
     const floating =
       botFilter === 'ALL'
         ? summary?.unrealizedPnlUsdt ?? 0
@@ -288,10 +288,10 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
     setAdjustStatus(null);
     const val = amount !== undefined ? amount : parseFloat(customDeposit);
 
-    if (action === 'DEPOSIT' && (isNaN(val) || val < 10 || val > 1000000)) {
+    if (action === 'DEPOSIT' && (isNaN(val) || val < 1 || val > 1000000)) {
       setAdjustStatus({
         type: 'error',
-        text: 'Введите сумму пополнения от $10 до $1,000,000 USDT',
+        text: 'Введите сумму пополнения от $1 до $1,000,000 USDT',
       });
       return;
     }
@@ -314,7 +314,7 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
           type: 'success',
           text:
             action === 'RESET'
-              ? 'Полный сброс выполнен: статистика и PnL обнулены, баланс $10,000.00 USDT, Kill-Switch снят'
+              ? 'Полный сброс выполнен: статистика и PnL обнулены, баланс $10.00 USDT, Kill-Switch снят'
               : `Кошелек пополнен на +$${val.toLocaleString('en-US', { minimumFractionDigits: 2 })} USDT`,
         });
         if (onRefreshHealth) onRefreshHealth();
@@ -459,16 +459,16 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
     URL.revokeObjectURL(url);
   };
 
-  const totalEquity = summary?.totalEquityUsdt ?? 10381.79;
-  const walletBalance = summary?.walletBalanceUsdt ?? 10381.79;
+  const totalEquity = summary?.totalEquityUsdt ?? 10.76;
+  const walletBalance = summary?.walletBalanceUsdt ?? 10.76;
   const unrealizedPnl = summary?.unrealizedPnlUsdt ?? 0;
-  const realizedPnl = summary?.totalRealizedPnlUsdt ?? 381.79;
+  const realizedPnl = summary?.totalRealizedPnlUsdt ?? 0.76;
   const usedMargin = summary?.usedMarginUsdt ?? 0;
-  const availableMargin = summary?.availableMarginUsdt ?? 10381.79;
+  const availableMargin = summary?.availableMarginUsdt ?? 10.76;
   const marginUtilPct = summary?.marginUtilizationPct ?? 0;
   const winRate = summary?.winRatePct ?? 80.0;
   const profitFactor = summary?.profitFactor ?? 4.82;
-  const totalFees = summary?.totalFeesPaidUsdt ?? 30.15;
+  const totalFees = summary?.totalFeesPaidUsdt ?? 0.06;
 
   return (
     <div className="p-4 space-y-6 max-w-[1600px] mx-auto">
@@ -483,7 +483,7 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
               Институциональный Кошелек, Кривая Капитала и История Сделок
             </h1>
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 mt-0.5 font-mono">
-              <span>Учет маржи и комиссий Bybit Taker (0.055%)</span>
+              <span>Учет маржи и биржевых комиссий Taker (Bybit / OKX · 0.055%)</span>
               <span aria-hidden="true">·</span>
               <span className="text-emerald-400">
                 Диск: {persistence?.storageFile || 'data/runtime_state.json'} ({persistence?.recordsCount ?? closedTrades.length + ledger.length} зап.)
@@ -516,7 +516,7 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
             className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 rounded-lg text-xs font-mono font-semibold transition flex items-center gap-1.5 whitespace-nowrap shrink-0"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isSimulatingTick ? 'animate-spin text-cyan-400' : ''}`} />
-            <span>{isSimulatingTick ? 'Пересчет стакана...' : 'Форсировать тик ИИ'}</span>
+            <span>{isSimulatingTick ? 'Пересчет стакана...' : 'Форсировать тик'}</span>
           </button>
 
           <button
@@ -640,7 +640,7 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
           </div>
           <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex items-center justify-between text-xs font-mono tabular-nums">
             <MetricTooltip metric="BYBIT_FEE" showIcon={false}>
-              <span className="text-slate-400">Комиссия биржи Bybit (0.055%):</span>
+              <span className="text-slate-400">Комиссия биржи Taker (0.055%):</span>
             </MetricTooltip>
             <span className="text-slate-300">-${totalFees.toFixed(2)} USDT</span>
           </div>
@@ -1165,7 +1165,7 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
           <div>
             <div className="flex items-center justify-between border-b border-slate-800 pb-2.5 mb-3">
               <h2 className="text-xs font-bold uppercase tracking-wider text-slate-200">
-                Субсчета ИИ-ботов (нажмите на карточку для фильтрации графика и сделок)
+                Субсчета торговых ботов (нажмите на карточку для фильтрации графика и сделок)
               </h2>
               {botFilter !== 'ALL' && (
                 <button
@@ -1255,7 +1255,7 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
                   <input
                     id="deposit-amount-input"
                     type="number"
-                    min="10"
+                    min="1"
                     max="1000000"
                     value={customDeposit}
                     onChange={(e) => setCustomDeposit(e.target.value)}
@@ -1277,32 +1277,32 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
                 <button
                   type="button"
                   disabled={isAdjusting}
-                  onClick={() => handleAdjustBalance('DEPOSIT', 1000)}
+                  onClick={() => handleAdjustBalance('DEPOSIT', 5)}
                   className="flex-1 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition text-center"
                 >
-                  +$1,000
+                  +$5
                 </button>
                 <button
                   type="button"
                   disabled={isAdjusting}
-                  onClick={() => handleAdjustBalance('DEPOSIT', 5000)}
+                  onClick={() => handleAdjustBalance('DEPOSIT', 10)}
                   className="flex-1 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition text-center"
                 >
-                  +$5,000
+                  +$10
                 </button>
                 <button
                   type="button"
                   disabled={isAdjusting}
                   onClick={() => {
-                    if (window.confirm('Вы уверены, что хотите обнулить всю статистику, сделки и запустить систему с чистого баланса $10,000 USDT?')) {
+                    if (window.confirm('Вы уверены, что хотите обнулить всю статистику, сделки и запустить систему с чистого баланса $10.00 USDT?')) {
                       handleAdjustBalance('RESET');
                     }
                   }}
                   className="px-3 py-1.5 bg-rose-950/40 hover:bg-rose-900/80 text-rose-300 border border-rose-500/30 rounded-lg transition flex items-center gap-1 font-semibold"
-                  title="Полный сброс всех сделок, PnL и возврат к чистому балансу $10,000 USDT"
+                  title="Полный сброс всех сделок, PnL и возврат к чистому балансу $10.00 USDT"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Обнулить всё ($10k)</span>
+                  <span>Обнулить всё ($10)</span>
                 </button>
               </div>
             </div>
@@ -1707,7 +1707,7 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
 
             {activePositions.length === 0 ? (
               <div className="text-center py-10 text-slate-500 text-xs font-mono">
-                Нет открытых позиций. Нажмите «Форсировать тик ИИ» выше, чтобы боты проанализировали стакан L2.
+                Нет открытых позиций. Нажмите «Форсировать тик» выше, чтобы боты проанализировали стакан L2.
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -1715,7 +1715,7 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
                   <thead className="text-[11px] text-slate-400 border-b border-slate-800 bg-slate-950/60">
                     <tr>
                       <th className="py-2.5 px-3">Инструмент</th>
-                      <th className="py-2.5 px-3">ИИ-Бот / Инициатор</th>
+                      <th className="py-2.5 px-3">Стратегия / Инициатор</th>
                       <th className="py-2.5 px-3">Сторона</th>
                       <th className="py-2.5 px-3">Объем</th>
                       <th className="py-2.5 px-3">Цена входа (VWAP)</th>

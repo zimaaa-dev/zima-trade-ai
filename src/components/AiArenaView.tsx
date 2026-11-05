@@ -535,8 +535,8 @@ export const AiArenaView: React.FC = () => {
           type: 'success',
           text:
             agentId === 'ALL'
-              ? `Завершена пакетная калибровка на исторических свечах Bybit V5 (5m) для всех ${data.reports.length} стратегий.`
-              : `Цикл #${rep.epochsTrained} («${botName}») откалиброван на свечах Bybit: протестировано ${rep.simulatedTrades} сетапов, WinRate ${rep.winRatePct}%, прирост ${rep.epochReward >= 0 ? '+' : ''}${rep.epochReward.toFixed(2)}R.`,
+              ? `Завершена пакетная калибровка на исторических свечах (5m) для всех ${data.reports.length} стратегий.`
+              : `Цикл #${rep.epochsTrained} («${botName}») откалиброван на рыночных свечах: протестировано ${rep.simulatedTrades} сетапов, WinRate ${rep.winRatePct}%, прирост ${rep.epochReward >= 0 ? '+' : ''}${rep.epochReward.toFixed(2)}R.`,
         });
         await fetchAgentsAndBots();
       } else {
@@ -804,10 +804,10 @@ export const AiArenaView: React.FC = () => {
             onClick={() => handleTrainEpoch('ALL', 'Все стратегии')}
             disabled={trainingBotId !== null}
             className="px-3 py-2 bg-cyan-950/90 hover:bg-cyan-900 text-cyan-300 rounded-lg text-xs font-mono font-semibold transition flex items-center gap-1.5 border border-cyan-500/40"
-            title="Загрузить исторические свечи Bybit V5 (5m) и провести калибровку для всех ботов"
+            title="Загрузить исторические свечи (5m) и провести калибровку для всех ботов"
           >
             <Sparkles className={`w-3.5 h-3.5 shrink-0 ${trainingBotId === 'ALL' ? 'animate-spin text-cyan-300' : 'text-cyan-400'}`} />
-            <span>{trainingBotId === 'ALL' ? 'Калибровка Bybit...' : 'Откалибровать все'}</span>
+            <span>{trainingBotId === 'ALL' ? 'Калибровка...' : 'Откалибровать все'}</span>
           </button>
 
           <button
@@ -858,7 +858,7 @@ export const AiArenaView: React.FC = () => {
                   Анализатор рыночных режимов & Детектор сдвига трендов
                 </h3>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-400/30">
-                  Bybit V5 Linear
+                  Bybit / OKX Linear
                 </span>
               </div>
               <p className="text-[11px] text-slate-400">
@@ -904,7 +904,7 @@ export const AiArenaView: React.FC = () => {
             <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80 text-[11px]">
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                <span className="text-slate-300 font-bold">Охват Bybit Linear:</span>
+                <span className="text-slate-300 font-bold">Охват рынка (Bybit / OKX):</span>
                 <span className="text-cyan-300 font-semibold">{trendAudit.totalPairsScanned || 150}+ пар USDT</span>
               </div>
               <div className="flex items-center gap-3 text-slate-400">
@@ -921,7 +921,7 @@ export const AiArenaView: React.FC = () => {
                 <div className="flex items-center justify-between text-[11px]">
                   <span className="text-purple-300 font-bold flex items-center gap-1.5">
                     <TrendingUp className="w-3.5 h-3.5 text-purple-400" />
-                    <span>🔥 Топ лидеры трендов (Импульсы & Пампы Bybit):</span>
+                    <span>🔥 Топ лидеры трендов (Импульсы & Пампы рынка):</span>
                   </span>
                   <span className="text-[10px] text-slate-400">Боты торгуют в приоритете L2</span>
                 </div>
@@ -1853,7 +1853,7 @@ export const AiArenaView: React.FC = () => {
                       <div className="flex items-center justify-between p-2 rounded-lg bg-slate-950/70 border border-slate-800 text-[11px] font-mono">
                         <div className="flex items-center gap-1.5">
                           <Flame className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                          <span className="text-slate-300">Авто-ротация трендов Bybit L2:</span>
+                          <span className="text-slate-300">Авто-ротация рыночных трендов L2:</span>
                         </div>
                         <button
                           type="button"
@@ -2009,7 +2009,7 @@ export const AiArenaView: React.FC = () => {
                     disabled={isTrainingThis}
                     onClick={() => handleTrainEpoch(agent.agentId, agent.name)}
                     className="flex-1 min-w-[140px] py-2 px-2.5 bg-cyan-950/80 hover:bg-cyan-900 text-cyan-300 text-xs font-mono font-semibold rounded-lg transition flex items-center justify-center gap-1.5 border border-cyan-500/40"
-                    title="Запустить калибровку на реальных свечах Bybit V5 (5m)"
+                    title="Запустить калибровку на исторических свечах (5m)"
                   >
                     <Sparkles className={`w-3.5 h-3.5 shrink-0 ${isTrainingThis ? 'animate-spin' : 'text-cyan-400'}`} />
                     <span>{isTrainingThis ? 'Калибровка...' : 'Калибровать'}</span>

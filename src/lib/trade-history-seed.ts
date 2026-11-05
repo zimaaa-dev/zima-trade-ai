@@ -1,6 +1,6 @@
 import type { ClosedTradeRecord, WalletLedgerEntry } from './wallet-math.ts';
 
-export const initialClosedTrades: ClosedTradeRecord[] = [
+const rawSeedTrades: ClosedTradeRecord[] = [
   {
     "id": "trd-seed-btcusdt-00",
     "symbol": "BTCUSDT",
@@ -503,255 +503,59 @@ export const initialClosedTrades: ClosedTradeRecord[] = [
   }
 ];
 
-export const initialWalletLedger: WalletLedgerEntry[] = [
-  {
-    id: 'led-seed-trd-seed-nearusdt-24',
-    timestamp: 1793462071307,
-    type: 'REALIZED_PNL',
-    amountUsdt: 12.16,
-    balanceAfterUsdt: 10012.16,
-    symbol: 'NEARUSDT',
-    description: 'Take-Profit LONG NEARUSDT ($5.17) • Delta-L2 · Стакан и Объемы (комиссия -$2.84)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-dogeusdt-23',
-    timestamp: 1793465318412,
-    type: 'REALIZED_PNL',
-    amountUsdt: -44.69,
-    balanceAfterUsdt: 9967.47,
-    symbol: 'DOGEUSDT',
-    description: 'Закрыто вручную LONG DOGEUSDT ($0.0753) • Alpha-Signal · Индекс Каналов (комиссия -$3.75)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-solusdt-22',
-    timestamp: 1793468629394,
-    type: 'REALIZED_PNL',
-    amountUsdt: 27.58,
-    balanceAfterUsdt: 9995.05,
-    symbol: 'SOLUSDT',
-    description: 'Take-Profit SHORT SOLUSDT ($93.48) • Momentum · Импульсный Скальпер (комиссия -$2.59)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-ethusdt-21',
-    timestamp: 1793471777084,
-    type: 'REALIZED_PNL',
-    amountUsdt: 50.48,
-    balanceAfterUsdt: 10045.53,
-    symbol: 'ETHUSDT',
-    description: 'Take-Profit LONG ETHUSDT ($2293.04) • Delta-L2 · Стакан и Объемы (комиссия -$4.51)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-btcusdt-20',
-    timestamp: 1793474932839,
-    type: 'REALIZED_PNL',
-    amountUsdt: -123.74,
-    balanceAfterUsdt: 9921.79,
-    symbol: 'BTCUSDT',
-    description: 'Stop-Loss SHORT BTCUSDT ($78426.94) • Alpha-Signal · Индекс Каналов (комиссия -$10.29)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-nearusdt-19',
-    timestamp: 1793477905319,
-    type: 'REALIZED_PNL',
-    amountUsdt: 12.26,
-    balanceAfterUsdt: 9934.05,
-    symbol: 'NEARUSDT',
-    description: 'Take-Profit LONG NEARUSDT ($5.13) • Momentum · Импульсный Скальпер (комиссия -$2.81)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-dogeusdt-18',
-    timestamp: 1793481343656,
-    type: 'REALIZED_PNL',
-    amountUsdt: 18.99,
-    balanceAfterUsdt: 9953.04,
-    symbol: 'DOGEUSDT',
-    description: 'Take-Profit SHORT DOGEUSDT ($0.0758) • Delta-L2 · Стакан и Объемы (комиссия -$3.76)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-solusdt-17',
-    timestamp: 1793484547578,
-    type: 'REALIZED_PNL',
-    amountUsdt: 30.14,
-    balanceAfterUsdt: 9983.18,
-    symbol: 'SOLUSDT',
-    description: 'Take-Profit LONG SOLUSDT ($94.77) • Alpha-Signal · Индекс Каналов (комиссия -$2.59)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-ethusdt-16',
-    timestamp: 1793487577893,
-    type: 'REALIZED_PNL',
-    amountUsdt: -48.41,
-    balanceAfterUsdt: 9934.77,
-    symbol: 'ETHUSDT',
-    description: 'Stop-Loss LONG ETHUSDT ($2202.27) • Momentum · Импульсный Скальпер (комиссия -$4.38)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-btcusdt-15',
-    timestamp: 1793490801316,
-    type: 'REALIZED_PNL',
-    amountUsdt: 107.98,
-    balanceAfterUsdt: 10042.75,
-    symbol: 'BTCUSDT',
-    description: 'Take-Profit SHORT BTCUSDT ($76162.85) • Delta-L2 · Стакан и Объемы (комиссия -$10.12)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-nearusdt-14',
-    timestamp: 1793494181112,
-    type: 'REALIZED_PNL',
-    amountUsdt: 12.42,
-    balanceAfterUsdt: 10055.17,
-    symbol: 'NEARUSDT',
-    description: 'Take-Profit LONG NEARUSDT ($5.19) • Alpha-Signal · Индекс Каналов (комиссия -$2.85)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-dogeusdt-13',
-    timestamp: 1793497214538,
-    type: 'REALIZED_PNL',
-    amountUsdt: 36.39,
-    balanceAfterUsdt: 10091.56,
-    symbol: 'DOGEUSDT',
-    description: 'Take-Profit SHORT DOGEUSDT ($0.075) • Momentum · Импульсный Скальпер (комиссия -$3.73)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-solusdt-12',
-    timestamp: 1793500529329,
-    type: 'REALIZED_PNL',
-    amountUsdt: 20.27,
-    balanceAfterUsdt: 10111.83,
-    symbol: 'SOLUSDT',
-    description: 'Take-Profit LONG SOLUSDT ($96.25) • Delta-L2 · Стакан и Объемы (комиссия -$2.63)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-ethusdt-11',
-    timestamp: 1793503774675,
-    type: 'REALIZED_PNL',
-    amountUsdt: -52.74,
-    balanceAfterUsdt: 10059.09,
-    symbol: 'ETHUSDT',
-    description: 'Закрыто вручную SHORT ETHUSDT ($2293.52) • Alpha-Signal · Индекс Каналов (комиссия -$4.51)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-btcusdt-10',
-    timestamp: 1793506783383,
-    type: 'REALIZED_PNL',
-    amountUsdt: 141.12,
-    balanceAfterUsdt: 10200.21,
-    symbol: 'BTCUSDT',
-    description: 'Take-Profit LONG BTCUSDT ($79425.74) • Momentum · Импульсный Скальпер (комиссия -$10.4)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-nearusdt-09',
-    timestamp: 1793510144890,
-    type: 'REALIZED_PNL',
-    amountUsdt: 26.89,
-    balanceAfterUsdt: 10227.1,
-    symbol: 'NEARUSDT',
-    description: 'Take-Profit LONG NEARUSDT ($5.18) • Delta-L2 · Стакан и Объемы (комиссия -$2.83)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-dogeusdt-08',
-    timestamp: 1793513370887,
-    type: 'REALIZED_PNL',
-    amountUsdt: 50.02,
-    balanceAfterUsdt: 10277.12,
-    symbol: 'DOGEUSDT',
-    description: 'Take-Profit SHORT DOGEUSDT ($0.0739) • Alpha-Signal · Индекс Каналов (комиссия -$3.69)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-solusdt-07',
-    timestamp: 1793516337491,
-    type: 'REALIZED_PNL',
-    amountUsdt: 13.38,
-    balanceAfterUsdt: 10290.5,
-    symbol: 'SOLUSDT',
-    description: 'Take-Profit LONG SOLUSDT ($94.99) • Momentum · Импульсный Скальпер (комиссия -$2.6)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-ethusdt-06',
-    timestamp: 1793519657346,
-    type: 'REALIZED_PNL',
-    amountUsdt: -57.68,
-    balanceAfterUsdt: 10232.82,
-    symbol: 'ETHUSDT',
-    description: 'Stop-Loss SHORT ETHUSDT ($2293.34) • Delta-L2 · Стакан и Объемы (комиссия -$4.51)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-btcusdt-05',
-    timestamp: 1793522697217,
-    type: 'REALIZED_PNL',
-    amountUsdt: 89.46,
-    balanceAfterUsdt: 10322.28,
-    symbol: 'BTCUSDT',
-    description: 'Take-Profit LONG BTCUSDT ($77537.34) • Alpha-Signal · Индекс Каналов (комиссия -$10.18)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-nearusdt-04',
-    timestamp: 1793526116789,
-    type: 'REALIZED_PNL',
-    amountUsdt: 26.69,
-    balanceAfterUsdt: 10348.97,
-    symbol: 'NEARUSDT',
-    description: 'Take-Profit SHORT NEARUSDT ($5.11) • Momentum · Импульсный Скальпер (комиссия -$2.83)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-dogeusdt-03',
-    timestamp: 1793529223503,
-    type: 'REALIZED_PNL',
-    amountUsdt: 32.21,
-    balanceAfterUsdt: 10381.18,
-    symbol: 'DOGEUSDT',
-    description: 'Take-Profit LONG DOGEUSDT ($0.0755) • Delta-L2 · Стакан и Объемы (комиссия -$3.72)',
-    mode: 'SHADOW',
-  },
-  {
-    id: 'led-seed-trd-seed-solusdt-02',
-    timestamp: 1793532503745,
-    type: 'REALIZED_PNL',
-    amountUsdt: -21.25,
-    balanceAfterUsdt: 10359.93,
-    symbol: 'SOLUSDT',
-    description: 'Stop-Loss LONG SOLUSDT ($95.22) • Alpha-Signal · Индекс Каналов (комиссия -$2.63)',
-    mode: 'LIVE',
-  },
-  {
-    id: 'led-seed-trd-seed-ethusdt-01',
-    timestamp: 1793535747549,
-    type: 'REALIZED_PNL',
-    amountUsdt: 29.03,
-    balanceAfterUsdt: 10388.96,
-    symbol: 'ETHUSDT',
-    description: 'Take-Profit SHORT ETHUSDT ($2245.3) • Momentum · Импульсный Скальпер (комиссия -$4.46)',
-    mode: 'LIVE',
-  },
-  {
-    id: 'led-seed-trd-seed-btcusdt-00',
-    timestamp: 1793539000872,
-    type: 'REALIZED_PNL',
-    amountUsdt: 83.83,
-    balanceAfterUsdt: 10472.79,
-    symbol: 'BTCUSDT',
-    description: 'Take-Profit LONG BTCUSDT ($77907.39) • Delta-L2 · Стакан и Объемы (комиссия -$10.23)',
-    mode: 'LIVE',
-  },
-];
+const MICRO_SCALE = 1 / 500;
+
+export const initialClosedTrades: ClosedTradeRecord[] = rawSeedTrades.map((t) => {
+  const scaledQty = Number((t.qty * MICRO_SCALE).toFixed(5));
+  const grossPnlUsdt = Number((t.grossPnlUsdt * MICRO_SCALE).toFixed(2));
+  const feeUsdt = Number(Math.max(0.01, t.feeUsdt * MICRO_SCALE).toFixed(2));
+  const fundingUsdt = Number((t.fundingUsdt * MICRO_SCALE).toFixed(2));
+  const netPnlUsdt = Number((grossPnlUsdt - feeUsdt + fundingUsdt).toFixed(2));
+  return {
+    ...t,
+    qty: scaledQty,
+    grossPnlUsdt,
+    feeUsdt,
+    fundingUsdt,
+    netPnlUsdt,
+  };
+});
+
+export const initialWalletLedger: WalletLedgerEntry[] = (() => {
+  const chronological = [...initialClosedTrades].sort((a, b) => a.closedAt - b.closedAt);
+  let runningBalance = 10.0;
+  const entries: WalletLedgerEntry[] = [
+    {
+      id: 'led-seed-init-10',
+      timestamp: (chronological[0]?.openedAt || Date.now()) - 3600000,
+      type: 'DEPOSIT_RESET',
+      amountUsdt: 10.0,
+      balanceAfterUsdt: 10.0,
+      description: 'Стартовый депозит торгового счета: $10.00 USDT',
+      mode: 'SHADOW',
+    },
+  ];
+
+  for (const t of chronological) {
+    runningBalance = Number((runningBalance + t.netPnlUsdt).toFixed(2));
+    const exitLabel =
+      t.exitReason === 'TP_HIT'
+        ? 'Take-Profit'
+        : t.exitReason === 'SL_HIT'
+        ? 'Stop-Loss'
+        : 'Закрыто вручную';
+    entries.push({
+      id: `led-seed-${t.id}`,
+      timestamp: t.closedAt,
+      type: 'REALIZED_PNL',
+      amountUsdt: t.netPnlUsdt,
+      balanceAfterUsdt: runningBalance,
+      symbol: t.symbol,
+      description: `${exitLabel} ${t.side} ${t.symbol} ($${t.exitPrice}) • ${t.botName} (комиссия -$${t.feeUsdt.toFixed(2)})`,
+      mode: t.mode,
+    });
+  }
+
+  return entries;
+})();
+

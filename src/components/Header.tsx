@@ -14,11 +14,12 @@ import {
   Bell,
 } from 'lucide-react';
 import { MetricTooltip } from './MetricTooltip.tsx';
-import type { SystemHealth, ExecutionMode } from '../types.ts';
+import type { SystemHealth, ExecutionMode, ExchangeId } from '../types.ts';
 
 interface HeaderProps {
   health: SystemHealth | null;
   onModeChange: (mode: ExecutionMode) => void;
+  onExchangeChange?: (exchange: ExchangeId) => void;
   onKillSwitchTrigger: () => void;
   onKillSwitchReset: () => void;
   activeTab: string;
@@ -32,6 +33,7 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({
   health,
   onModeChange,
+  onExchangeChange,
   onKillSwitchTrigger,
   onKillSwitchReset,
   activeTab,
@@ -43,15 +45,16 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const isKillSwitch = health?.isKillSwitchActive ?? false;
   const currentMode = health?.mode ?? 'SHADOW';
+  const activeExchange: ExchangeId = health?.activeExchange ?? 'BYBIT';
   const drawdown = health?.drawdownPct ?? -1.42;
-  const walletBalance = (health?.capitalUsdt ?? 10000) + (health?.totalRealizedPnlUsdt ?? 381.79);
+  const walletBalance = (health?.capitalUsdt ?? 10) + (health?.totalRealizedPnlUsdt ?? 0.76);
 
   const tabs = [
     {
       id: 'terminal',
       label: 'Терминал',
       icon: Activity,
-      hint: 'График, стакан заявок Bybit и открытие сделок',
+      hint: 'График, биржевой стакан заявок (Bybit / OKX) и открытие сделок',
     },
     {
       id: 'wallet',
@@ -81,13 +84,13 @@ export const Header: React.FC<HeaderProps> = ({
       id: 'topology',
       label: 'Сеть',
       icon: Server,
-      hint: 'Состояние узлов и задержка до биржи Bybit',
+      hint: 'Состояние узлов и задержки до биржевых шлюзов (Bybit / OKX)',
     },
     {
       id: 'settings',
       label: 'ТГ-Бот & API',
       icon: Key,
-      hint: 'Уведомления в Telegram (@zimatradeai_bot) и ключи API Bybit',
+      hint: 'Уведомления в Telegram (@zimatradeai_bot) и ключи API бирж (Bybit / OKX)',
     },
     {
       id: 'updates',
@@ -100,9 +103,9 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <header className="sticky top-0 z-50 w-full bg-[#070A12]/90 backdrop-blur-xl border-b border-white/[0.07]">
       <div className="max-w-[1600px] mx-auto px-3 sm:px-4">
-        {/* Top Row: Minimalist Brand, Segmented Account Mode, Balance & Safety Controls */}
+        {/* Top Row: Minimalist Brand, Exchange Switcher, Segmented Account Mode, Balance & Safety Controls */}
         <div className="min-h-14 py-2 flex flex-wrap items-center justify-between gap-2 sm:gap-4">
-          {/* Brand */}
+          {/* Brand + Exchange Selector (Bybit / OKX) */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-cyan-500/15 border border-cyan-400/30 flex items-center justify-center text-cyan-400">
               <Activity className="w-4 h-4" />
@@ -111,10 +114,37 @@ export const Header: React.FC<HeaderProps> = ({
               <span className="font-bold tracking-tight text-sm sm:text-[15px] text-white whitespace-nowrap">
                 ZimaTrade
               </span>
-              <span className="hidden md:inline-flex items-center gap-1.5 text-[11px] font-mono text-slate-400">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                Bybit {health?.pings.bybit ?? 24}ms
-              </span>
+              {/* Interactive Exchange Switcher: Bybit | OKX */}
+              <div className="flex items-center bg-slate-950 p-0.5 rounded-lg border border-white/[0.1] text-[11px] font-mono">
+                <button
+                  type="button"
+                  onClick={() => onExchangeChange?.('BYBIT')}
+                  title={`Активный поток биржи Bybit V5 (${health?.pings.bybit ?? 24} мс)`}
+                  className={`px-2 py-0.5 rounded-md flex items-center gap-1 transition ${
+                    activeExchange === 'BYBIT'
+                      ? 'bg-cyan-500/25 text-cyan-300 font-bold border border-cyan-400/40'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${activeExchange === 'BYBIT' ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                  <span>Bybit</span>
+                  <span className="hidden lg:inline text-[10px] text-slate-400">{health?.pings.bybit ?? 24}ms</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onExchangeChange?.('OKX')}
+                  title={`Активный поток биржи OKX V5 (${health?.pings.okx ?? 32} мс)`}
+                  className={`px-2 py-0.5 rounded-md flex items-center gap-1 transition ${
+                    activeExchange === 'OKX'
+                      ? 'bg-cyan-500/25 text-cyan-300 font-bold border border-cyan-400/40'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${activeExchange === 'OKX' ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                  <span>OKX</span>
+                  <span className="hidden lg:inline text-[10px] text-slate-400">{health?.pings.okx ?? 32}ms</span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -125,7 +155,7 @@ export const Header: React.FC<HeaderProps> = ({
                 type="button"
                 onClick={() => onModeChange('SHADOW')}
                 aria-pressed={currentMode === 'SHADOW'}
-                title="Торговля на виртуальные $10,000 по реальным котировкам Bybit"
+                title="Торговля на виртуальные $10.00 по реальным котировкам активной биржи (Bybit / OKX)"
                 className={`px-2.5 sm:px-3.5 py-1 rounded-lg text-[11px] sm:text-xs transition-all flex items-center gap-1.5 whitespace-nowrap ${
                   currentMode === 'SHADOW'
                     ? 'bg-gradient-to-r from-cyan-500/30 to-blue-600/30 text-white font-bold border-2 border-cyan-400 shadow-[0_0_14px_rgba(34,211,238,0.28)]'
@@ -138,7 +168,7 @@ export const Header: React.FC<HeaderProps> = ({
                 <span className={`hidden md:inline text-[10px] font-mono px-1.5 py-0.2 rounded ${
                   currentMode === 'SHADOW' ? 'bg-cyan-400/20 text-cyan-200 border border-cyan-300/30' : 'text-slate-500'
                 }`}>
-                  $10k
+                  ${(health?.capitalUsdt ?? 10).toFixed(0)}
                 </span>
                 {currentMode === 'SHADOW' && (
                   <span className="hidden xl:inline-flex px-1.5 py-0.2 rounded text-[9px] font-bold uppercase tracking-wider bg-emerald-500/25 text-emerald-300 border border-emerald-400/40">
@@ -152,7 +182,7 @@ export const Header: React.FC<HeaderProps> = ({
                 onClick={() => onModeChange('LIVE')}
                 disabled={isKillSwitch}
                 aria-pressed={currentMode === 'LIVE'}
-                title="Торговля реальными средствами через API Bybit"
+                title="Торговля реальными средствами через подключенный биржевой API (Bybit / OKX)"
                 className={`px-2.5 sm:px-3.5 py-1 rounded-lg text-[11px] sm:text-xs transition-all flex items-center gap-1.5 whitespace-nowrap ${
                   isKillSwitch
                     ? 'opacity-40 cursor-not-allowed text-slate-600 border border-transparent'

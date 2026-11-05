@@ -1188,7 +1188,7 @@ export const RewardCurveChart: React.FC<RewardCurveChartProps> = ({
                 </div>
 
                 <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 mt-2">
-                  <span>Циклов Bybit: {epochs}</span>
+                  <span>Циклов (5m): {epochs}</span>
                   <span>Сделок: {steps}</span>
                   <span className="text-cyan-400 underline text-[10px]">Подробнее &rarr;</span>
                 </div>
@@ -1214,7 +1214,7 @@ export const RewardCurveChart: React.FC<RewardCurveChartProps> = ({
                 </span>
               </div>
               <div className="border-l border-slate-800 pl-3">
-                <span className="text-slate-500 text-[10px] block">Циклов Bybit (5m)</span>
+                <span className="text-slate-500 text-[10px] block">Циклов калибровки (5m)</span>
                 <span className="font-bold text-white text-sm">
                   {currentAgent.brain?.epochsTrained ?? 0}
                 </span>
