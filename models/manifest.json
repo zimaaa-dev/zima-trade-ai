@@ -1,0 +1,16 @@
+{
+  "model_file": "ppo_policy.onnx",
+  "sha256": "a5a1b62e949815755e71244202f93b3536e1baf3e9456ec265859e2fedd1268e",
+  "trained_at": 1793877741008,
+  "device": "mps",
+  "epochs": 15,
+  "input_dim": 5,
+  "action_dim": 3,
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "DOGEUSDT"
+  ],
+  "architecture": "LSTM-ActorCritic"
+}
