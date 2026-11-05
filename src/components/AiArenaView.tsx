@@ -260,25 +260,45 @@ export const AiArenaView: React.FC = () => {
 
   const fetchAgentsAndBots = async () => {
     try {
+      const safeParse = async (r: Response | null) => {
+        if (!r) return null;
+        const ct = r.headers.get('content-type') || '';
+        if (r.ok && ct.includes('application/json')) {
+          try {
+            return await r.json();
+          } catch {
+            return null;
+          }
+        }
+        return null;
+      };
+
       const [agentRes, botRes, posRes, newsRes, tgRes] = await Promise.all([
-        fetch('/api/arena/agents'),
-        fetch('/api/bots/state'),
-        fetch('/api/positions'),
-        fetch('/api/news-sources'),
-        fetch('/api/telegram/status'),
+        fetch('/api/arena/agents').catch(() => null),
+        fetch('/api/bots/state').catch(() => null),
+        fetch('/api/positions').catch(() => null),
+        fetch('/api/news-sources').catch(() => null),
+        fetch('/api/telegram/status').catch(() => null),
       ]);
-      if (newsRes.ok) {
-        const newsData = await newsRes.json();
+
+      const [agentData, botData, posData, newsData, tgData] = await Promise.all([
+        safeParse(agentRes),
+        safeParse(botRes),
+        safeParse(posRes),
+        safeParse(newsRes),
+        safeParse(tgRes),
+      ]);
+
+      if (newsData) {
         setNewsChannels(newsData.channels || []);
         setParsedNewsFeed(newsData.parsedNewsFeed || newsData.newsFeed || []);
         setWeightedSentiment(newsData.weightedSentimentScore ?? 0);
       }
-      if (tgRes.ok) {
-        setTgStatus(await tgRes.json());
+      if (tgData) {
+        setTgStatus(tgData);
       }
-      if (agentRes.ok) {
-        const data = await agentRes.json();
-        const list: AgentItem[] = data.agents || [];
+      if (agentData) {
+        const list: AgentItem[] = agentData.agents || [];
         setAgents(list);
         setDraftConfigs((prev) => {
           const next = { ...prev };
@@ -303,19 +323,17 @@ export const AiArenaView: React.FC = () => {
           return next;
         });
       }
-      if (botRes.ok) {
-        const botData = await botRes.json();
+      if (botData) {
         setBotsState(botData);
         if (Array.isArray(botData.xaiDecisions)) {
           setXaiDecisions(botData.xaiDecisions);
         }
       }
-      if (posRes.ok) {
-        const posData = await posRes.json();
+      if (posData) {
         setActivePositions(posData.positions || []);
       }
-    } catch (err) {
-      console.error(err);
+    } catch {
+      // Graceful degradation: never throw unhandled console errors
     } finally {
       setLoading(false);
     }

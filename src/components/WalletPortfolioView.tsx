@@ -147,23 +147,27 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
 
   const fetchWalletData = async () => {
     try {
-      const res = await fetch('/api/wallet');
-      if (res.ok) {
+      const res = await fetch('/api/wallet').catch(() => null);
+      if (!res) return;
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
         const data = await res.json();
-        setSummary(data.summary);
-        if (data.riskTelemetry) {
-          setRiskTelemetry(data.riskTelemetry);
-        }
-        setClosedTrades(data.closedTrades || []);
-        setLedger(data.ledger || []);
-        setActivePositions(data.activePositions || []);
-        setAgents(data.agents || []);
-        if (data.persistence) {
-          setPersistence(data.persistence);
+        if (data && typeof data === 'object') {
+          setSummary(data.summary);
+          if (data.riskTelemetry) {
+            setRiskTelemetry(data.riskTelemetry);
+          }
+          setClosedTrades(data.closedTrades || []);
+          setLedger(data.ledger || []);
+          setActivePositions(data.activePositions || []);
+          setAgents(data.agents || []);
+          if (data.persistence) {
+            setPersistence(data.persistence);
+          }
         }
       }
-    } catch (err) {
-      console.error('Failed to fetch wallet data:', err);
+    } catch {
+      // Graceful degradation: never crash or log unhandled SyntaxError
     } finally {
       setLoading(false);
     }

@@ -6937,6 +6937,12 @@ async function startServer() {
     next(err);
   });
 
+  // CRITICAL: Any unhandled /api/* request must ALWAYS return JSON 404, NEVER HTML!
+  app.all('/api/*', (req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.status(404).json({ error: 'Not Found', message: `API route not found: ${req.method} ${req.path}` });
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     app.get('/@vite/client', (_req: Request, res: Response) => {
       res.setHeader('Content-Type', 'application/javascript; charset=utf-8');

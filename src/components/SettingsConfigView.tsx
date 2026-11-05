@@ -123,22 +123,33 @@ export const SettingsConfigView: React.FC = () => {
 
   const fetchStatus = async () => {
     try {
+      const safeParse = async (r: Response | null) => {
+        if (!r) return null;
+        const ct = r.headers.get('content-type') || '';
+        return r.ok && ct.includes('application/json') ? r.json().catch(() => null) : null;
+      };
+
       const [res, tgRes] = await Promise.all([
-        fetch('/api/config/status'),
-        fetch('/api/telegram/status'),
+        fetch('/api/config/status').catch(() => null),
+        fetch('/api/telegram/status').catch(() => null),
       ]);
-      if (res.ok) {
-        setConfig(await res.json());
+
+      const [cfgData, tgData] = await Promise.all([
+        safeParse(res),
+        safeParse(tgRes),
+      ]);
+
+      if (cfgData) {
+        setConfig(cfgData);
       }
-      if (tgRes.ok) {
-        const tgData = await tgRes.json();
+      if (tgData) {
         setTgStatus(tgData);
         if (tgData.chatId && !tgChatId) {
           setTgChatId(tgData.chatId);
         }
       }
-    } catch (err) {
-      console.error(err);
+    } catch {
+      // Graceful degradation
     } finally {
       setLoading(false);
     }

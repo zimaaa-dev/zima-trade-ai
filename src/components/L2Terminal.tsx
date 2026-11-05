@@ -60,28 +60,48 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({ mode, isKillSwitchActive
   const [lastExecution, setLastExecution] = useState<any>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Safe JSON parser to avoid "Unexpected token '<'" when dev server or proxies return HTML
+  const safeJson = async (res: Response | null) => {
+    if (!res) return null;
+    const ct = res.headers.get('content-type') || '';
+    if (res.ok && ct.includes('application/json')) {
+      try {
+        return await res.json();
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  };
+
   // Fetch Orderbook, Screener, Positions, and Bot State
   const fetchMarketData = async () => {
     try {
       const [bookRes, screenerRes, posRes, botsRes] = await Promise.all([
-        fetch(`/api/market/orderbook?symbol=${selectedSymbol}`),
-        fetch('/api/market/screener'),
-        fetch('/api/positions'),
-        fetch('/api/bots/state'),
+        fetch(`/api/market/orderbook?symbol=${selectedSymbol}`).catch(() => null),
+        fetch('/api/market/screener').catch(() => null),
+        fetch('/api/positions').catch(() => null),
+        fetch('/api/bots/state').catch(() => null),
       ]);
 
-      if (bookRes.ok) setOrderbook(await bookRes.json());
-      if (screenerRes.ok) setScreener(await screenerRes.json());
-      if (posRes.ok) {
-        const data = await posRes.json();
-        setPositions(data.positions || []);
-        setLimitOrders(data.limitOrders || []);
+      const [bookData, screenerData, posData, botsData] = await Promise.all([
+        safeJson(bookRes),
+        safeJson(screenerRes),
+        safeJson(posRes),
+        safeJson(botsRes),
+      ]);
+
+      if (bookData) setOrderbook(bookData);
+      if (screenerData) setScreener(screenerData);
+      if (posData) {
+        setPositions(posData.positions || []);
+        setLimitOrders(posData.limitOrders || []);
       }
-      if (botsRes.ok) {
-        setBotsState(await botsRes.json());
+      if (botsData) {
+        setBotsState(botsData);
       }
-    } catch (err) {
-      console.error('Error fetching market data:', err);
+    } catch {
+      // Graceful degradation: never crash or log unhandled SyntaxError
     }
   };
 
@@ -179,9 +199,12 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({ mode, isKillSwitchActive
         requestedLeverage: 10,
       }),
     })
-      .then((res) => res.json())
+      .then((res) => {
+        const ct = res.headers.get('content-type') || '';
+        return res.ok && ct.includes('application/json') ? res.json() : null;
+      })
       .then((data) => {
-        if (data.allowed && data.qty) {
+        if (data && data.allowed && data.qty) {
           setQty(data.qty.toString());
         }
       })
@@ -214,9 +237,10 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({ mode, isKillSwitchActive
         }),
       });
 
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        setErrorMsg(data.reason || 'Ошибка исполнения ордера');
+      const ct = res.headers.get('content-type') || '';
+      const data = ct.includes('application/json') ? await res.json() : null;
+      if (!res.ok || !data || !data.success) {
+        setErrorMsg(data?.reason || `Ошибка исполнения ордера (HTTP ${res.status})`);
       } else {
         setLastExecution(data);
         fetchMarketData();

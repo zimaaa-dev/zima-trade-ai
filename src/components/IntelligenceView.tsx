@@ -128,25 +128,35 @@ export const IntelligenceView: React.FC = () => {
 
   const fetchNewsSources = async () => {
     try {
+      const safeParse = async (r: Response | null) => {
+        if (!r) return null;
+        const ct = r.headers.get('content-type') || '';
+        return r.ok && ct.includes('application/json') ? r.json().catch(() => null) : null;
+      };
+
       const [res, tgRes] = await Promise.all([
-        fetch('/api/news-sources'),
-        fetch('/api/telegram/status'),
+        fetch('/api/news-sources').catch(() => null),
+        fetch('/api/telegram/status').catch(() => null),
       ]);
-      if (res.ok) {
-        const data = await res.json();
+
+      const [data, tgData] = await Promise.all([
+        safeParse(res),
+        safeParse(tgRes),
+      ]);
+
+      if (data) {
         setChannels(data.channels || []);
         setParsedNewsFeed(data.parsedNewsFeed || data.newsFeed || []);
         setWeightedSentiment(data.weightedSentimentScore ?? 0);
       }
-      if (tgRes.ok) {
-        const tgData = await tgRes.json();
+      if (tgData) {
         setTgStatus(tgData);
         if (tgData.chatId && !tgChatIdInput) {
           setTgChatIdInput(tgData.chatId);
         }
       }
-    } catch (err) {
-      console.error('Failed to fetch news sources:', err);
+    } catch {
+      // Graceful degradation
     } finally {
       setLoadingSources(false);
     }
