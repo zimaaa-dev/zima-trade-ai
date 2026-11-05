@@ -308,6 +308,7 @@ export interface TelegramSubscriber {
   type: 'private' | 'group' | 'supergroup' | 'channel' | 'manual';
   connectedAt: number;
   lastInteractionAt: number;
+  dndUntil?: number | null;
 }
 
 export interface TelegramNotificationToggles {
@@ -342,6 +343,10 @@ export interface TelegramBotStatus {
   chatId?: string;
   lastCheckedAt: number;
   lastError?: string | null;
+  dndUntil?: number | null;
+  dndActive?: boolean;
+  dndRemainingSeconds?: number;
+  profileSanitizedAt?: number;
   subscribers: TelegramSubscriber[];
   toggles: TelegramNotificationToggles;
   recentMessages: TelegramDispatchedMessage[];
