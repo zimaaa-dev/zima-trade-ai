@@ -160,6 +160,11 @@ import {
   type BotBrainState,
   type XaiDecisionRecord,
 } from './src/lib/bot-learning-math.ts';
+import {
+  type AppNotification,
+  type NotificationCategory,
+  type NotificationSeverity,
+} from './src/types.ts';
 
 // Ollama Cloud Multi-Key Rotation & Model Orchestrator
 const initialOllamaKeys = [
@@ -241,10 +246,28 @@ export interface TelegramBotRuntimeState {
 const DEFAULT_TG_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '9239315632:AAEsYv6dCJvBib-1euigbx3p-1y-M1JY5II';
 const DEFAULT_TG_BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME || '@zimatradeai_bot';
 
+process.on('uncaughtException', (err) => {
+  console.error('[ZimaTrade Server] Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[ZimaTrade Server] Unhandled Rejection:', reason);
+});
+
 const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+
+// Permissive CORS middleware for direct IP access, tunnels, and reverse proxies
+app.use((_req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-zima-session');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  if (_req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 // In-Memory System State
 export interface BotLogEntry {
@@ -283,6 +306,7 @@ interface AppSystemState {
   walletLedger: WalletLedgerEntry[];
   xaiDecisions: XaiDecisionRecord[];
   telegramBot: TelegramBotRuntimeState;
+  notifications: AppNotification[];
 }
 
 
@@ -796,6 +820,19 @@ const systemState: AppSystemState = {
       },
     ],
   },
+  notifications: [
+    {
+      id: 'notif-init-01',
+      timestamp: Date.now() - 45000,
+      category: 'SYSTEM_UPDATE',
+      severity: 'SUCCESS',
+      title: '🟢 Ядро ZimaTrade AI онлайн',
+      message: 'Все подсистемы активны: Bybit L2-50, Risk Firewall, PPO LSTM Policy и умный Telegram-шлюз.',
+      readInApp: false,
+      telegramStatus: 'DELIVERED',
+      deliveredToTelegramAt: Date.now() - 45000,
+    },
+  ],
 };
 
 // Persistent Disk Storage Engine (SQLite-compatible JSON WAL Store)
@@ -827,6 +864,7 @@ function savePersistedState(): void {
       botTradeLogs: systemState.botTradeLogs,
       xaiDecisions: systemState.xaiDecisions,
       telegramBot: systemState.telegramBot,
+      notifications: systemState.notifications.slice(0, 50),
     };
     const tmpFile = `${PERSIST_FILE}.tmp`;
     fs.writeFileSync(tmpFile, JSON.stringify(payload, null, 2), 'utf-8');
@@ -875,7 +913,8 @@ function loadPersistedState(): void {
       if (Array.isArray(parsed.xaiDecisions)) {
         systemState.xaiDecisions = parsed.xaiDecisions;
       }
-        systemState.xaiDecisions = parsed.xaiDecisions;
+      if (Array.isArray(parsed.notifications)) {
+        systemState.notifications = parsed.notifications;
       }
       if (Array.isArray(parsed.channels) && parsed.channels.length > 0) {
         systemState.channels = parsed.channels;
@@ -1104,6 +1143,113 @@ export async function dispatchTelegramNotification(params: {
   }
 
   return { deliveredCount, status, errorText: lastErr };
+}
+
+export function emitAppNotification(params: {
+  category: NotificationCategory;
+  severity: NotificationSeverity;
+  title: string;
+  message: string;
+  symbol?: string;
+  botName?: string;
+  pnl?: number;
+  isUrgent?: boolean;
+}): AppNotification {
+  const isUrgent = Boolean(
+    params.isUrgent ||
+    params.severity === 'CRITICAL' ||
+    params.category === 'KILL_SWITCH' ||
+    params.category === 'STOP_LOSS'
+  );
+
+  const now = Date.now();
+  const id = `notif-${now}-${Math.random().toString(36).slice(2, 6)}`;
+  const notif: AppNotification = {
+    id,
+    timestamp: now,
+    category: params.category,
+    severity: params.severity,
+    title: params.title,
+    message: params.message,
+    symbol: params.symbol,
+    botName: params.botName,
+    pnl: params.pnl,
+    readInApp: false,
+    telegramStatus: isUrgent ? 'DIRECT_SENT' : 'PENDING_DELAY',
+    telegramDeliverAt: isUrgent ? now : now + 25000, // 25 sec grace period for operator
+    deliveredToTelegramAt: isUrgent ? now : undefined,
+  };
+
+  systemState.notifications.unshift(notif);
+  if (systemState.notifications.length > 80) {
+    systemState.notifications.pop();
+  }
+
+  // If urgent (Kill-Switch, Stop-Loss), deliver directly to Telegram immediately
+  if (isUrgent) {
+    const tgCat =
+      params.category === 'KILL_SWITCH'
+        ? 'KILL_SWITCH'
+        : params.category === 'STOP_LOSS'
+        ? 'CLOSE'
+        : 'COMMAND_REPLY';
+
+    dispatchTelegramNotification({
+      category: tgCat,
+      title: `${params.severity === 'CRITICAL' ? '🚨' : '🛡️'} ${params.title}`,
+      htmlBody: `${params.message}${params.symbol ? `\n• <b>Инструмент:</b> #${params.symbol}` : ''}${params.botName ? `\n• <b>Бот:</b> ${params.botName}` : ''}${params.pnl !== undefined ? `\n• <b>Итог PnL:</b> ${params.pnl >= 0 ? '+' : ''}$${params.pnl.toFixed(2)} USDT` : ''}`,
+      plainPreview: `${params.title}: ${params.message}`,
+      isManualOrUrgent: true,
+    }).catch(() => {});
+  }
+
+  savePersistedState();
+  return notif;
+}
+
+export async function processDelayedTelegramNotifications(): Promise<number> {
+  const now = Date.now();
+  let dispatched = 0;
+
+  for (const notif of systemState.notifications) {
+    // Only forward if still unread by the user, pending delay, and 25s grace period has elapsed
+    if (
+      notif.telegramStatus === 'PENDING_DELAY' &&
+      !notif.readInApp &&
+      notif.telegramDeliverAt &&
+      now >= notif.telegramDeliverAt
+    ) {
+      notif.telegramStatus = 'DELIVERED';
+      notif.deliveredToTelegramAt = now;
+      dispatched++;
+
+      let tgCat: 'OPEN' | 'SCALE_OUT' | 'CLOSE' | 'KILL_SWITCH' | 'AI_TRAIN' | 'SIGNAL' | 'TEST' | 'COMMAND_REPLY' = 'COMMAND_REPLY';
+      if (notif.category === 'AI_TRAIN') tgCat = 'AI_TRAIN';
+      else if (notif.category === 'TRADE_OPEN' || notif.category === 'TRADE') tgCat = 'OPEN';
+      else if (notif.category === 'SCALE_OUT') tgCat = 'SCALE_OUT';
+      else if (notif.category === 'TAKE_PROFIT' || notif.category === 'STOP_LOSS' || notif.category === 'CLOSE' || notif.category === 'TRADE_CLOSE') tgCat = 'CLOSE';
+      else if (notif.category === 'KILL_SWITCH') tgCat = 'KILL_SWITCH';
+
+      const icon =
+        notif.severity === 'CRITICAL' ? '🚨' :
+        notif.severity === 'WARNING' ? '⚠️' :
+        notif.severity === 'SUCCESS' ? '✅' : 'ℹ️';
+
+      dispatchTelegramNotification({
+        category: tgCat,
+        title: `${icon} ${notif.title}`,
+        htmlBody: `${notif.message}${notif.symbol ? `\n• <b>Инструмент:</b> #${notif.symbol}` : ''}${notif.botName ? `\n• <b>Бот:</b> ${notif.botName}` : ''}${notif.pnl !== undefined ? `\n• <b>Итог PnL:</b> ${notif.pnl >= 0 ? '+' : ''}$${notif.pnl.toFixed(2)} USDT` : ''}\n\n<i>⏳ Авто-эскалация в Telegram (не подтверждено в UI за 25 сек)</i>`,
+        plainPreview: `${notif.title}: ${notif.message}`,
+        symbol: notif.symbol,
+        isManualOrUrgent: false,
+      }).catch(() => {});
+    }
+  }
+
+  if (dispatched > 0) {
+    savePersistedState();
+  }
+  return dispatched;
 }
 
 async function pollTelegramUpdates(): Promise<{ newSubscribers: number; processedUpdates: number }> {
@@ -1929,13 +2075,14 @@ app.post('/api/kill-switch/trigger', (req: Request, res: Response) => {
   if (systemState.mode === 'LIVE') {
     systemState.mode = 'SHADOW';
   }
-  dispatchTelegramNotification({
+  emitAppNotification({
     category: 'KILL_SWITCH',
-    title: '🚨 АВАРИЙНЫЙ СТОП-КРАН (KILL-SWITCH) АКТИВИРОВАН',
-    htmlBody: `Торговля приостановлена Риск-Файрволом.\n• <b>Причина:</b> ${systemState.killSwitchTriggerReason}\n• <b>Режим переключен:</b> ${systemState.mode}`,
-    plainPreview: `Стоп-Кран активирован: ${systemState.killSwitchTriggerReason}`,
-    isManualOrUrgent: true,
-  }).catch(() => {});
+    severity: 'CRITICAL',
+    title: '🚨 Стоп-Кран (Kill-Switch) активирован',
+    message: systemState.killSwitchTriggerReason || 'Аварийная остановка торговли через интерфейс.',
+    isUrgent: true,
+  });
+  savePersistedState();
   res.json({ success: true, isKillSwitchActive: true, reason: systemState.killSwitchTriggerReason });
 });
 
@@ -1944,15 +2091,76 @@ app.post('/api/kill-switch/reset', (_req: Request, res: Response) => {
   systemState.killSwitchTriggerReason = null;
   systemState.lastUnblockedAt = Date.now();
   systemState.rolling24hPnlUsdt = 0.0;
-  savePersistedState();
-  dispatchTelegramNotification({
+  emitAppNotification({
     category: 'KILL_SWITCH',
-    title: '🟢 РИСК-ФАЙРВОЛ РАЗБЛОКИРОВАН',
-    htmlBody: `Аварийный Kill-Switch сброшен оператором. Автономная торговля ИИ-ботов возобновлена.`,
-    plainPreview: 'Риск-Файрвол разблокирован оператором. Торговля возобновлена.',
-    isManualOrUrgent: true,
-  }).catch(() => {});
+    severity: 'SUCCESS',
+    title: '🟢 Риск-Файрвол разблокирован',
+    message: 'Аварийный Kill-Switch сброшен оператором. Автономная торговля возобновлена.',
+    isUrgent: true,
+  });
+  savePersistedState();
   res.json({ success: true, isKillSwitchActive: false, rolling24hPnlUsdt: 0.0, lastUnblockedAt: systemState.lastUnblockedAt });
+});
+
+// Real-Time In-App & Delayed Telegram Fallback Notification Hub
+app.get('/api/notifications', (_req: Request, res: Response) => {
+  const unreadCount = systemState.notifications.filter((n) => !n.readInApp).length;
+  res.json({
+    notifications: systemState.notifications,
+    unreadCount,
+    telegramSubscribersCount: systemState.telegramBot.subscribers.length,
+    telegramBotUsername: systemState.telegramBot.botUsername,
+    delayedFallbackSec: 25,
+  });
+});
+
+app.post('/api/notifications/ack', (req: Request, res: Response) => {
+  const { ids, all } = req.body || {};
+  const now = Date.now();
+
+  if (all) {
+    for (const notif of systemState.notifications) {
+      if (!notif.readInApp) {
+        notif.readInApp = true;
+        notif.readInAppAt = now;
+        if (notif.telegramStatus === 'PENDING_DELAY') {
+          notif.telegramStatus = 'DISMISSED'; // Dismissed in web UI, cancels Telegram push!
+        }
+      }
+    }
+  } else if (Array.isArray(ids)) {
+    const idSet = new Set(ids);
+    for (const notif of systemState.notifications) {
+      if (idSet.has(notif.id) && !notif.readInApp) {
+        notif.readInApp = true;
+        notif.readInAppAt = now;
+        if (notif.telegramStatus === 'PENDING_DELAY') {
+          notif.telegramStatus = 'DISMISSED';
+        }
+      }
+    }
+  }
+
+  savePersistedState();
+  const unreadCount = systemState.notifications.filter((n) => !n.readInApp).length;
+  res.json({ success: true, unreadCount, notifications: systemState.notifications });
+});
+
+app.post('/api/notifications/clear', (_req: Request, res: Response) => {
+  systemState.notifications = [];
+  savePersistedState();
+  res.json({ success: true, unreadCount: 0, notifications: [] });
+});
+
+app.post('/api/notifications/test-telegram', async (_req: Request, res: Response) => {
+  const notif = emitAppNotification({
+    category: 'TEST',
+    severity: 'INFO',
+    title: '🔔 Тестовое уведомление ZimaTrade AI',
+    message: 'Сквозная проверка уведомлений терминала и мгновенной доставки в Telegram (@zimatradeai_bot).',
+    isUrgent: true,
+  });
+  res.json({ success: true, notification: notif, subscribersCount: systemState.telegramBot.subscribers.length });
 });
 
 app.get('/api/market/orderbook', async (req: Request, res: Response) => {
@@ -2163,6 +2371,15 @@ app.post('/api/orders/execute', async (req: Request, res: Response) => {
     systemState.activePositions.unshift(newPos);
     savePersistedState();
 
+    emitAppNotification({
+      category: 'TRADE_OPEN',
+      severity: 'INFO',
+      title: `🟢 Ордер исполнен: ${symbol} ${side} 10x`,
+      message: `Вход VWAP $${newPos.entryVwap.toFixed(2)}, объем ${newPos.qty}, SL $${newPos.slPrice.toFixed(2)}`,
+      symbol,
+      isUrgent: false,
+    });
+
     dispatchTelegramNotification({
       category: 'OPEN',
       title: `🟢 ОТКРЫТ ОРДЕР · ${symbol} ${side} 10x`,
@@ -2354,15 +2571,19 @@ function recordClosedPosition(
   }
 
   const pnlSign = trade.netPnlUsdt >= 0 ? '+' : '';
-  const closeEmoji = trade.netPnlUsdt >= 0 ? '💰' : '🛑';
-  dispatchTelegramNotification({
-    category: 'CLOSE',
-    title: `${closeEmoji} ЗАКРЫТА СДЕЛКА · ${trade.symbol} (${reasonLabel})`,
-    htmlBody: `• <b>Бот / Инициатор:</b> ${trade.botName}\n• <b>Направление:</b> ${trade.side} ${trade.leverage}x\n• <b>Вход → Выход:</b> $${trade.entryPrice} → $${trade.exitPrice}\n• <b>Чистый PnL (после комиссий):</b> <b>${pnlSign}$${trade.netPnlUsdt.toFixed(2)} USDT (${pnlSign}${trade.roePct.toFixed(2)}%)</b>\n• <b>Баланс портфеля:</b> $${currentWalletBalance.toFixed(2)} USDT`,
-    plainPreview: `${reasonLabel} ${trade.side} ${trade.symbol}: ${pnlSign}$${trade.netPnlUsdt.toFixed(2)} USDT (${pnlSign}${trade.roePct.toFixed(1)}%)`,
+  const isSL = exitReason === 'SL_HIT';
+  const isTP = exitReason === 'TP_HIT';
+
+  emitAppNotification({
+    category: isSL ? 'STOP_LOSS' : isTP ? 'TAKE_PROFIT' : 'TRADE_CLOSE',
+    severity: isSL ? 'CRITICAL' : trade.netPnlUsdt > 0 ? 'SUCCESS' : 'WARNING',
+    title: `${isSL ? '🛑 Stop-Loss' : isTP ? '💰 Take-Profit' : 'Сделка закрыта'}: ${trade.symbol}`,
+    message: `${trade.botName || 'Оператор'} закрыл ${trade.side} ${trade.symbol}. Итог PnL: ${pnlSign}$${trade.netPnlUsdt.toFixed(2)} USDT (${pnlSign}${trade.roePct.toFixed(2)}%)`,
     symbol: trade.symbol,
-    isManualOrUrgent: exitReason === 'MANUAL_CLOSE',
-  }).catch(() => {});
+    botName: trade.botName,
+    pnl: trade.netPnlUsdt,
+    isUrgent: isSL, // SL is critical, immediate Telegram push
+  });
 
   savePersistedState();
   return trade;
@@ -2531,13 +2752,16 @@ async function runBotEngineCycle() {
                 rttMs: systemState.pings.bybit,
               });
 
-              dispatchTelegramNotification({
+              emitAppNotification({
                 category: 'SCALE_OUT',
-                title: `🎯 TP1 (60%) + БЕЗУБЫТОК · ${pos.symbol} ${pos.side}`,
-                htmlBody: `• <b>Бот:</b> ${pos.botName || 'AI Agent'}\n• <b>Зафиксировано 60%:</b> +$${partialTrade.netPnlUsdt.toFixed(2)} USDT по $${targetTp.price.toFixed(priceDecimals)}\n• <b>Защита остатка (40%):</b> Stop-Loss переведен в Безубыток ($${pos.slPrice.toFixed(priceDecimals)})`,
-                plainPreview: `TP1 60% по ${pos.symbol} (+$${partialTrade.netPnlUsdt.toFixed(2)}). Стоп переведен в Безубыток $${pos.slPrice.toFixed(priceDecimals)}.`,
+                severity: 'SUCCESS',
+                title: `🎯 TP1 (60%) + Безубыток: ${pos.symbol}`,
+                message: `Зафиксировано +$${partialTrade.netPnlUsdt.toFixed(2)} USDT по $${targetTp.price.toFixed(priceDecimals)}. Стоп-лосс остатка переведен в Безубыток ($${pos.slPrice.toFixed(priceDecimals)}).`,
                 symbol: pos.symbol,
-              }).catch(() => {});
+                botName: pos.botName,
+                pnl: partialTrade.netPnlUsdt,
+                isUrgent: false,
+              });
 
               savePersistedState();
               continue;
@@ -3041,13 +3265,15 @@ async function runBotEngineCycle() {
           rttMs: systemState.pings.bybit,
         });
 
-        dispatchTelegramNotification({
-          category: 'OPEN',
-          title: `🟢 ИИ ОТКРЫЛ СДЕЛКУ · ${targetSymbol} ${side} ${newPos.leverage}x`,
-          htmlBody: `• <b>Нейро-бот:</b> ${actingBot.name}\n• <b>Вход L2 VWAP:</b> $${newPos.entryVwap.toFixed(priceDecimals)} (объем ${newPos.qty})\n• <b>Stop-Loss (ATR):</b> $${newPos.slPrice.toFixed(priceDecimals)}\n• <b>Take-Profit 1 (60%+БУ):</b> $${tp1Price.toFixed(priceDecimals)}\n• <b>Факторы ИИ:</b> OBI ${(features.obi * 100).toFixed(0)}% · Сентимент ${(features.sentimentSignal * 100).toFixed(0)}% · Уверенность ${(evalResult.compositeScore * 100).toFixed(0)}%`,
-          plainPreview: `${actingBot.name}: открыт ${side} ${targetSymbol} по $${newPos.entryVwap.toFixed(priceDecimals)} (SL $${newPos.slPrice.toFixed(priceDecimals)}, TP1 $${tp1Price.toFixed(priceDecimals)})`,
+        emitAppNotification({
+          category: 'TRADE_OPEN',
+          severity: 'INFO',
+          title: `🟢 ИИ открыл сделку: ${targetSymbol} ${side} ${newPos.leverage}x`,
+          message: `${actingBot.name}: Вход VWAP $${newPos.entryVwap.toFixed(priceDecimals)} (объем ${newPos.qty}), SL $${newPos.slPrice.toFixed(priceDecimals)}, TP1 $${tp1Price.toFixed(priceDecimals)} (Уверенность ${(evalResult.compositeScore * 100).toFixed(0)}%)`,
           symbol: targetSymbol,
-        }).catch(() => {});
+          botName: actingBot.name,
+          isUrgent: false,
+        });
 
         savePersistedState();
       }
@@ -3202,6 +3428,17 @@ const handleTrainBotEpoch = async (req: Request, res: Response) => {
 
     if (reports.length > 0) {
       const firstRep = reports[0];
+      emitAppNotification({
+        category: 'AI_TRAIN',
+        severity: 'SUCCESS',
+        title: `🧠 Обучение ИИ: эпоха #${firstRep.epochsTrained}`,
+        message: reports
+          .map((r) => `${r.botName}: WinRate ${r.winRatePct}%, Reward ${r.epochReward >= 0 ? '+' : ''}${r.epochReward.toFixed(2)}R, R:R 1:${r.tpSlRatio}`)
+          .join(' · '),
+        botName: firstRep.botName,
+        isUrgent: false,
+      });
+
       dispatchTelegramNotification({
         category: 'AI_TRAIN',
         title: `🧠 ЭПОХА ОБУЧЕНИЯ ИИ ЗАВЕРШЕНА (#${firstRep.epochsTrained})`,
@@ -3850,15 +4087,15 @@ function executeSystemFactoryReset(): {
     rttMs: systemState.pings.bybit,
   });
 
-  savePersistedState();
+  emitAppNotification({
+    category: 'SYSTEM_UPDATE',
+    severity: 'WARNING',
+    title: '🔄 Полный сброс системы и статистики',
+    message: 'Баланс сброшен к $10,000 USDT. Все сделки обнулены, Kill-Switch снят, система перезапущена с чистого листа.',
+    isUrgent: true,
+  });
 
-  dispatchTelegramNotification({
-    category: 'KILL_SWITCH',
-    title: '🔄 ПОЛНЫЙ СБРОС СИСТЕМЫ И СТАТИСТИКИ К $10,000',
-    htmlBody: `Оператор выполнил полный сброс торговой истории.\n• <b>Баланс:</b> $10,000.00 USDT\n• <b>Статус:</b> Сделки обнулены, Kill-Switch снят, система запущена с чистого листа.`,
-    plainPreview: 'Полный сброс торговой статистики к $10,000 USDT. Система готова к работе.',
-    isManualOrUrgent: true,
-  }).catch(() => {});
+  savePersistedState();
 
   return {
     success: true,
@@ -5475,14 +5712,13 @@ app.post('/api/updates/github/pull', async (_req: Request, res: Response) => {
     // Update current system version display
     currentSystemVersion = `git-${newStatus.currentCommit.hash}`;
 
-    // Dispatch Telegram notification
-    dispatchTelegramNotification({
-      category: 'TEST',
-      title: '🚀 СИСТЕМА ОБНОВЛЕНА ИЗ GITHUB',
-      htmlBody: `• <b>Репозиторий:</b> <a href="https://github.com/zimaaa-dev/zima-trade-ai">zimaaa-dev/zima-trade-ai</a>\n• <b>Активный коммит:</b> <code>${newStatus.currentCommit.hash}</code>\n• <b>Автор:</b> ${newStatus.currentCommit.author}\n• <b>Описание:</b> ${newStatus.currentCommit.message}\n• <b>Резервная копия:</b> ${backupId}`,
-      plainPreview: `Обновлено из GitHub: коммит ${newStatus.currentCommit.hash} (${newStatus.currentCommit.message})`,
-      isManualOrUrgent: true,
-    }).catch(() => {});
+    emitAppNotification({
+      category: 'SYSTEM_UPDATE',
+      severity: 'SUCCESS',
+      title: '🚀 Система обновлена из GitHub',
+      message: `Активный коммит: ${newStatus.currentCommit.hash} («${newStatus.currentCommit.message}»). Бэкап: ${backupId}`,
+      isUrgent: true,
+    });
 
     res.json({
       success: true,
@@ -6518,6 +6754,11 @@ async function startServer() {
         runBotEngineCycle().catch((err) => console.warn('Bot engine error:', err));
       }
     }, systemState.botEngineSpeedMs || 3500);
+
+    // Background sweep for delayed Telegram notification escalation (25s grace period)
+    setInterval(() => {
+      processDelayedTelegramNotifications().catch(() => {});
+    }, 2500);
 
     // Background GitHub Sync Check (every 10 minutes)
     setInterval(async () => {

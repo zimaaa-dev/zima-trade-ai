@@ -15,6 +15,7 @@ import {
   Power,
   Bot,
   Lock,
+  Bell,
 } from 'lucide-react';
 import { MetricTooltip } from './MetricTooltip.tsx';
 import type { SystemHealth, ExecutionMode } from '../types.ts';
@@ -32,6 +33,8 @@ interface HeaderProps {
   onOpenAiChat?: () => void;
   operatorUsername?: string;
   onOpenAuthSettings?: () => void;
+  unreadNotificationsCount?: number;
+  onOpenNotifications?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -47,6 +50,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenAiChat,
   operatorUsername,
   onOpenAuthSettings,
+  unreadNotificationsCount = 0,
+  onOpenNotifications,
 }) => {
   const isKillSwitch = health?.isKillSwitchActive ?? false;
   const currentMode = health?.mode ?? 'SHADOW';
@@ -266,6 +271,29 @@ export const Header: React.FC<HeaderProps> = ({
                 <span className="hidden sm:inline">Помощник</span>
               </button>
             )}
+
+            {/* Notification Center Bell */}
+            <button
+              type="button"
+              onClick={onOpenNotifications}
+              className={`relative p-1.5 rounded-lg border transition ${
+                unreadNotificationsCount > 0
+                  ? 'bg-cyan-500/15 border-cyan-400/50 text-cyan-300 hover:bg-cyan-500/25'
+                  : 'bg-slate-900/80 hover:bg-slate-800 text-slate-400 hover:text-white border-white/[0.07]'
+              }`}
+              title={
+                unreadNotificationsCount > 0
+                  ? `Центр уведомлений: ${unreadNotificationsCount} новых`
+                  : 'Центр уведомлений & алерты'
+              }
+            >
+              <Bell className="w-4 h-4" />
+              {unreadNotificationsCount > 0 && (
+                <span className="absolute -top-1 -right-1 flex h-4 min-w-4 px-1 items-center justify-center rounded-full bg-cyan-400 text-slate-950 font-mono font-bold text-[9px] shadow-sm animate-pulse">
+                  {unreadNotificationsCount > 9 ? '9+' : unreadNotificationsCount}
+                </span>
+              )}
+            </button>
 
             {/* Guide Modal */}
             <button

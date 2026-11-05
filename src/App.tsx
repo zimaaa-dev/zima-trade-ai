@@ -12,6 +12,7 @@ import { CodeExplorerView } from './components/CodeExplorerView.tsx';
 import { WalletPortfolioView } from './components/WalletPortfolioView.tsx';
 import { AiChatView } from './components/AiChatView.tsx';
 import { OnboardingModal } from './components/OnboardingModal.tsx';
+import { NotificationCenter } from './components/NotificationCenter.tsx';
 import {
   AuthLoginScreen,
   AuthSettingsModal,
@@ -29,6 +30,8 @@ export default function App() {
   const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(false);
   const [isBeginnerMode, setIsBeginnerMode] = useState<boolean>(true);
   const [isAiChatOpen, setIsAiChatOpen] = useState<boolean>(false);
+  const [isNotificationCenterOpen, setIsNotificationCenterOpen] = useState<boolean>(false);
+  const [unreadNotifCount, setUnreadNotifCount] = useState<number>(0);
 
   // Authentication state
   const [authChecking, setAuthChecking] = useState<boolean>(true);
@@ -232,6 +235,8 @@ export default function App() {
         onOpenAiChat={() => setIsAiChatOpen(true)}
         operatorUsername={operator?.username || 'admin'}
         onOpenAuthSettings={() => setIsAuthSettingsOpen(true)}
+        unreadNotificationsCount={unreadNotifCount}
+        onOpenNotifications={() => setIsNotificationCenterOpen(true)}
       />
 
       <BeginnerGuideBanner
@@ -299,6 +304,13 @@ export default function App() {
         isOverlay={true}
         isOpen={isAiChatOpen}
         onClose={() => setIsAiChatOpen(false)}
+      />
+
+      {/* Global Notification Center & Floating Toasts */}
+      <NotificationCenter
+        isOpen={isNotificationCenterOpen}
+        onClose={() => setIsNotificationCenterOpen(false)}
+        onUnreadCountChange={setUnreadNotifCount}
       />
 
       {/* Interactive Onboarding / Educational Guide Modal */}

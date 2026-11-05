@@ -391,6 +391,36 @@ export interface GitHubSyncStatus {
   error?: string | null;
 }
 
+export type NotificationSeverity = 'INFO' | 'SUCCESS' | 'WARNING' | 'CRITICAL';
+export type NotificationCategory =
+  | 'TRADE'
+  | 'TRADE_OPEN'
+  | 'SCALE_OUT'
+  | 'TAKE_PROFIT'
+  | 'CLOSE'
+  | 'TRADE_CLOSE'
+  | 'STOP_LOSS'
+  | 'AI_TRAIN'
+  | 'SYSTEM_UPDATE'
+  | 'KILL_SWITCH'
+  | 'RISK_FIREWALL'
+  | 'RISK_ALERT'
+  | 'TELEGRAM'
+  | 'TEST';
 
-
-
+export interface AppNotification {
+  id: string;
+  timestamp: number;
+  category: NotificationCategory;
+  severity: NotificationSeverity;
+  title: string;
+  message: string;
+  symbol?: string;
+  botName?: string;
+  pnl?: number;
+  readInApp: boolean;
+  readInAppAt?: number;
+  telegramStatus: 'PENDING_DELAY' | 'DELIVERED' | 'DISMISSED' | 'DIRECT_SENT';
+  telegramDeliverAt?: number;
+  deliveredToTelegramAt?: number;
+}
