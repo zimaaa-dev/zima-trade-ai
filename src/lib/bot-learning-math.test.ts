@@ -211,3 +211,37 @@ test('adaptBotBrainToMarketRegime smoothly blends weights and keeps sum exactly 
   assert.ok(adjustments.regimeTitle.length > 0);
 });
 
+test('evaluateBotSignal blocks entry when L2 Orderbook (OBI) opposes momentum or price is overextended', () => {
+  const brain = createDefaultBotBrain('TG_CHANNEL', 'agent-tg-crypto-alpha');
+
+  // Case 1: Positive momentum & sentiment, but negative L2 orderbook (sellers dominating) -> MUST SKIP
+  const opposingObiDecision = evaluateBotSignal(brain, {
+    obi: -0.12,
+    spreadBps: 1.5,
+    rsi14: 58.0,
+    emaTrendBps: 15.0,
+    momentumSignal: 0.45,
+    vwapDeviationPct: 0.35,
+    vwapSignal: 0.42,
+    atrPct: 0.85,
+    sentimentSignal: 0.80,
+  });
+  assert.equal(opposingObiDecision.action, 'SKIP');
+
+  // Case 2: Overextended above VWAP (+1.6%) and RSI 67 without extreme L2 absorption -> MUST SKIP
+  const overextendedTopDecision = evaluateBotSignal(brain, {
+    obi: 0.15,
+    spreadBps: 1.2,
+    rsi14: 67.4,
+    emaTrendBps: 20.0,
+    momentumSignal: 0.65,
+    vwapDeviationPct: 1.65,
+    vwapSignal: 0.30,
+    atrPct: 0.85,
+    sentimentSignal: 0.50,
+  });
+  assert.equal(overextendedTopDecision.action, 'SKIP');
+  assert.match(overextendedTopDecision.reasonSummary, /RSI Exhaustion/);
+});
+
+

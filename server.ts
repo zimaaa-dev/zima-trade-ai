@@ -3876,9 +3876,10 @@ function recordClosedPosition(
         sentiment: 0.24 * dirSign,
       };
 
+      const effectiveCapForRl = Math.max(1, systemState.capitalUsdt + systemState.totalRealizedPnlUsdt);
       const riskBudgetUsdt = Math.max(
-        15.0,
-        systemState.capitalUsdt * ((agent.riskPerTradePct || 1.5) / 100)
+        0.08,
+        effectiveCapForRl * ((agent.riskPerTradePct || 1.5) / 100)
       );
 
       const rlUpdate = updateBotBrainOnline({
@@ -4017,6 +4018,8 @@ function addBotLog(entry: {
   }
 }
 
+let tournamentScanCursor = 0;
+
 // Autonomous Bot Trading Engine for Mode 1 (Shadow Forward-Testing)
 async function runBotEngineCycle() {
   if (!systemState.botTradingEnabled || systemState.isKillSwitchActive) {
@@ -4056,7 +4059,7 @@ async function runBotEngineCycle() {
           const slTag = pos.isTrailing
             ? 'Трейлинг-Стоп HWM (защита профита)'
             : pos.isBreakEven
-            ? 'Стоп в Безубытке (Break-Even после TP1)'
+            ? 'Стоп в Безубытке (Break-Even защита)'
             : 'Адаптивный ATR Stop-Loss';
 
           addBotLog({
@@ -4151,9 +4154,23 @@ async function runBotEngineCycle() {
           }
         }
 
-        // 2c. Institutional Dynamic Trailing Stop (Freqtrade trailing_stop_positive_offset = 1.85%)
-        // Only activates after price reaches at least +1.85% favorable excursion to let the trade breathe and reach full TP.
-        // Once active, ratchets Stop-Loss with 0.55% fee/profit cushion and locks 65% of peak excursion.
+        // 2c-I. Stage 1 Stepped Break-Even Protection at +0.90R (Freqtrade custom_stoploss):
+        // Prevents a winning trade that reached +0.90R from ever reversing into a full -1.0R Stop-Loss,
+        // while keeping SL at Entry + 0.16% (wide enough to breathe through normal pullbacks).
+        const initialSlDist = Math.abs(pos.entryVwap - pos.slPrice);
+        const favorableExcursion = (pos.currentPrice - pos.entryVwap) * dirSign;
+        const minBeTriggerMove = Math.max(pos.entryVwap * 0.0068, initialSlDist * 0.90);
+        if (!pos.isBreakEven && !pos.isTrailing && favorableExcursion >= minBeTriggerMove) {
+          const beSlPrice = Number((pos.entryVwap * (1 + 0.0016 * dirSign)).toFixed(priceDecimals));
+          const isBetterSl = pos.side === 'LONG' ? beSlPrice > pos.slPrice : beSlPrice < pos.slPrice;
+          if (isBetterSl) {
+            pos.slPrice = beSlPrice;
+            pos.isBreakEven = true;
+          }
+        }
+
+        // 2c-II. Stage 2 Institutional Dynamic Trailing Stop (Freqtrade trailing_stop_positive_offset = 1.65%)
+        // Activates after price reaches at least +1.65% favorable excursion to lock 65% of peak impulse.
         const trailUpdate = computeTrailingStopPrice({
           side: pos.side,
           entryPrice: pos.entryVwap,
@@ -4161,8 +4178,8 @@ async function runBotEngineCycle() {
           currentSlPrice: pos.slPrice,
           previousPeakPrice: pos.peakPrice,
           priceDecimals,
-          activationPct: 1.85,
-          feeBufferPct: 0.55,
+          activationPct: 1.65,
+          feeBufferPct: 0.45,
           lockFraction: 0.65,
         });
         pos.peakPrice = trailUpdate.newPeakPrice;
@@ -4261,7 +4278,7 @@ async function runBotEngineCycle() {
       }
     }
 
-    // 4. Autonomous Multi-Factor Institutional Bot Decision Generation
+    // 4. Autonomous Multi-Factor Institutional Bot Decision Generation (Zero Randomness — Multi-Symbol Tournament Scanner)
     const effectiveCap = Math.max(1, systemState.capitalUsdt + systemState.totalRealizedPnlUsdt);
     // On micro-balances (<= $50 USDT), strictly limit to 2 concurrent positions (Freqtrade Best Practice to avoid capital fragmentation)
     const maxAllowedOpenPositions = effectiveCap <= 50 ? 2 : effectiveCap <= 200 ? 3 : 5;
@@ -4275,12 +4292,13 @@ async function runBotEngineCycle() {
       );
 
       if (activeBots.length > 0 && systemState.activePositions.length < maxAllowedOpenPositions) {
-        // Weighted selection favoring bots with higher Sharpe / cumulative RL reward
+        // Deterministically select the highest-performing available bot by Sharpe / RL cumulative reward
         const sortedBots = [...activeBots].sort(
-          (a, b) => (b.brain?.cumulativeReward || 0) - (a.brain?.cumulativeReward || 0)
+          (a, b) =>
+            (b.sharpeRatio || 1.5) * 0.5 + (b.brain?.cumulativeReward || 0) * 0.5 -
+            ((a.sharpeRatio || 1.5) * 0.5 + (a.brain?.cumulativeReward || 0) * 0.5)
         );
-        const botIdx = Math.random() < 0.55 ? 0 : Math.floor(Math.random() * sortedBots.length);
-        const actingBot = sortedBots[botIdx] || sortedBots[0];
+        const actingBot = sortedBots[0];
         if (!actingBot.brain) {
           actingBot.brain = createDefaultBotBrain(actingBot.engineType, actingBot.agentId);
         }
@@ -4302,7 +4320,7 @@ async function runBotEngineCycle() {
             (s.turnover24h || 0) >= 8000000
         );
 
-        // 2. Sort candidates by 24h Trend Momentum (absolute % change & volume)
+        // Sort candidates by 24h Trend Momentum & Liquidity score
         const trendingSorted = [...liquidScreenerPairs].sort((a, b) => {
           const aTrend = Math.abs(a.priceChangePct || 0);
           const bTrend = Math.abs(b.priceChangePct || 0);
@@ -4312,13 +4330,12 @@ async function runBotEngineCycle() {
         // Pick top 25 institutional liquid trending breakout pairs across the whole crypto market
         const topTrendingSymbols = trendingSorted.slice(0, 25).map((s) => s.symbol);
 
-        // 3. Base configured symbols for the bot (institutional core + major altcoins)
+        // Base configured symbols for the bot (institutional core + major altcoins)
         const baseAllowedSymbols: string[] =
           Array.isArray(actingBot.allowedSymbols) && actingBot.allowedSymbols.length > 0
             ? actingBot.allowedSymbols.filter((s: string) => !noisyLowTierBlacklist.has(s) && !s.includes('STOCK'))
             : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'NEARUSDT', 'SUIUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'XRPUSDT', 'ENAUSDT', 'ONDOUSDT', 'AAVEUSDT', 'INJUSDT', 'FETUSDT', 'APTUSDT', 'ARBUSDT', 'OPUSDT', 'TIAUSDT', 'RENDERUSDT', 'ADAUSDT'];
 
-        // 4. Combine base symbols with top trending breakout pairs from Bybit L2 screener
         const isDynamicScanEnabled =
           actingBot.dynamicScreenerScan !== false ||
           baseAllowedSymbols.includes('ALL') ||
@@ -4328,78 +4345,96 @@ async function runBotEngineCycle() {
           ? Array.from(new Set([...topTrendingSymbols, ...baseAllowedSymbols.filter((s) => s !== 'ALL' && s !== 'DYNAMIC_TRENDS')]))
           : baseAllowedSymbols;
 
-        // 5. Select symbol not currently in position AND not in Cooldown / StoplossGuard
+        // Filter out symbols already in position or in Cooldown / StoplossGuard
         const nowCycleTs = Date.now();
         const openSymbols = new Set(systemState.activePositions.map((p) => p.symbol));
         const availableCandidates = combinedUniverse.filter(
           (s) => !openSymbols.has(s) && evaluateSymbolCooldownGuard(symbolCooldowns, s, nowCycleTs).allowed
         );
 
-        // Prioritize coins with hot trend / momentum (80% probability to trade the hottest trending mover)
-        let targetSymbol: string;
-        if (availableCandidates.length > 0) {
-          const hotAvailable = availableCandidates.filter((sym) => {
-            const meta = systemState.screenerSymbols.find((s) => s.symbol === sym);
-            return meta && (meta.isTrendHot || Math.abs(meta.priceChangePct || 0) >= 2.0);
-          });
-
-          if (hotAvailable.length > 0 && Math.random() < 0.80) {
-            targetSymbol = hotAvailable[Math.floor(Math.random() * hotAvailable.length)];
-          } else {
-            targetSymbol = availableCandidates[Math.floor(Math.random() * availableCandidates.length)];
-          }
-        } else {
-          targetSymbol = combinedUniverse[Math.floor(Math.random() * combinedUniverse.length)] || 'BTCUSDT';
-        }
-
-        // Enforce CooldownGuard even if fallback symbol was picked
-        const cooldownCheck = evaluateSymbolCooldownGuard(symbolCooldowns, targetSymbol, nowCycleTs);
-        if (!cooldownCheck.allowed) {
+        if (availableCandidates.length === 0) {
           return;
         }
 
-        const [book, klines] = await Promise.all([
-          fetchRealBybitOrderbook(targetSymbol),
-          fetchRealBybitKlines(targetSymbol, '5', 45),
-        ]);
+        // Build a deterministic 4-symbol tournament batch per cycle (2 hottest movers + 2 rotating liquid pairs)
+        const hotCandidates = availableCandidates.filter((sym) => {
+          const meta = systemState.screenerSymbols.find((s) => s.symbol === sym);
+          return meta && (meta.isTrendHot || Math.abs(meta.priceChangePct || 0) >= 2.0);
+        });
+        const batchSet = new Set<string>();
+        for (let i = 0; i < Math.min(2, hotCandidates.length); i++) {
+          batchSet.add(hotCandidates[(tournamentScanCursor + i) % hotCandidates.length]);
+        }
+        for (let i = 0; i < availableCandidates.length && batchSet.size < 4; i++) {
+          batchSet.add(availableCandidates[(tournamentScanCursor + i) % availableCandidates.length]);
+        }
+        tournamentScanCursor = (tournamentScanCursor + 2) % Math.max(1, availableCandidates.length);
+        const batchSymbols = Array.from(batchSet);
 
-        const bestBid = book.bids[0]?.price || priceMap[targetSymbol] || 100;
-        const bestAsk = book.asks[0]?.price || priceMap[targetSymbol] || 100;
+        const btcMeta = systemState.screenerSymbols.find((s) => s.symbol === 'BTCUSDT');
+        const btcChange24h = btcMeta?.priceChangePct || 0;
 
-        // Calculate channel & LLM alpha sentiment score in [-1, 1] using active news sources & recent feed
-        const activeChannels = systemState.channels.filter(
-          (c) => c.status !== 'BANNED' && c.isEnabled !== false
-        );
-        const avgTrust =
-          activeChannels.length > 0
-            ? activeChannels.reduce((acc, c) => acc + (c.trustScore || 75) * (c.influenceWeight ?? 0.8), 0) /
-              activeChannels.reduce((acc, c) => acc + (c.influenceWeight ?? 0.8), 0)
-            : 75;
-        const recentSymbolFeed = systemState.parsedNewsFeed.filter(
-          (item) => item.symbol === targetSymbol || item.symbol === 'BTCUSDT'
-        );
-        const feedBias =
-          recentSymbolFeed.length > 0
-            ? recentSymbolFeed
-                .slice(0, 5)
-                .reduce((acc, n) => acc + (n.sentimentScore || 0) * (n.impactWeight ?? 0.8), 0) /
-              Math.min(5, recentSymbolFeed.length)
-            : 0;
-        const lastBar = klines[klines.length - 1];
-        const candleDir = lastBar && lastBar.close >= lastBar.open ? 1 : -1;
-        const rawSentiment = Math.max(
-          -1,
-          Math.min(1, ((avgTrust - 50) / 50) * 0.45 * candleDir + feedBias * 0.55)
+        // Evaluate all batch candidates in parallel and rank by quantitative confluence score
+        const evaluatedBatch = await Promise.all(
+          batchSymbols.map(async (sym) => {
+            const [cBook, cKlines] = await Promise.all([
+              fetchRealBybitOrderbook(sym),
+              fetchRealBybitKlines(sym, '5', 45),
+            ]);
+            const cBestBid = cBook.bids[0]?.price || priceMap[sym] || 100;
+            const cBestAsk = cBook.asks[0]?.price || priceMap[sym] || 100;
+
+            const recentSymbolFeed = systemState.parsedNewsFeed.filter(
+              (item) => item.symbol === sym || item.symbol === 'BTCUSDT'
+            );
+            const feedBias =
+              recentSymbolFeed.length > 0
+                ? recentSymbolFeed
+                    .slice(0, 5)
+                    .reduce((acc, n) => acc + (n.sentimentScore || 0) * (n.impactWeight ?? 0.8), 0) /
+                  Math.min(5, recentSymbolFeed.length)
+                : 0;
+
+            // Relative strength vs BTC + 24h momentum instead of single-candle random noise
+            const symMeta = systemState.screenerSymbols.find((s) => s.symbol === sym);
+            const symChange24h = symMeta?.priceChangePct || 0;
+            const relStrengthScore = Math.tanh((symChange24h - btcChange24h * 0.5) / 4.5);
+            const rawSentiment = Math.max(-1, Math.min(1, relStrengthScore * 0.55 + feedBias * 0.45));
+
+            const cFeatures = extractMarketFeatures({
+              bids: cBook.bids,
+              asks: cBook.asks,
+              klines: cKlines,
+              sentimentScore: rawSentiment,
+            });
+            const cEval = evaluateBotSignal(actingBot.brain!, cFeatures);
+            return {
+              symbol: sym,
+              book: cBook,
+              klines: cKlines,
+              bestBid: cBestBid,
+              bestAsk: cBestAsk,
+              features: cFeatures,
+              evalResult: cEval,
+            };
+          })
         );
 
-        const features = extractMarketFeatures({
-          bids: book.bids,
-          asks: book.asks,
-          klines,
-          sentimentScore: rawSentiment,
+        // Sort candidates: actionable signals (LONG/SHORT) first, ranked by highest |compositeScore|
+        evaluatedBatch.sort((a, b) => {
+          const aValid = a.evalResult.action !== 'SKIP' ? 1 : 0;
+          const bValid = b.evalResult.action !== 'SKIP' ? 1 : 0;
+          if (aValid !== bValid) return bValid - aValid;
+          return Math.abs(b.evalResult.compositeScore) - Math.abs(a.evalResult.compositeScore);
         });
 
-        const evalResult = evaluateBotSignal(actingBot.brain, features);
+        const bestCandidate = evaluatedBatch[0];
+        const targetSymbol = bestCandidate.symbol;
+        const book = bestCandidate.book;
+        const bestBid = bestCandidate.bestBid;
+        const bestAsk = bestCandidate.bestAsk;
+        const features = bestCandidate.features;
+        const evalResult = bestCandidate.evalResult;
         const xaiId = `xai-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
 
         if (evalResult.action === 'SKIP') {
@@ -4435,12 +4470,20 @@ async function runBotEngineCycle() {
 
         const side: 'LONG' | 'SHORT' = evalResult.action;
 
-        // Institutional Market Regime Filter (Freqtrade DirectionFilter / NautilusTrader):
-        // Strict protection against catching falling knives or shorting raging bull runs
-        if (
-          side === 'LONG' &&
-          (systemState.currentMarketRegime === 'MARKET_WIDE_DUMP' || systemState.currentMarketRegime === 'STRONG_BEAR')
-        ) {
+        // Institutional Market Regime Filter (matches both enum ID and Russian regime title):
+        const regimeStr = String(systemState.currentMarketRegime || '').toUpperCase();
+        const isBearDumpRegime =
+          regimeStr.includes('MARKET_WIDE_DUMP') ||
+          regimeStr.includes('STRONG_BEAR') ||
+          regimeStr.includes('СБРОС') ||
+          regimeStr.includes('МЕДВЕЖИЙ');
+        const isBullExpansionRegime =
+          regimeStr.includes('ALT_SEASON_EXPANSION') ||
+          regimeStr.includes('STRONG_BULL') ||
+          regimeStr.includes('АЛЬТ-СЕЗОН') ||
+          regimeStr.includes('БЫЧИЙ');
+
+        if (side === 'LONG' && isBearDumpRegime) {
           addBotLog({
             botId: actingBot.agentId,
             botName: actingBot.name,
@@ -4454,10 +4497,7 @@ async function runBotEngineCycle() {
           return;
         }
 
-        if (
-          side === 'SHORT' &&
-          (systemState.currentMarketRegime === 'ALT_SEASON_EXPANSION' || systemState.currentMarketRegime === 'STRONG_BULL')
-        ) {
+        if (side === 'SHORT' && isBullExpansionRegime) {
           addBotLog({
             botId: actingBot.agentId,
             botName: actingBot.name,

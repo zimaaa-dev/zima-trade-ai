@@ -331,8 +331,14 @@ export function calculateVwapDeviation(klines: KlineBar[]): { vwap: number; devi
   const vwap = sumV > 0 ? sumPV / sumV : lastClose;
   const deviationPct = vwap > 0 ? ((lastClose - vwap) / vwap) * 100 : 0;
 
-  // Normalized signal in [-1, 1]: moderate positive deviation + trend continuation or strong mean reversion
-  const vwapSignal = clamp(Math.tanh(deviationPct * 1.4), -1, 1);
+  // Institutional Value-Zone VWAP Signal:
+  // Rewards fresh trend impulse near VWAP (0.05% - 0.90%) and decays when price is overextended (>1.0%) to prevent buying tops / shorting bottoms
+  const absDev = Math.abs(deviationPct);
+  const rawVwapSig =
+    absDev <= 0.95
+      ? Math.tanh(deviationPct * 1.4)
+      : Math.sign(deviationPct) * Math.max(-0.35, 0.87 - (absDev - 0.95) * 0.75);
+  const vwapSignal = clamp(rawVwapSig, -1, 1);
 
   return {
     vwap: Number(vwap.toFixed(4)),
@@ -480,16 +486,16 @@ export function evaluateBotSignal(
     obiSign !== 0 &&
     obiSign === momSign &&
     obiSign === vwapSign &&
-    Math.abs(features.obi) >= 0.16 &&
-    Math.abs(features.momentumSignal) >= 0.12
+    Math.abs(features.obi) >= 0.14 &&
+    Math.abs(features.momentumSignal) >= 0.10
   ) {
     rawScore *= 1.18;
     regimeTag = 'CONFLUENCE+18%';
   }
 
-  // 2. Orderflow Divergence Trap Filter (Bull/Bear Trap): L2 book heavily opposes price impulse
-  if (features.obi * features.momentumSignal < -0.10) {
-    rawScore *= 0.76;
+  // 2. Orderflow Divergence Trap Filter (Bull/Bear Trap): L2 book opposes price impulse
+  if (features.obi * features.momentumSignal < -0.04) {
+    rawScore *= 0.65;
     regimeTag = 'TRAP_DAMPENED';
   }
 
@@ -508,27 +514,56 @@ export function evaluateBotSignal(
     };
   }
 
-  // 4. RSI Exhaustion Guard (prevent buying extreme tops or shorting extreme bottoms without massive L2 absorption)
-  if (compositeScore > 0 && features.rsi14 > 78 && features.obi < 0.45) {
+  // 4. RSI Exhaustion & VWAP Overextension Guard (prevent buying local tops or shorting local bottoms)
+  if (
+    compositeScore > 0 &&
+    (features.rsi14 > 65 || features.vwapDeviationPct > 1.35) &&
+    features.obi < 0.45
+  ) {
     return {
       action: 'SKIP',
       compositeScore,
       slDistancePct,
       contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
-      reasonSummary: `Пропуск [RSI Exhaustion]: Перекупленность RSI=${features.rsi14.toFixed(1)} без агрессивной поддержки в L2 (OBI=${features.obi.toFixed(2)}). Защита от покупки хая.`,
+      reasonSummary: `Пропуск [RSI Exhaustion]: Перекупленность RSI=${features.rsi14.toFixed(1)} / VWAP=${features.vwapDeviationPct >= 0 ? '+' : ''}${features.vwapDeviationPct.toFixed(2)}% без агрессивной поддержки в L2 (OBI=${features.obi.toFixed(2)}). Защита от покупки локального хая.`,
     };
   }
-  if (compositeScore < 0 && features.rsi14 < 22 && features.obi > -0.45) {
+  if (
+    compositeScore < 0 &&
+    (features.rsi14 < 35 || features.vwapDeviationPct < -1.35) &&
+    features.obi > -0.45
+  ) {
     return {
       action: 'SKIP',
       compositeScore,
       slDistancePct,
       contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
-      reasonSummary: `Пропуск [RSI Exhaustion]: Перепроданность RSI=${features.rsi14.toFixed(1)} без агрессивного давления в L2 (OBI=${features.obi.toFixed(2)}). Защита от шорта дна.`,
+      reasonSummary: `Пропуск [RSI Exhaustion]: Перепроданность RSI=${features.rsi14.toFixed(1)} / VWAP=${features.vwapDeviationPct.toFixed(2)}% без агрессивного давления в L2 (OBI=${features.obi.toFixed(2)}). Защита от шорта локального дна.`,
     };
   }
 
-  // 5. Strict Learned Confidence Threshold
+  // 5. Mandatory Institutional L2 Orderbook + Momentum Alignment Gate:
+  // Never enter LONG when L2 orderbook is selling or momentum is negative; never enter SHORT when L2 orderbook is buying or momentum is positive
+  if (compositeScore > 0 && (features.obi < 0.08 || features.momentumSignal < 0.05)) {
+    return {
+      action: 'SKIP',
+      compositeScore,
+      slDistancePct,
+      contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
+      reasonSummary: `Пропуск [L2 Filter]: Для LONG требуется синхронная поддержка стакана L2 (OBI=${features.obi.toFixed(2)} >= +0.08) и тренда (Mom=${features.momentumSignal.toFixed(2)} >= +0.05).`,
+    };
+  }
+  if (compositeScore < 0 && (features.obi > -0.08 || features.momentumSignal > -0.05)) {
+    return {
+      action: 'SKIP',
+      compositeScore,
+      slDistancePct,
+      contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
+      reasonSummary: `Пропуск [L2 Filter]: Для SHORT требуется синхронное давление стакана L2 (OBI=${features.obi.toFixed(2)} <= -0.08) и тренда (Mom=${features.momentumSignal.toFixed(2)} <= -0.05).`,
+    };
+  }
+
+  // 6. Strict Learned Confidence Threshold
   const absScore = Math.abs(compositeScore);
   if (absScore < brain.confidenceThreshold) {
     return {
@@ -578,8 +613,8 @@ export function updateBotBrainOnline(params: {
   const { agentId, brain, entryFeatures, side, netPnlUsdt, riskBudgetUsdt, symbol } = params;
   const dirSign = side === 'LONG' ? 1 : -1;
 
-  // Risk-adjusted reward R in [-2.0, +2.5]
-  const safeRisk = Math.max(5.0, riskBudgetUsdt);
+  // Risk-adjusted reward R in [-2.0, +2.5] (supports micro-capital $10 accounts where 1R = $0.15)
+  const safeRisk = Math.max(0.05, riskBudgetUsdt);
   const reward = Number(clamp(netPnlUsdt / safeRisk, -2.0, 2.5).toFixed(3));
 
   const lr = clamp(brain.learningRate || 0.06, 0.01, 0.2);
