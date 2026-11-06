@@ -11,6 +11,8 @@ import {
   updateBotBrainOnline,
   runHistoricalKlineEpoch,
   evaluateSymbolCooldownGuard,
+  computeAdaptiveMarketProfile,
+  adaptBotBrainToMarketRegime,
   type SymbolCooldownEntry,
   type KlineBar,
 } from './bot-learning-math.ts';
@@ -148,5 +150,64 @@ test('evaluateSymbolCooldownGuard enforces Freqtrade-style StoplossGuard and Coo
   const expired = evaluateSymbolCooldownGuard(map, 'DOGEUSDT', now + 601000);
   assert.equal(expired.allowed, true);
   assert.equal(expired.remainingSec, 0);
+});
+
+test('computeAdaptiveMarketProfile derives institutional parameters per market regime', () => {
+  const altSeason = computeAdaptiveMarketProfile({
+    regime: 'ALT_SEASON_EXPANSION',
+    avgAtrPct: 3.8,
+    marketBreadthPct: 72,
+    btcChange24hPct: 3.5,
+  });
+  assert.equal(altSeason.allowedSides, 'LONG_ONLY');
+  assert.ok(altSeason.weightBiases.momentumWeight > altSeason.weightBiases.vwapWeight);
+  assert.ok(altSeason.dynamicAtrMultiplier >= 1.4 && altSeason.dynamicAtrMultiplier <= 1.85);
+
+  const dump = computeAdaptiveMarketProfile({
+    regime: 'MARKET_WIDE_DUMP',
+    avgAtrPct: 4.5,
+    marketBreadthPct: 15,
+    btcChange24hPct: -6.2,
+  });
+  assert.equal(dump.allowedSides, 'SHORT_ONLY');
+  assert.ok(dump.dynamicConfidenceThreshold >= 0.24);
+
+  const chop = computeAdaptiveMarketProfile({
+    regime: 'RANGE_CHOP',
+    avgAtrPct: 1.8,
+    marketBreadthPct: 50,
+    btcChange24hPct: 0.1,
+  });
+  assert.equal(chop.allowedSides, 'LONG_AND_SHORT');
+  assert.ok(chop.weightBiases.vwapWeight >= 0.25);
+});
+
+test('adaptBotBrainToMarketRegime smoothly blends weights and keeps sum exactly 1.0', () => {
+  const initialBrain = createDefaultBotBrain('ONNX_RL', 'test-agent');
+  const marketStats = {
+    regime: 'ALT_SEASON_EXPANSION' as const,
+    avgAtrPct: 3.2,
+    marketBreadthPct: 68,
+    btcChange24hPct: 2.8,
+  };
+
+  const { adaptedBrain, profile, adjustments } = adaptBotBrainToMarketRegime(
+    initialBrain,
+    marketStats,
+    'ONNX_RL'
+  );
+
+  const sumWeights =
+    adaptedBrain.weights.obiWeight +
+    adaptedBrain.weights.momentumWeight +
+    adaptedBrain.weights.vwapWeight +
+    adaptedBrain.weights.sentimentWeight;
+
+  assert.ok(Math.abs(sumWeights - 1.0) < 0.001, `Adapted weights must sum to 1.0, got ${sumWeights}`);
+  assert.ok(adaptedBrain.lastTrainedAt > 0);
+  assert.ok(adaptedBrain.atrMultiplier >= 1.2 && adaptedBrain.atrMultiplier <= 2.2);
+  assert.ok(adaptedBrain.confidenceThreshold >= 0.15 && adaptedBrain.confidenceThreshold <= 0.35);
+  assert.ok(profile.regime === 'ALT_SEASON_EXPANSION');
+  assert.ok(adjustments.regimeTitle.length > 0);
 });
 

@@ -291,7 +291,34 @@ export interface AgentItem {
   dynamicScreenerScan?: boolean;
   tpSlRatio?: number;
   maxConcurrentPositions?: number;
+  autoMarketAdaptationEnabled?: boolean;
+  lastAutoAdaptedAt?: number;
+  currentRegime?: string;
   brain?: BotBrainState;
+}
+
+export interface MarketTrendAuditResult {
+  timestamp: number;
+  regime: 'ALT_SEASON_EXPANSION' | 'MARKET_WIDE_DUMP' | 'SELECTIVE_PUMPS' | 'STRONG_BULL' | 'STRONG_BEAR' | 'HIGH_VOLATILITY' | 'RANGE_CHOP';
+  regimeTitle: string;
+  regimeSummary: string;
+  totalPairsScanned: number;
+  advancersCount: number;
+  declinersCount: number;
+  marketBreadthPct: number;
+  topGainers: Array<{ symbol: string; priceChangePct: number; turnover24h: number; atrPct: number; price: number }>;
+  topLosers: Array<{ symbol: string; priceChangePct: number; turnover24h: number; atrPct: number; price: number }>;
+  topTrendingSymbols: string[];
+  btcChange24hPct: number;
+  ethChange24hPct: number;
+  solChange24hPct: number;
+  avgAtrPct: number;
+  isRetrainingRecommended: boolean;
+  retrainingReason: string;
+  hoursSinceLastTrain: number;
+  recommendedCommand: string;
+  autoAdaptationActive?: boolean;
+  lastAutoAdaptedAt?: number;
 }
 
 export interface PersistenceStatus {

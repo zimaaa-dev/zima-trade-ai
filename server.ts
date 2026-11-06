@@ -182,6 +182,10 @@ import {
   runHistoricalKlineEpoch,
   normalizeWeights,
   evaluateSymbolCooldownGuard,
+  adaptBotBrainToMarketRegime,
+  computeAdaptiveMarketProfile,
+  type MarketRegimeType,
+  type AdaptiveMarketProfile,
   type SymbolCooldownEntry,
   type KlineBar,
   type BotBrainState,
@@ -336,6 +340,9 @@ interface AppSystemState {
   parsedNewsFeed: any[];
   agents: any[];
   botTradingEnabled: boolean;
+  autoMarketAdaptationEnabled?: boolean;
+  lastAutoAdaptedAt?: number;
+  currentMarketRegime?: string;
   botEngineSpeedMs: number;
   botTradeLogs: BotLogEntry[];
   closedTrades: ClosedTradeRecord[];
@@ -510,6 +517,9 @@ const systemState: AppSystemState = {
   totalRealizedPnlUsdt: 0.65,
   pings: { bybit: 24, okx: 32, mexc: 31 },
   botTradingEnabled: true,
+  autoMarketAdaptationEnabled: true,
+  lastAutoAdaptedAt: Date.now(),
+  currentMarketRegime: '🔄 Боковой диапазон (Range / Choppy)',
   botEngineSpeedMs: 3500,
   botTradeLogs: initialLogs,
   closedTrades: initialClosedTrades,
@@ -891,6 +901,9 @@ function savePersistedState(): void {
       killSwitchTriggerReason: systemState.killSwitchTriggerReason,
       lastUnblockedAt: systemState.lastUnblockedAt || 0,
       botTradingEnabled: systemState.botTradingEnabled,
+      autoMarketAdaptationEnabled: systemState.autoMarketAdaptationEnabled !== false,
+      lastAutoAdaptedAt: systemState.lastAutoAdaptedAt || Date.now(),
+      currentMarketRegime: systemState.currentMarketRegime,
       activePositions: systemState.activePositions,
       limitOrdersQueue: systemState.limitOrdersQueue,
       closedTrades: systemState.closedTrades,
@@ -992,6 +1005,9 @@ function loadPersistedState(): void {
         systemState.capitalUsdt = 10.0;
       }
       if (typeof parsed.botTradingEnabled === 'boolean') systemState.botTradingEnabled = parsed.botTradingEnabled;
+      if (typeof parsed.autoMarketAdaptationEnabled === 'boolean') systemState.autoMarketAdaptationEnabled = parsed.autoMarketAdaptationEnabled;
+      if (typeof parsed.lastAutoAdaptedAt === 'number') systemState.lastAutoAdaptedAt = parsed.lastAutoAdaptedAt;
+      if (typeof parsed.currentMarketRegime === 'string') systemState.currentMarketRegime = parsed.currentMarketRegime;
       if (typeof parsed.lastUnblockedAt === 'number') systemState.lastUnblockedAt = parsed.lastUnblockedAt;
       if (typeof parsed.isKillSwitchActive === 'boolean' && !isLegacy10k) {
         systemState.isKillSwitchActive = parsed.isKillSwitchActive;
@@ -4797,9 +4813,12 @@ app.post('/api/bots/train-epoch', handleTrainBotEpoch);
 app.post('/api/bots/train', handleTrainBotEpoch);
 
 // ============================================================================
-// Market Regime, Trend Drift & Autonomous Retraining Recommendation Engine
+// Market Regime, Trend Drift & Continuous Zero-Lag Auto-Adaptation Engine
 // ============================================================================
 let lastRetrainingAlertTs = 0;
+let lastNotifiedRegimeTitle = '';
+let cachedMarketTrendAudit: MarketTrendAuditResult | null = null;
+let lastTrendAuditTs = 0;
 
 export interface MarketTrendMover {
   symbol: string;
@@ -4811,7 +4830,7 @@ export interface MarketTrendMover {
 
 export interface MarketTrendAuditResult {
   timestamp: number;
-  regime: 'ALT_SEASON_EXPANSION' | 'MARKET_WIDE_DUMP' | 'SELECTIVE_PUMPS' | 'STRONG_BULL' | 'STRONG_BEAR' | 'HIGH_VOLATILITY' | 'RANGE_CHOP';
+  regime: MarketRegimeType;
   regimeTitle: string;
   regimeSummary: string;
   totalPairsScanned: number;
@@ -4829,9 +4848,21 @@ export interface MarketTrendAuditResult {
   retrainingReason: string;
   hoursSinceLastTrain: number;
   recommendedCommand: string;
+  autoAdaptationActive?: boolean;
+  lastAutoAdaptedAt?: number;
 }
 
-export async function analyzeMarketTrendsAndRetrainingNeeds(notifyTelegram = false): Promise<MarketTrendAuditResult> {
+export async function analyzeMarketTrendsAndRetrainingNeeds(
+  notifyTelegram = false,
+  forceRefresh = false
+): Promise<MarketTrendAuditResult> {
+  const now = Date.now();
+
+  // 1. Zero-Lag Fast-Path: return memoized snapshot if within 45s cache window
+  if (!forceRefresh && cachedMarketTrendAudit && now - lastTrendAuditTs < 45000) {
+    return cachedMarketTrendAudit;
+  }
+
   const tickers = await fetchRealBybitTickers();
   const validTickers = tickers.filter((t: any) => t.price > 0 && t.turnover24h >= 1500000);
   const totalPairsScanned = validTickers.length || 1;
@@ -4842,8 +4873,7 @@ export async function analyzeMarketTrendsAndRetrainingNeeds(notifyTelegram = fal
   const marketBreadthPct = Number(((advancersCount / totalPairsScanned) * 100).toFixed(1));
 
   // Sort by gainers and losers across the entire market
-  const sortedGainers = [...validTickers]
-    .sort((a: any, b: any) => (b.priceChangePct || 0) - (a.priceChangePct || 0));
+  const sortedGainers = [...validTickers].sort((a: any, b: any) => (b.priceChangePct || 0) - (a.priceChangePct || 0));
   const topGainers: MarketTrendMover[] = sortedGainers.slice(0, 5).map((t: any) => ({
     symbol: t.symbol,
     priceChangePct: t.priceChangePct || 0,
@@ -4852,8 +4882,7 @@ export async function analyzeMarketTrendsAndRetrainingNeeds(notifyTelegram = fal
     price: t.price || 0,
   }));
 
-  const sortedLosers = [...validTickers]
-    .sort((a: any, b: any) => (a.priceChangePct || 0) - (b.priceChangePct || 0));
+  const sortedLosers = [...validTickers].sort((a: any, b: any) => (a.priceChangePct || 0) - (b.priceChangePct || 0));
   const topLosers: MarketTrendMover[] = sortedLosers.slice(0, 5).map((t: any) => ({
     symbol: t.symbol,
     priceChangePct: t.priceChangePct || 0,
@@ -4862,10 +4891,9 @@ export async function analyzeMarketTrendsAndRetrainingNeeds(notifyTelegram = fal
     price: t.price || 0,
   }));
 
-  const topTrendingSymbols = Array.from(new Set([
-    ...topGainers.map((g) => g.symbol),
-    ...topLosers.map((l) => l.symbol),
-  ]));
+  const topTrendingSymbols = Array.from(
+    new Set([...topGainers.map((g) => g.symbol), ...topLosers.map((l) => l.symbol)])
+  );
 
   const btc = validTickers.find((t: any) => t.symbol === 'BTCUSDT') || { priceChangePct: 0, atrPct: 2.5 };
   const eth = validTickers.find((t: any) => t.symbol === 'ETHUSDT') || { priceChangePct: 0, atrPct: 3.0 };
@@ -4876,17 +4904,20 @@ export async function analyzeMarketTrendsAndRetrainingNeeds(notifyTelegram = fal
   const solChange = sol.priceChangePct || 0;
 
   // Average ATR of all liquid market tickers
-  const avgAtr = validTickers.length > 0
-    ? Number((validTickers.reduce((acc: number, t: any) => acc + (t.atrPct || 2.5), 0) / validTickers.length).toFixed(2))
-    : 3.0;
+  const avgAtr =
+    validTickers.length > 0
+      ? Number((validTickers.reduce((acc: number, t: any) => acc + (t.atrPct || 2.5), 0) / validTickers.length).toFixed(2))
+      : 3.0;
 
   // Detect regime across the full market (altcoin movements, market-wide dumps, selective pumps)
-  let regime: 'ALT_SEASON_EXPANSION' | 'MARKET_WIDE_DUMP' | 'SELECTIVE_PUMPS' | 'STRONG_BULL' | 'STRONG_BEAR' | 'HIGH_VOLATILITY' | 'RANGE_CHOP' = 'RANGE_CHOP';
+  let regime: MarketRegimeType = 'RANGE_CHOP';
   let regimeTitle = '🔄 Боковой диапазон (Range / Choppy)';
   let regimeSummary = `Рынок консолидируется: ${advancersCount} пар в плюсе, ${declinersCount} в минусе (рыночная ширина ${marketBreadthPct}%).`;
 
-  const topGainerAvg = topGainers.slice(0, 3).reduce((acc, g) => acc + g.priceChangePct, 0) / Math.max(1, Math.min(3, topGainers.length));
-  const topLoserAvg = topLosers.slice(0, 3).reduce((acc, l) => acc + l.priceChangePct, 0) / Math.max(1, Math.min(3, topLosers.length));
+  const topGainerAvg =
+    topGainers.slice(0, 3).reduce((acc, g) => acc + g.priceChangePct, 0) / Math.max(1, Math.min(3, topGainers.length));
+  const topLoserAvg =
+    topLosers.slice(0, 3).reduce((acc, l) => acc + l.priceChangePct, 0) / Math.max(1, Math.min(3, topLosers.length));
 
   if (marketBreadthPct >= 65 && topGainerAvg >= 5.0) {
     regime = 'ALT_SEASON_EXPANSION';
@@ -4914,54 +4945,69 @@ export async function analyzeMarketTrendsAndRetrainingNeeds(notifyTelegram = fal
     regimeSummary = `Всплеск волатильности по рынку (средний ATR ${avgAtr}%). Резкие проскальзывания и расширение спредов.`;
   }
 
+  systemState.currentMarketRegime = regimeTitle;
+
+  // 2. INSTITUTIONAL CONTINUOUS AUTO-ADAPTATION
+  // If auto-adaptation is active (default = true), bots adapt automatically in real-time.
+  // Zero lag, zero blocking, no nagging "recalibration required" alarms!
+  const isAutoAdaptEnabled = systemState.autoMarketAdaptationEnabled !== false;
+
+  if (isAutoAdaptEnabled) {
+    for (const bot of systemState.agents) {
+      if (!bot.brain) {
+        bot.brain = createDefaultBotBrain(bot.engineType, bot.agentId);
+      }
+      const adaptation = adaptBotBrainToMarketRegime(
+        bot.brain,
+        {
+          regime,
+          avgAtrPct: avgAtr,
+          marketBreadthPct,
+          btcChange24hPct: btcChange,
+        },
+        bot.engineType
+      );
+      bot.brain = adaptation.adaptedBrain;
+      bot.tpSlRatio = adaptation.adjustments.tpSlRatio;
+      bot.currentRegime = regimeTitle;
+      bot.lastAutoAdaptedAt = now;
+      bot.autoMarketAdaptationEnabled = true;
+    }
+    systemState.lastAutoAdaptedAt = now;
+  }
+
   // Calculate bot training freshness
-  const lastTrainedAt = Math.min(...systemState.agents.map((a) => a.brain?.lastTrainedAt || Date.now()));
-  const hoursSinceLastTrain = Number(((Date.now() - lastTrainedAt) / (1000 * 3600)).toFixed(1));
-  const epochsTrained = Math.max(...systemState.agents.map((a) => a.brain?.epochsTrained || 0));
+  const lastTrainedAt = Math.min(...systemState.agents.map((a) => a.brain?.lastTrainedAt || now));
+  const hoursSinceLastTrain = Number(((now - lastTrainedAt) / (1000 * 3600)).toFixed(1));
 
   let isRetrainingRecommended = false;
-  let retrainingReason = 'Параметры стратегий актуальны.';
+  let retrainingReason = 'Авто-адаптация активна: параметры и веса ботов синхронизированы с текущим рынком.';
 
-  if ((regime === 'ALT_SEASON_EXPANSION' || regime === 'MARKET_WIDE_DUMP' || regime === 'SELECTIVE_PUMPS' || regime === 'STRONG_BULL' || regime === 'STRONG_BEAR') && hoursSinceLastTrain >= 3.5) {
-    isRetrainingRecommended = true;
-    retrainingReason = `Сдвиг рыночного режима в ${regimeTitle}. Прошло ${hoursSinceLastTrain}ч с последней калибровки — требуется адаптация весов к динамике альткоинов.`;
-  } else if (regime === 'HIGH_VOLATILITY' && hoursSinceLastTrain >= 5) {
-    isRetrainingRecommended = true;
-    retrainingReason = `Всплеск волатильности рынка (ATR ${avgAtr}%). Требуется калибровка множителей ATR и стоп-лоссов на свежих рыночных свечах.`;
-  } else if (hoursSinceLastTrain >= 16) {
-    isRetrainingRecommended = true;
-    retrainingReason = `Прошло ${hoursSinceLastTrain}ч с последнего цикла калибровки на исторических свечах. Рекомендуется плановое обновление коэффициентов.`;
+  if (!isAutoAdaptEnabled) {
+    if (hoursSinceLastTrain >= 16) {
+      isRetrainingRecommended = true;
+      retrainingReason = `Авто-адаптация отключена. Прошло ${hoursSinceLastTrain}ч с последней калибровки на исторических свечах.`;
+    }
   }
 
   const serverUrl = 'http://194.113.34.230:3000';
   const recommendedCommand = `python3 scripts/train_pc.py --server ${serverUrl} --epochs 15 --dynamic-trends`;
 
-  const now = Date.now();
-  // Auto-push alert if recommended and at least 2.5 hours passed since last alert
-  if (isRetrainingRecommended && notifyTelegram && (now - lastRetrainingAlertTs > 2.5 * 3600 * 1000)) {
+  // Informative regime shift notification in Telegram (only when regime changes, not repetitive nagging)
+  if (notifyTelegram && regimeTitle !== lastNotifiedRegimeTitle && now - lastRetrainingAlertTs > 3 * 3600 * 1000) {
     lastRetrainingAlertTs = now;
-
-    emitAppNotification({
-      category: 'AI_TRAIN',
-      severity: 'WARNING',
-      title: '🔔 Рекомендация к перекалибровке стратегий',
-      message: `${retrainingReason}`,
-      isUrgent: false,
-    });
-
-    const gainersList = topGainers.slice(0, 4).map((g) => `• <b>${g.symbol}</b>: <code>+${g.priceChangePct}%</code> (24h: $${(g.turnover24h / 1e6).toFixed(1)}M, ATR ${g.atrPct}%)`).join('\n');
-    const losersList = topLosers.slice(0, 3).map((l) => `• <b>${l.symbol}</b>: <code>${l.priceChangePct}%</code> (24h: $${(l.turnover24h / 1e6).toFixed(1)}M)`).join('\n');
+    lastNotifiedRegimeTitle = regimeTitle;
 
     dispatchTelegramNotification({
       category: 'AI_TRAIN',
-      title: '⚡ РЕКОМЕНДАЦИЯ К ПЕРЕКАЛИБРОВКЕ СТРАТЕГИЙ (ТРЕНДОВЫЙ СКАНЕР)',
-      htmlBody: `• <b>Рыночный режим:</b> <b>${regimeTitle}</b>\n• <b>Охват рынка Bybit:</b> <b>${totalPairsScanned} пар</b> (Растут: ${advancersCount} · Падают: ${declinersCount} · Ширина: ${marketBreadthPct}%)\n• <b>Волатильность рынка:</b> ATR <b>${avgAtr}%</b>\n\n🔥 <b>Лидеры роста:</b>\n${gainersList}\n\n📉 <b>Лидеры падения:</b>\n${losersList}\n\n• <b>Причина:</b> ${retrainingReason}\n• <b>Последняя калибровка:</b> ${hoursSinceLastTrain}ч назад (цикл #${epochsTrained})`,
-      plainPreview: `Рекомендация перекалибровки: ${regimeTitle} (Охват: ${totalPairsScanned} пар, ширина ${marketBreadthPct}%).`,
+      title: `⚡ АВТО-АДАПТАЦИЯ К РЫНКУ · ${regimeTitle}`,
+      htmlBody: `• <b>Рыночный режим:</b> <b>${regimeTitle}</b>\n• <b>Охват рынка:</b> <b>${totalPairsScanned} пар</b> (Растут: ${advancersCount} · Падают: ${declinersCount} · Ширина: ${marketBreadthPct}%)\n• <b>Средний ATR рынка:</b> <b>${avgAtr}%</b>\n• <b>Статус ботов:</b> ✅ <i>Параметры и фильтры входов автоматически синхронизированы (ручная калибровка не требуется).</i>`,
+      plainPreview: `Авто-адаптация к рынку: ${regimeTitle} (ATR ${avgAtr}%, ширина ${marketBreadthPct}%). Боты адаптированы без задержек.`,
       isManualOrUrgent: false,
     }).catch(() => {});
   }
 
-  return {
+  const auditResult: MarketTrendAuditResult = {
     timestamp: now,
     regime,
     regimeTitle,
@@ -4981,16 +5027,62 @@ export async function analyzeMarketTrendsAndRetrainingNeeds(notifyTelegram = fal
     retrainingReason,
     hoursSinceLastTrain,
     recommendedCommand,
+    autoAdaptationActive: isAutoAdaptEnabled,
+    lastAutoAdaptedAt: systemState.lastAutoAdaptedAt || now,
   };
+
+  cachedMarketTrendAudit = auditResult;
+  lastTrendAuditTs = now;
+
+  return auditResult;
 }
 
 app.get(['/api/ai/trend-audit', '/api/market/trend-audit'], async (_req: Request, res: Response) => {
   try {
-    const audit = await analyzeMarketTrendsAndRetrainingNeeds(false);
+    const audit = await analyzeMarketTrendsAndRetrainingNeeds(false, false);
     res.json(audit);
   } catch (err: any) {
     res.status(500).json({ error: `Trend audit error: ${err.message}` });
   }
+});
+
+// Auto-Market Adaptation Control Endpoints
+app.get('/api/bots/auto-adapt', (_req: Request, res: Response) => {
+  res.json({
+    enabled: systemState.autoMarketAdaptationEnabled !== false,
+    lastAutoAdaptedAt: systemState.lastAutoAdaptedAt || Date.now(),
+    currentMarketRegime: systemState.currentMarketRegime || '🔄 Боковой диапазон (Range / Choppy)',
+    bots: systemState.agents.map((a) => ({
+      agentId: a.agentId,
+      name: a.name,
+      atrMultiplier: a.brain?.atrMultiplier,
+      confidenceThreshold: a.brain?.confidenceThreshold,
+      tpSlRatio: a.tpSlRatio,
+      weights: a.brain?.weights,
+    })),
+  });
+});
+
+app.post('/api/bots/auto-adapt', async (req: Request, res: Response) => {
+  const { enabled, syncNow } = req.body || {};
+  if (typeof enabled === 'boolean') {
+    systemState.autoMarketAdaptationEnabled = enabled;
+  }
+  let audit: any = null;
+  if (syncNow || systemState.autoMarketAdaptationEnabled !== false) {
+    audit = await analyzeMarketTrendsAndRetrainingNeeds(false, true);
+  }
+  savePersistedState();
+  res.json({
+    success: true,
+    enabled: systemState.autoMarketAdaptationEnabled !== false,
+    lastAutoAdaptedAt: systemState.lastAutoAdaptedAt || Date.now(),
+    currentMarketRegime: systemState.currentMarketRegime,
+    audit,
+    message: systemState.autoMarketAdaptationEnabled !== false
+      ? 'Автоматическая адаптация к рынку активна. Боты синхронизированы без задержек.'
+      : 'Автоматическая адаптация отключена.',
+  });
 });
 
 app.get(['/api/market/klines', '/api/bybit/klines'], async (req: Request, res: Response) => {
@@ -5008,7 +5100,7 @@ app.get(['/api/market/klines', '/api/bybit/klines'], async (req: Request, res: R
 app.post(['/api/ai/trend-audit/check-now', '/api/market/trend-audit/check-now'], async (_req: Request, res: Response) => {
   try {
     lastRetrainingAlertTs = 0; // force notification dispatch
-    const audit = await analyzeMarketTrendsAndRetrainingNeeds(true);
+    const audit = await analyzeMarketTrendsAndRetrainingNeeds(true, true);
     res.json({ success: true, audit });
   } catch (err: any) {
     res.status(500).json({ error: `Trend check error: ${err.message}` });

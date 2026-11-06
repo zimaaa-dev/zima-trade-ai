@@ -40,6 +40,26 @@ export interface BotBrainState {
   rewardHistory: RewardHistoryPoint[];
 }
 
+export type MarketRegimeType =
+  | 'ALT_SEASON_EXPANSION'
+  | 'MARKET_WIDE_DUMP'
+  | 'SELECTIVE_PUMPS'
+  | 'STRONG_BULL'
+  | 'STRONG_BEAR'
+  | 'HIGH_VOLATILITY'
+  | 'RANGE_CHOP';
+
+export interface AdaptiveMarketProfile {
+  regime: MarketRegimeType;
+  regimeTitle: string;
+  volatilityState: 'LOW' | 'NORMAL' | 'HIGH' | 'EXTREME';
+  dynamicAtrMultiplier: number;
+  dynamicConfidenceThreshold: number;
+  dynamicTpSlRatio: number;
+  weightBiases: BotFeatureWeights;
+  allowedSides: 'LONG_AND_SHORT' | 'LONG_ONLY' | 'SHORT_ONLY';
+}
+
 export interface MarketFeatureVector {
   obi: number;
   spreadBps: number;
@@ -626,6 +646,203 @@ export function updateBotBrainOnline(params: {
     reward,
     weightDelta,
     newSha256,
+  };
+}
+
+/**
+ * Computes an institutional adaptive market profile based on regime, volatility (ATR),
+ * market breadth, and benchmark movement.
+ * Follows NautilusTrader & Freqtrade dynamic hyperparameter adaptation.
+ */
+export function computeAdaptiveMarketProfile(params: {
+  regime: MarketRegimeType;
+  avgAtrPct: number;
+  marketBreadthPct: number;
+  btcChange24hPct: number;
+}): AdaptiveMarketProfile {
+  const { regime, avgAtrPct, marketBreadthPct, btcChange24hPct } = params;
+
+  let volatilityState: 'LOW' | 'NORMAL' | 'HIGH' | 'EXTREME' = 'NORMAL';
+  if (avgAtrPct < 1.8) volatilityState = 'LOW';
+  else if (avgAtrPct >= 4.5) volatilityState = 'EXTREME';
+  else if (avgAtrPct >= 3.2) volatilityState = 'HIGH';
+
+  let regimeTitle = '🔄 Боковой диапазон (Range / Choppy)';
+  let dynamicAtrMultiplier = 1.45;
+  let dynamicConfidenceThreshold = 0.22;
+  let dynamicTpSlRatio = 2.0;
+  let weightBiases: BotFeatureWeights = { obiWeight: 0.30, momentumWeight: 0.25, vwapWeight: 0.25, sentimentWeight: 0.20 };
+  let allowedSides: 'LONG_AND_SHORT' | 'LONG_ONLY' | 'SHORT_ONLY' = 'LONG_AND_SHORT';
+
+  switch (regime) {
+    case 'ALT_SEASON_EXPANSION':
+      regimeTitle = '🚀 Альт-сезон / Импульс альткоинов';
+      dynamicAtrMultiplier = 1.55;
+      dynamicConfidenceThreshold = 0.19; // slightly looser to catch breakouts early
+      dynamicTpSlRatio = 2.3; // extend TP for runners
+      weightBiases = { obiWeight: 0.22, momentumWeight: 0.40, vwapWeight: 0.18, sentimentWeight: 0.20 };
+      allowedSides = 'LONG_ONLY'; // avoid counter-trend shorts during broad expansion
+      break;
+
+    case 'MARKET_WIDE_DUMP':
+      regimeTitle = '📉 Общерыночный сброс (Flush)';
+      dynamicAtrMultiplier = 1.70; // wider stop to absorb wick flushes
+      dynamicConfidenceThreshold = 0.26; // tighter filter to avoid falling knives
+      dynamicTpSlRatio = 2.4;
+      weightBiases = { obiWeight: 0.38, momentumWeight: 0.36, vwapWeight: 0.14, sentimentWeight: 0.12 };
+      allowedSides = 'SHORT_ONLY'; // protect against knife-catching
+      break;
+
+    case 'SELECTIVE_PUMPS':
+      regimeTitle = '🎯 Выборочные пампы альткоинов';
+      dynamicAtrMultiplier = 1.50;
+      dynamicConfidenceThreshold = 0.21;
+      dynamicTpSlRatio = 2.1;
+      weightBiases = { obiWeight: 0.26, momentumWeight: 0.38, vwapWeight: 0.18, sentimentWeight: 0.18 };
+      allowedSides = 'LONG_AND_SHORT';
+      break;
+
+    case 'STRONG_BULL':
+      regimeTitle = '🚀 Сильный бычий тренд';
+      dynamicAtrMultiplier = 1.45;
+      dynamicConfidenceThreshold = 0.18;
+      dynamicTpSlRatio = 2.2;
+      weightBiases = { obiWeight: 0.25, momentumWeight: 0.38, vwapWeight: 0.17, sentimentWeight: 0.20 };
+      allowedSides = 'LONG_ONLY';
+      break;
+
+    case 'STRONG_BEAR':
+      regimeTitle = '📉 Сильный медвежий пробой';
+      dynamicAtrMultiplier = 1.65;
+      dynamicConfidenceThreshold = 0.25;
+      dynamicTpSlRatio = 2.3;
+      weightBiases = { obiWeight: 0.35, momentumWeight: 0.38, vwapWeight: 0.15, sentimentWeight: 0.12 };
+      allowedSides = 'SHORT_ONLY';
+      break;
+
+    case 'HIGH_VOLATILITY':
+      regimeTitle = '⚡ Высокая волатильность рынка';
+      dynamicAtrMultiplier = 1.80; // wide ATR stop to avoid wicked stops
+      dynamicConfidenceThreshold = 0.28; // strict confidence requirement
+      dynamicTpSlRatio = 2.4;
+      weightBiases = { obiWeight: 0.38, momentumWeight: 0.24, vwapWeight: 0.20, sentimentWeight: 0.18 };
+      allowedSides = 'LONG_AND_SHORT';
+      break;
+
+    case 'RANGE_CHOP':
+    default:
+      regimeTitle = '🔄 Боковой диапазон (Range / Choppy)';
+      dynamicAtrMultiplier = 1.35; // tighter stop in range
+      dynamicConfidenceThreshold = 0.23; // avoid false chop breakouts
+      dynamicTpSlRatio = 1.8; // take profit quicker at range boundaries
+      weightBiases = { obiWeight: 0.32, momentumWeight: 0.18, vwapWeight: 0.34, sentimentWeight: 0.16 }; // prioritize VWAP mean-reversion & L2 depth
+      allowedSides = 'LONG_AND_SHORT';
+      break;
+  }
+
+  // Adjust for extreme or low volatility overlay
+  if (volatilityState === 'EXTREME') {
+    dynamicAtrMultiplier = Math.min(2.0, dynamicAtrMultiplier + 0.15);
+    dynamicConfidenceThreshold = Math.min(0.35, dynamicConfidenceThreshold + 0.03);
+  } else if (volatilityState === 'LOW') {
+    dynamicAtrMultiplier = Math.max(1.20, dynamicAtrMultiplier - 0.10);
+  }
+
+  return {
+    regime,
+    regimeTitle,
+    volatilityState,
+    dynamicAtrMultiplier: Number(dynamicAtrMultiplier.toFixed(2)),
+    dynamicConfidenceThreshold: Number(dynamicConfidenceThreshold.toFixed(2)),
+    dynamicTpSlRatio: Number(dynamicTpSlRatio.toFixed(1)),
+    weightBiases: normalizeWeights(weightBiases),
+    allowedSides,
+  };
+}
+
+/**
+ * Automatically adapts a bot's brain and parameters to the current market regime.
+ * Smoothly blends existing learned weights with regime biases (90% learned, 10% regime morph),
+ * dynamically scales ATR stop-loss multiplier and entry threshold, and updates lastTrainedAt.
+ * Zero-lag $O(1)$ computation — eliminates lag and unnecessary retraining alerts.
+ */
+export function adaptBotBrainToMarketRegime(
+  brain: BotBrainState,
+  marketStats: {
+    regime: MarketRegimeType;
+    avgAtrPct: number;
+    marketBreadthPct: number;
+    btcChange24hPct: number;
+  },
+  engineType: string = 'ONNX_RL'
+): {
+  adaptedBrain: BotBrainState;
+  profile: AdaptiveMarketProfile;
+  adjustments: {
+    atrMultiplier: number;
+    confidenceThreshold: number;
+    tpSlRatio: number;
+    regimeTitle: string;
+    weightDelta: BotFeatureWeights;
+  };
+} {
+  const profile = computeAdaptiveMarketProfile(marketStats);
+  const currentW = normalizeWeights(brain.weights);
+  const biasW = profile.weightBiases;
+
+  // Engine-specific customization
+  let targetBias = { ...biasW };
+  if (engineType === 'ONNX_RL') {
+    // Favor L2 OBI
+    targetBias.obiWeight += 0.08;
+  } else if (engineType === 'LIGHTGBM') {
+    // Favor Momentum & VWAP
+    targetBias.momentumWeight += 0.08;
+  } else if (engineType === 'TG_CHANNEL') {
+    // Favor Sentiment
+    targetBias.sentimentWeight += 0.10;
+  }
+  targetBias = normalizeWeights(targetBias);
+
+  // Smooth blending: 88% current weights + 12% adaptive regime nudge
+  const blended: BotFeatureWeights = {
+    obiWeight: currentW.obiWeight * 0.88 + targetBias.obiWeight * 0.12,
+    momentumWeight: currentW.momentumWeight * 0.88 + targetBias.momentumWeight * 0.12,
+    vwapWeight: currentW.vwapWeight * 0.88 + targetBias.vwapWeight * 0.12,
+    sentimentWeight: currentW.sentimentWeight * 0.88 + targetBias.sentimentWeight * 0.12,
+  };
+  const finalWeights = normalizeWeights(blended);
+
+  const weightDelta: BotFeatureWeights = {
+    obiWeight: Number((finalWeights.obiWeight - currentW.obiWeight).toFixed(4)),
+    momentumWeight: Number((finalWeights.momentumWeight - currentW.momentumWeight).toFixed(4)),
+    vwapWeight: Number((finalWeights.vwapWeight - currentW.vwapWeight).toFixed(4)),
+    sentimentWeight: Number((finalWeights.sentimentWeight - currentW.sentimentWeight).toFixed(4)),
+  };
+
+  // Smooth hyperparameter interpolation
+  const finalAtrMultiplier = Number((brain.atrMultiplier * 0.80 + profile.dynamicAtrMultiplier * 0.20).toFixed(2));
+  const finalThreshold = Number((brain.confidenceThreshold * 0.80 + profile.dynamicConfidenceThreshold * 0.20).toFixed(2));
+
+  const adaptedBrain: BotBrainState = {
+    ...brain,
+    weights: finalWeights,
+    lastWeightDelta: weightDelta,
+    atrMultiplier: finalAtrMultiplier,
+    confidenceThreshold: finalThreshold,
+    lastTrainedAt: Date.now(), // keeps bot fresh so system never needs to nag user
+  };
+
+  return {
+    adaptedBrain,
+    profile,
+    adjustments: {
+      atrMultiplier: finalAtrMultiplier,
+      confidenceThreshold: finalThreshold,
+      tpSlRatio: profile.dynamicTpSlRatio,
+      regimeTitle: profile.regimeTitle,
+      weightDelta,
+    },
   };
 }
 

@@ -200,8 +200,11 @@ export const AiArenaView: React.FC = () => {
   // Market Trend & Autonomous Retraining Recommendation Monitor
   const [trendAudit, setTrendAudit] = useState<{
     regime: string;
+    marketRegime?: string;
     regimeTitle: string;
     regimeSummary: string;
+    regimeDescription?: string;
+    recommendedCommand?: string;
     totalPairsScanned?: number;
     advancersCount?: number;
     declinersCount?: number;
@@ -216,8 +219,11 @@ export const AiArenaView: React.FC = () => {
     isRetrainingRecommended: boolean;
     retrainingReason: string;
     hoursSinceLastTrain: number;
-    recommendedCommand: string;
+    autoAdaptationActive?: boolean;
+    lastAutoAdaptedAt?: number;
   } | null>(null);
+  const [autoAdaptEnabled, setAutoAdaptEnabled] = useState<boolean>(true);
+  const [isSyncingAdapt, setIsSyncingAdapt] = useState<boolean>(false);
   const [isAuditingTrends, setIsAuditingTrends] = useState<boolean>(false);
   const [copiedCmd, setCopiedCmd] = useState<boolean>(false);
 
@@ -227,9 +233,64 @@ export const AiArenaView: React.FC = () => {
       if (res.ok) {
         const data = await res.json();
         setTrendAudit(data);
+        if (typeof data.autoAdaptationActive === 'boolean') {
+          setAutoAdaptEnabled(data.autoAdaptationActive);
+        }
       }
     } catch {
       // ignore
+    }
+  };
+
+  const handleToggleAutoAdapt = async () => {
+    const nextVal = !autoAdaptEnabled;
+    setAutoAdaptEnabled(nextVal);
+    try {
+      const res = await fetch('/api/bots/auto-adapt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: nextVal, syncNow: true }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.audit) setTrendAudit(data.audit);
+        fetchAgentsAndBots();
+        setPromotionStatus({
+          type: 'success',
+          text: nextVal
+            ? 'Авто-адаптация к рынку включена: боты будут непрерывно синхронизировать веса и пороги без задержек!'
+            : 'Авто-адаптация к рынку отключена.',
+        });
+      }
+    } catch (err: any) {
+      console.error(err);
+    }
+  };
+
+  const handleInstantAutoAdaptSync = async () => {
+    setIsSyncingAdapt(true);
+    try {
+      const res = await fetch('/api/bots/auto-adapt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ syncNow: true }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.audit) setTrendAudit(data.audit);
+        fetchAgentsAndBots();
+        setPromotionStatus({
+          type: 'success',
+          text: 'Параметры ботов мгновенно синхронизированы с текущим рынком без задержек (Zero-Lag Adaptation)!',
+        });
+      }
+    } catch (err: any) {
+      setPromotionStatus({
+        type: 'error',
+        text: `Ошибка синхронизации: ${err.message}`,
+      });
+    } finally {
+      setIsSyncingAdapt(false);
     }
   };
 
@@ -343,7 +404,7 @@ export const AiArenaView: React.FC = () => {
     fetchAgentsAndBots();
     fetchTrendAudit();
     const timer = setInterval(fetchAgentsAndBots, 2500);
-    const trendTimer = setInterval(fetchTrendAudit, 15000);
+    const trendTimer = setInterval(fetchTrendAudit, 45000);
     return () => {
       clearInterval(timer);
       clearInterval(trendTimer);
@@ -981,58 +1042,116 @@ export const AiArenaView: React.FC = () => {
           </div>
         )}
 
-        {/* Retraining Recommendation Decision Box */}
+        {/* Zero-Lag Adaptive Engine & Market Regime Control */}
         {trendAudit && (
-          <div
-            className={`p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
-              trendAudit.isRetrainingRecommended
-                ? 'bg-amber-950/30 border-amber-500/40 text-amber-200'
-                : 'bg-emerald-950/20 border-emerald-500/30 text-emerald-200'
-            }`}
-          >
-            <div className="flex items-start gap-2.5 min-w-0">
-              {trendAudit.isRetrainingRecommended ? (
-                <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-              ) : (
-                <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-              )}
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-white">
-                    {trendAudit.isRetrainingRecommended
-                      ? '⚠️ РЕКОМЕНДУЕТСЯ ПЕРЕКАЛИБРОВКА ВЕСОВ НА СВЕЖИХ ДАННЫХ'
-                      : '✅ Веса стратегий актуальны (рыночный режим стабилен)'}
-                  </span>
-                  <span className="text-[10px] font-mono text-slate-400">
-                    (калибровка: {trendAudit.hoursSinceLastTrain}ч назад)
-                  </span>
+          <div className="space-y-2.5">
+            <div
+              className={`p-3.5 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-3 ${
+                autoAdaptEnabled
+                  ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-200'
+                  : 'bg-amber-950/25 border-amber-500/40 text-amber-200'
+              }`}
+            >
+              <div className="flex items-start gap-3 min-w-0">
+                <div
+                  className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border mt-0.5 ${
+                    autoAdaptEnabled
+                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400'
+                      : 'bg-amber-500/15 border-amber-500/40 text-amber-400'
+                  }`}
+                >
+                  <Cpu className="w-5 h-5" />
                 </div>
-                <p className="text-[11px] text-slate-300 mt-0.5 leading-relaxed">
-                  {trendAudit.retrainingReason}
-                </p>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-bold text-white tracking-wide">
+                      {autoAdaptEnabled
+                        ? 'АВТОМАТИЧЕСКАЯ АДАПТАЦИЯ К РЫНКУ (Zero-Lag Adaptive Engine)'
+                        : 'АВТО-АДАПТАЦИЯ ОТКЛЮЧЕНА (Ручной режим)'}
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase font-mono tracking-wider border ${
+                        (trendAudit.marketRegime || trendAudit.regime) === 'ALT_SEASON_MOMENTUM' || (trendAudit.marketRegime || trendAudit.regime) === 'ALT_SEASON_EXPANSION'
+                          ? 'bg-purple-950/60 border-purple-500/40 text-purple-300'
+                          : (trendAudit.marketRegime || trendAudit.regime) === 'HIGH_VOLATILITY_EXPANSION' || (trendAudit.marketRegime || trendAudit.regime) === 'HIGH_VOLATILITY'
+                          ? 'bg-rose-950/60 border-rose-500/40 text-rose-300'
+                          : (trendAudit.marketRegime || trendAudit.regime) === 'MARKET_DUMP' || (trendAudit.marketRegime || trendAudit.regime) === 'MARKET_WIDE_DUMP'
+                          ? 'bg-red-950/60 border-red-500/40 text-red-300'
+                          : 'bg-cyan-950/60 border-cyan-500/40 text-cyan-300'
+                      }`}
+                    >
+                      {trendAudit.regimeTitle || trendAudit.marketRegime || trendAudit.regime || 'RANGE_CHOP'}
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-400">
+                      (калибровка: {trendAudit.hoursSinceLastTrain}ч назад)
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-300 mt-1 leading-relaxed">
+                    {autoAdaptEnabled
+                      ? trendAudit.regimeSummary ||
+                        trendAudit.regimeDescription ||
+                        'Веса факторов, пороги входа и ATR-мультипликатор плавно балансируются под текущую фазу рынка без задержек и перезагрузок.'
+                      : trendAudit.retrainingReason}
+                  </p>
+                </div>
+              </div>
+
+              {/* Action Controls */}
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {/* Auto-Adapt Toggle */}
+                <button
+                  type="button"
+                  onClick={handleToggleAutoAdapt}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition flex items-center gap-1.5 shadow-sm ${
+                    autoAdaptEnabled
+                      ? 'bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-500/50 text-emerald-300'
+                      : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-300'
+                  }`}
+                  title="Включить / отключить автоматическую адаптацию параметров ботов к рынку"
+                >
+                  <Zap className={`w-3.5 h-3.5 ${autoAdaptEnabled ? 'text-emerald-400' : 'text-slate-400'}`} />
+                  <span>{autoAdaptEnabled ? 'Авто-адаптация ВКЛ' : 'Включить авто'}</span>
+                </button>
+
+                {/* Instant Sync Button */}
+                <button
+                  type="button"
+                  onClick={handleInstantAutoAdaptSync}
+                  disabled={isSyncingAdapt}
+                  className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-semibold rounded-lg text-xs transition flex items-center gap-1.5 shadow-sm"
+                  title="Немедленно обновить профили и веса всех ботов под текущий режим"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncingAdapt ? 'animate-spin' : ''}`} />
+                  <span>{isSyncingAdapt ? 'Синхронизация...' : 'Синхронизировать'}</span>
+                </button>
+
+                {/* Copy Terminal Command for offline deep historical backtesting */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const cmd = trendAudit.recommendedCommand || 'python3 scripts/train_pc.py --epochs 5';
+                    navigator.clipboard.writeText(cmd);
+                    setCopiedCmd(true);
+                    setTimeout(() => setCopiedCmd(false), 2000);
+                  }}
+                  className="px-2.5 py-1.5 bg-black/60 hover:bg-black/80 border border-white/[0.08] text-slate-300 hover:text-white rounded-lg text-xs font-mono transition flex items-center gap-1 shrink-0"
+                  title="Скопировать команду глубокого обучения для ПК"
+                >
+                  {copiedCmd ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Terminal className="w-3.5 h-3.5 text-slate-400" />}
+                  <span>{copiedCmd ? 'Скопировано!' : 'train_pc.py'}</span>
+                </button>
               </div>
             </div>
 
-            {/* Copy Command Button for train_pc.py */}
-            <div className="flex items-center gap-2 shrink-0">
-              <div className="flex items-center gap-1.5 bg-black/60 px-2.5 py-1.5 rounded-lg border border-white/[0.08] text-[11px] font-mono text-cyan-300 max-w-xs truncate">
-                <Terminal className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                <span className="truncate">python3 scripts/train_pc.py...</span>
+            {/* Offline warning if auto-adaptation is intentionally turned off */}
+            {!autoAdaptEnabled && trendAudit.isRetrainingRecommended && (
+              <div className="px-3 py-2 rounded-lg bg-amber-950/40 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>
+                  Авто-адаптация отключена: рекомендуется запустить калибровку на ПК или включить автоматическую адаптацию.
+                </span>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  navigator.clipboard.writeText(trendAudit.recommendedCommand);
-                  setCopiedCmd(true);
-                  setTimeout(() => setCopiedCmd(false), 2000);
-                }}
-                className="px-3 py-1.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold rounded-lg text-xs font-mono transition flex items-center gap-1 shadow-sm shrink-0"
-                title="Скопировать команду для терминала"
-              >
-                {copiedCmd ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copiedCmd ? 'Скопировано!' : 'Команда для ПК'}</span>
-              </button>
-            </div>
+            )}
           </div>
         )}
       </div>
