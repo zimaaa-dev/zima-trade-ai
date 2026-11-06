@@ -4151,8 +4151,9 @@ async function runBotEngineCycle() {
           }
         }
 
-        // 2c. Hummingbot V2 / Jesse High-Water-Mark (HWM) Dynamic Trailing Stop
-        // Tracks `pos.peakPrice` on every tick and locks 60% of peak excursion once >= 0.65% from entry, with a 0.18% fee-safe Break-Even floor
+        // 2c. Institutional Dynamic Trailing Stop (Freqtrade trailing_stop_positive_offset = 1.85%)
+        // Only activates after price reaches at least +1.85% favorable excursion to let the trade breathe and reach full TP.
+        // Once active, ratchets Stop-Loss with 0.55% fee/profit cushion and locks 65% of peak excursion.
         const trailUpdate = computeTrailingStopPrice({
           side: pos.side,
           entryPrice: pos.entryVwap,
@@ -4160,9 +4161,9 @@ async function runBotEngineCycle() {
           currentSlPrice: pos.slPrice,
           previousPeakPrice: pos.peakPrice,
           priceDecimals,
-          activationPct: 0.65,
-          feeBufferPct: 0.18,
-          lockFraction: 0.60,
+          activationPct: 1.85,
+          feeBufferPct: 0.55,
+          lockFraction: 0.65,
         });
         pos.peakPrice = trailUpdate.newPeakPrice;
         if (trailUpdate.updated) {
@@ -4261,15 +4262,19 @@ async function runBotEngineCycle() {
     }
 
     // 4. Autonomous Multi-Factor Institutional Bot Decision Generation
-    if (systemState.activePositions.length < 6) {
+    const effectiveCap = Math.max(1, systemState.capitalUsdt + systemState.totalRealizedPnlUsdt);
+    // On micro-balances (<= $50 USDT), strictly limit to 2 concurrent positions (Freqtrade Best Practice to avoid capital fragmentation)
+    const maxAllowedOpenPositions = effectiveCap <= 50 ? 2 : effectiveCap <= 200 ? 3 : 5;
+
+    if (systemState.activePositions.length < maxAllowedOpenPositions) {
       const activeBots = systemState.agents.filter(
         (a) =>
           a.isEnabled !== false &&
           (a.mode === 'SHADOW' || a.mode === 'LIVE' || a.mode === 'QUARANTINE') &&
-          systemState.activePositions.filter((p) => p.botId === a.agentId).length < (a.maxConcurrentPositions || 2)
+          systemState.activePositions.filter((p) => p.botId === a.agentId).length < (effectiveCap <= 50 ? 1 : a.maxConcurrentPositions || 2)
       );
 
-      if (activeBots.length > 0 && systemState.activePositions.length < 6) {
+      if (activeBots.length > 0 && systemState.activePositions.length < maxAllowedOpenPositions) {
         // Weighted selection favoring bots with higher Sharpe / cumulative RL reward
         const sortedBots = [...activeBots].sort(
           (a, b) => (b.brain?.cumulativeReward || 0) - (a.brain?.cumulativeReward || 0)
@@ -4280,13 +4285,20 @@ async function runBotEngineCycle() {
           actingBot.brain = createDefaultBotBrain(actingBot.engineType, actingBot.agentId);
         }
 
-        // Dynamic Multi-Pair Trend Scanner Universe (liquid altcoin & momentum pairs >= $3M 24h turnover & fair spread):
-        const noisyLowTierBlacklist = new Set(['ESPORTSUSDT', 'APRUSDT', 'TRUMPUSDT']);
+        // Institutional Liquidity Universe: exclude stock perps, pre-market tokens, and illiquid wide-spread meme coins
+        const noisyLowTierBlacklist = new Set([
+          'ESPORTSUSDT', 'APRUSDT', 'TRUMPUSDT', 'SOXLUSDT', 'TQQQUSDT',
+          'AMDSTOCKUSDT', 'NBISUSDT', 'SNDKUSDT', 'APPSTOCKUSDT', 'CASHCATUSDT',
+          'CLANKERUSDT', 'PONSUSDT', 'CAPUSDT', 'EVAAUSDT', 'MUUUSDT', 'JCTUSDT'
+        ]);
         const liquidScreenerPairs = systemState.screenerSymbols.filter(
           (s) =>
             !noisyLowTierBlacklist.has(s.symbol) &&
-            (s.spreadBps || 1) <= Math.min(22.0, actingBot.brain?.maxSpreadBps || 25.0) &&
-            (s.turnover24h || 0) >= 3000000
+            !s.symbol.includes('STOCK') &&
+            !s.symbol.startsWith('1000000') &&
+            s.symbol.length <= 11 &&
+            (s.spreadBps || 1) <= Math.min(8.5, actingBot.brain?.maxSpreadBps || 10.0) &&
+            (s.turnover24h || 0) >= 12000000
         );
 
         // 2. Sort candidates by 24h Trend Momentum (absolute % change & volume)
@@ -4296,14 +4308,14 @@ async function runBotEngineCycle() {
           return bTrend - aTrend;
         });
 
-        // Pick top 25 hottest trending breakout pairs (gainers + dump breakdowns)
-        const topTrendingSymbols = trendingSorted.slice(0, 25).map((s) => s.symbol);
+        // Pick top 15 institutional liquid trending breakout pairs
+        const topTrendingSymbols = trendingSorted.slice(0, 15).map((s) => s.symbol);
 
-        // 3. Base configured symbols for the bot
+        // 3. Base configured symbols for the bot (institutional core only)
         const baseAllowedSymbols: string[] =
           Array.isArray(actingBot.allowedSymbols) && actingBot.allowedSymbols.length > 0
-            ? actingBot.allowedSymbols.filter((s: string) => !noisyLowTierBlacklist.has(s))
-            : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'SUIUSDT', 'NEARUSDT', 'DOGEUSDT', 'PEPEUSDT', 'AVAXUSDT', 'RENDERUSDT', 'TIAUSDT'];
+            ? actingBot.allowedSymbols.filter((s: string) => !noisyLowTierBlacklist.has(s) && !s.includes('STOCK'))
+            : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'NEARUSDT', 'SUIUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'XRPUSDT', 'ENAUSDT'];
 
         // 4. Combine base symbols with top trending breakout pairs from Bybit L2 screener
         const isDynamicScanEnabled =
@@ -4421,6 +4433,42 @@ async function runBotEngineCycle() {
         }
 
         const side: 'LONG' | 'SHORT' = evalResult.action;
+
+        // Institutional Market Regime Filter (Freqtrade DirectionFilter / NautilusTrader):
+        // Strict protection against catching falling knives or shorting raging bull runs
+        if (
+          side === 'LONG' &&
+          (systemState.currentMarketRegime === 'MARKET_WIDE_DUMP' || systemState.currentMarketRegime === 'STRONG_BEAR')
+        ) {
+          addBotLog({
+            botId: actingBot.agentId,
+            botName: actingBot.name,
+            action: 'RISK_GUARD',
+            symbol: targetSymbol,
+            side,
+            price: bestBid,
+            message: `Блокировка по режиму рынка: ${systemState.currentMarketRegime} запрещает покупки (LONG). Допустимы только SHORT.`,
+            rttMs: systemState.pings.bybit,
+          });
+          return;
+        }
+
+        if (
+          side === 'SHORT' &&
+          (systemState.currentMarketRegime === 'ALT_SEASON_EXPANSION' || systemState.currentMarketRegime === 'STRONG_BULL')
+        ) {
+          addBotLog({
+            botId: actingBot.agentId,
+            botName: actingBot.name,
+            action: 'RISK_GUARD',
+            symbol: targetSymbol,
+            side,
+            price: bestBid,
+            message: `Блокировка по режиму рынка: ${systemState.currentMarketRegime} запрещает продажи (SHORT). Допустимы только LONG.`,
+            rttMs: systemState.pings.bybit,
+          });
+          return;
+        }
 
         // Anti-Self-Hedge / Cross-Bot Conflict Check: prevent opening opposite side on same symbol
         const conflictingPos = systemState.activePositions.find(
@@ -4555,9 +4603,11 @@ async function runBotEngineCycle() {
 
         const qty = l2Exec.executedQty;
         const entryPrice = l2Exec.vwapPrice;
+        // Freqtrade / Van Tharp Expectancy: TP1 must be at least 1.85x SL distance (positive mathematical expectation)
+        const effectiveTpRatio = Math.max(1.85, botTpSlRatio || 2.0);
         const actualSlPrice = side === 'LONG' ? entryPrice - slDist : entryPrice + slDist;
-        const tp1Price = side === 'LONG' ? entryPrice + slDist * Math.min(botTpSlRatio, 1.25) : entryPrice - slDist * Math.min(botTpSlRatio, 1.25);
-        const tp2Price = side === 'LONG' ? entryPrice + slDist * (botTpSlRatio * 1.55) : entryPrice - slDist * (botTpSlRatio * 1.55);
+        const tp1Price = side === 'LONG' ? entryPrice + slDist * effectiveTpRatio : entryPrice - slDist * effectiveTpRatio;
+        const tp2Price = side === 'LONG' ? entryPrice + slDist * (effectiveTpRatio * 1.65) : entryPrice - slDist * (effectiveTpRatio * 1.65);
 
         const tp1Qty = Number((Math.floor((qty * 0.6) / inst.qtyStep) * inst.qtyStep).toFixed(qtyDecimals));
         const tp2Qty = Number(Math.max(0, qty - tp1Qty).toFixed(qtyDecimals));

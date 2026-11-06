@@ -375,13 +375,13 @@ export const AiArenaView: React.FC = () => {
               next[a.agentId] = {
                 riskPerTradePct: a.riskPerTradePct ?? 1.5,
                 leverage: a.leverage ?? 10,
-                tpSlRatio: a.tpSlRatio ?? 1.8,
+                tpSlRatio: a.tpSlRatio ?? 2.0,
                 maxConcurrentPositions: a.maxConcurrentPositions ?? 2,
                 allowedSymbols:
                   Array.isArray(a.allowedSymbols) && a.allowedSymbols.length > 0
                     ? a.allowedSymbols
-                    : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
-                confidenceThreshold: a.brain?.confidenceThreshold ?? 0.21,
+                    : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'NEARUSDT', 'SUIUSDT', 'DOGEUSDT', 'AVAXUSDT'],
+                confidenceThreshold: a.brain?.confidenceThreshold ?? 0.22,
                 atrMultiplier: a.brain?.atrMultiplier ?? 1.45,
                 learningRate: a.brain?.learningRate ?? 0.06,
                 dynamicScreenerScan: a.dynamicScreenerScan ?? true,
