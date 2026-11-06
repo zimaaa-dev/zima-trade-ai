@@ -5393,10 +5393,13 @@ function buildWalletRiskTelemetry(summary: ReturnType<typeof calculatePortfolioS
   const remainingDrawdownBufferUsdt = Number(Math.max(0, maxAllowedLossUsdt - currentLossUsdt).toFixed(2));
   const drawdownProximityPct = Number(Math.min(100, (rawDrawdownPct / maxDailyDrawdownLimitPct) * 100).toFixed(1));
 
-  // Market spreads across screened pairs with subtle live micro-fluctuation
+  // Market spreads across whitelisted institutional pairs
   const warningSpreadBps = 10.0;
   const limitSpreadBps = 15.0;
-  const marketSpreads = systemState.screenerSymbols.map((item) => {
+  const whitelistedScreenerItems = systemState.screenerSymbols.filter((item) =>
+    INSTITUTIONAL_WHITELIST_SET.has(item.symbol)
+  );
+  const marketSpreads = (whitelistedScreenerItems.length > 0 ? whitelistedScreenerItems : systemState.screenerSymbols.slice(0, 10)).map((item) => {
     const jitter = Math.sin(Date.now() / 12000 + item.symbol.length) * 0.35;
     let liveSpreadBps = Number(Math.max(0.5, item.spreadBps + jitter).toFixed(1));
 
