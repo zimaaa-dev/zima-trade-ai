@@ -4287,9 +4287,10 @@ async function runBotEngineCycle() {
 
         // Institutional Liquidity Universe: exclude stock perps, pre-market tokens, and illiquid wide-spread meme coins
         const noisyLowTierBlacklist = new Set([
-          'ESPORTSUSDT', 'APRUSDT', 'TRUMPUSDT', 'SOXLUSDT', 'TQQQUSDT',
-          'AMDSTOCKUSDT', 'NBISUSDT', 'SNDKUSDT', 'APPSTOCKUSDT', 'CASHCATUSDT',
-          'CLANKERUSDT', 'PONSUSDT', 'CAPUSDT', 'EVAAUSDT', 'MUUUSDT', 'JCTUSDT'
+          'ESPORTSUSDT', 'APRUSDT', 'TRUMPUSDT', 'SOXLUSDT', 'SOXSUSDT', 'TQQQUSDT', 'SQQQUSDT',
+          'AMDSTOCKUSDT', 'NBISUSDT', 'SNDKUSDT', 'APPSTOCKUSDT', 'CASHCATUSDT', 'MUUSDT',
+          'SPCXUSDT', 'SKHYNIXUSDT', 'TSLAUSDT', 'NVDAUSDT', 'AAPLUSDT', 'COINUSDT', 'MSTRUSDT',
+          'ARMUSDT', 'WDCUSDT', 'CLANKERUSDT', 'PONSUSDT', 'CAPUSDT', 'EVAAUSDT', 'MUUUSDT', 'JCTUSDT'
         ]);
         const liquidScreenerPairs = systemState.screenerSymbols.filter(
           (s) =>
@@ -4297,8 +4298,8 @@ async function runBotEngineCycle() {
             !s.symbol.includes('STOCK') &&
             !s.symbol.startsWith('1000000') &&
             s.symbol.length <= 11 &&
-            (s.spreadBps || 1) <= Math.min(8.5, actingBot.brain?.maxSpreadBps || 10.0) &&
-            (s.turnover24h || 0) >= 12000000
+            (s.spreadBps || 1) <= Math.min(10.0, actingBot.brain?.maxSpreadBps || 12.0) &&
+            (s.turnover24h || 0) >= 8000000
         );
 
         // 2. Sort candidates by 24h Trend Momentum (absolute % change & volume)
@@ -4308,14 +4309,14 @@ async function runBotEngineCycle() {
           return bTrend - aTrend;
         });
 
-        // Pick top 15 institutional liquid trending breakout pairs
-        const topTrendingSymbols = trendingSorted.slice(0, 15).map((s) => s.symbol);
+        // Pick top 25 institutional liquid trending breakout pairs across the whole crypto market
+        const topTrendingSymbols = trendingSorted.slice(0, 25).map((s) => s.symbol);
 
-        // 3. Base configured symbols for the bot (institutional core only)
+        // 3. Base configured symbols for the bot (institutional core + major altcoins)
         const baseAllowedSymbols: string[] =
           Array.isArray(actingBot.allowedSymbols) && actingBot.allowedSymbols.length > 0
             ? actingBot.allowedSymbols.filter((s: string) => !noisyLowTierBlacklist.has(s) && !s.includes('STOCK'))
-            : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'NEARUSDT', 'SUIUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'XRPUSDT', 'ENAUSDT'];
+            : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'NEARUSDT', 'SUIUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'XRPUSDT', 'ENAUSDT', 'ONDOUSDT', 'AAVEUSDT', 'INJUSDT', 'FETUSDT', 'APTUSDT', 'ARBUSDT', 'OPUSDT', 'TIAUSDT', 'RENDERUSDT', 'ADAUSDT'];
 
         // 4. Combine base symbols with top trending breakout pairs from Bybit L2 screener
         const isDynamicScanEnabled =
