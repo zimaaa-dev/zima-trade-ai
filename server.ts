@@ -3802,8 +3802,8 @@ function recordClosedPosition(
     const prevCd = symbolCooldowns[pos.symbol];
     if (exitReason === 'SL_HIT' && trade.netPnlUsdt < 0) {
       const nextConsecutiveSl = (prevCd?.consecutiveSlCount || 0) + 1;
-      // 10 min cooldown after 1st SL; 25 min StoplossGuard after 2+ consecutive SLs on the same coin
-      const cooldownMs = nextConsecutiveSl >= 2 ? 25 * 60 * 1000 : 10 * 60 * 1000;
+      // 45 min cooldown after 1st SL; 90 min StoplossGuard after 2+ consecutive SLs on the same coin
+      const cooldownMs = nextConsecutiveSl >= 2 ? 90 * 60 * 1000 : 45 * 60 * 1000;
       symbolCooldowns[pos.symbol] = {
         symbol: pos.symbol,
         untilTs: nowTs + cooldownMs,
@@ -3812,10 +3812,10 @@ function recordClosedPosition(
         lastClosedAt: nowTs,
       };
     } else if (exitReason === 'TP_HIT' || trade.netPnlUsdt >= 0) {
-      // 90s post-TP cooldown to prevent FOMO re-entry on the exact same candle spike
+      // 25 min post-win cooldown (Freqtrade NFI standard) to prevent re-entering at the top of the same wave
       symbolCooldowns[pos.symbol] = {
         symbol: pos.symbol,
-        untilTs: nowTs + 90 * 1000,
+        untilTs: nowTs + 25 * 60 * 1000,
         lastExitReason: exitReason,
         consecutiveSlCount: 0,
         lastClosedAt: nowTs,
@@ -4020,6 +4020,16 @@ function addBotLog(entry: {
 
 let tournamentScanCursor = 0;
 
+// Strict Institutional Top-20 Crypto Majors Whitelist (Passivbot / Freqtrade NFI Standard)
+// Completely eliminates newly listed meme coins, pre-market tokens, and US stock synthetics.
+const INSTITUTIONAL_CRYPTO_WHITELIST = [
+  'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT',
+  'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'SUIUSDT',
+  'NEARUSDT', 'LTCUSDT', 'BCHUSDT', 'DOTUSDT', 'UNIUSDT',
+  'AAVEUSDT', 'APTUSDT', 'INJUSDT', 'ARBUSDT', 'OPUSDT',
+];
+const INSTITUTIONAL_WHITELIST_SET = new Set(INSTITUTIONAL_CRYPTO_WHITELIST);
+
 // Autonomous Bot Trading Engine for Mode 1 (Shadow Forward-Testing)
 async function runBotEngineCycle() {
   if (!systemState.botTradingEnabled || systemState.isKillSwitchActive) {
@@ -4059,8 +4069,8 @@ async function runBotEngineCycle() {
           const slTag = pos.isTrailing
             ? 'Трейлинг-Стоп HWM (защита профита)'
             : pos.isBreakEven
-            ? 'Стоп в Безубытке (Break-Even защита)'
-            : 'Адаптивный ATR Stop-Loss';
+            ? 'Стоп в Безубытке после TP1'
+            : 'Структурный ATR Stop-Loss';
 
           addBotLog({
             botId: pos.botId || 'agent-risk-firewall',
@@ -4102,8 +4112,8 @@ async function runBotEngineCycle() {
                 pos.tpGrid[0].qty = remainingQty;
               }
 
-              // Move SL to Break-Even + 0.18% fee/profit cushion
-              const beBuffer = pos.entryVwap * 0.0018 * dirSign;
+              // Move SL to Break-Even + 0.20% fee/profit cushion ONLY AFTER TP1 IS SECURED
+              const beBuffer = pos.entryVwap * 0.0020 * dirSign;
               pos.slPrice = Number((pos.entryVwap + beBuffer).toFixed(priceDecimals));
               pos.isBreakEven = true;
               pos.unrealizedPnl = Number((diff * pos.qty).toFixed(2));
@@ -4116,7 +4126,7 @@ async function runBotEngineCycle() {
                 side: pos.side,
                 price: pos.currentPrice,
                 pnl: partialTrade.netPnlUsdt,
-                message: `Частичный фиксаж TP1 (60% объема) по ${pos.symbol} на $${targetTp.price.toFixed(priceDecimals)}: зафиксировано +$${partialTrade.netPnlUsdt.toFixed(2)} USDT! Стоп-лосс остатка переведен в Безубыток ($${pos.slPrice.toFixed(priceDecimals)}).`,
+                message: `Частичный фиксаж TP1 (60% объема) по ${pos.symbol} на $${targetTp.price.toFixed(priceDecimals)}: зафиксировано +$${partialTrade.netPnlUsdt.toFixed(2)} USDT! Стоп-лосс остатка (40%) переведен в Безубыток ($${pos.slPrice.toFixed(priceDecimals)}).`,
                 rttMs: systemState.pings.bybit,
               });
 
@@ -4154,23 +4164,8 @@ async function runBotEngineCycle() {
           }
         }
 
-        // 2c-I. Stage 1 Stepped Break-Even Protection at +0.90R (Freqtrade custom_stoploss):
-        // Prevents a winning trade that reached +0.90R from ever reversing into a full -1.0R Stop-Loss,
-        // while keeping SL at Entry + 0.16% (wide enough to breathe through normal pullbacks).
-        const initialSlDist = Math.abs(pos.entryVwap - pos.slPrice);
-        const favorableExcursion = (pos.currentPrice - pos.entryVwap) * dirSign;
-        const minBeTriggerMove = Math.max(pos.entryVwap * 0.0068, initialSlDist * 0.90);
-        if (!pos.isBreakEven && !pos.isTrailing && favorableExcursion >= minBeTriggerMove) {
-          const beSlPrice = Number((pos.entryVwap * (1 + 0.0016 * dirSign)).toFixed(priceDecimals));
-          const isBetterSl = pos.side === 'LONG' ? beSlPrice > pos.slPrice : beSlPrice < pos.slPrice;
-          if (isBetterSl) {
-            pos.slPrice = beSlPrice;
-            pos.isBreakEven = true;
-          }
-        }
-
-        // 2c-II. Stage 2 Institutional Dynamic Trailing Stop (Freqtrade trailing_stop_positive_offset = 1.65%)
-        // Activates after price reaches at least +1.65% favorable excursion to lock 65% of peak impulse.
+        // 2c. Institutional Dynamic Trailing Stop (Freqtrade trailing_stop_positive_offset = 2.10%)
+        // Never chokes a trade before TP1! Activates only on strong trend extensions (+2.10% move).
         const trailUpdate = computeTrailingStopPrice({
           side: pos.side,
           entryPrice: pos.entryVwap,
@@ -4178,8 +4173,8 @@ async function runBotEngineCycle() {
           currentSlPrice: pos.slPrice,
           previousPeakPrice: pos.peakPrice,
           priceDecimals,
-          activationPct: 1.65,
-          feeBufferPct: 0.45,
+          activationPct: 2.10,
+          feeBufferPct: 0.65,
           lockFraction: 0.65,
         });
         pos.peakPrice = trailUpdate.newPeakPrice;
@@ -4187,35 +4182,6 @@ async function runBotEngineCycle() {
           pos.slPrice = trailUpdate.newSlPrice;
           pos.isBreakEven = true;
           pos.isTrailing = true;
-        }
-
-        // 2d. Fee-Aware Intraday Scalp Profit-Lock & Stale Position Expiration Guard
-        const holdDurationMs = Date.now() - (pos.openedAt || Date.now());
-        const estimatedRoundTripFeeUsdt = pos.qty * pos.entryVwap * 0.0011;
-        const netUnrealizedPnl = pos.unrealizedPnl - estimatedRoundTripFeeUsdt;
-        const isStaleTimeout = holdDurationMs >= 55 * 60 * 1000 && netUnrealizedPnl > -25.0; // 55m rotation only when near flat/profitable
-        const isQuickProfitSecured = holdDurationMs >= 18 * 60 * 1000 && netUnrealizedPnl >= 18.0; // lock in >= $18 NET profit (after taker fees) after 18m
-
-        if (isStaleTimeout || isQuickProfitSecured) {
-          systemState.activePositions.splice(i, 1);
-          const exitReason = netUnrealizedPnl >= 0 ? 'TP_HIT' : 'MANUAL_CLOSE';
-          const tradeRecord = recordClosedPosition(pos, pos.currentPrice, exitReason);
-          const reasonMsg = isQuickProfitSecured
-            ? `Динамическая фиксация чистого профита (+${tradeRecord.netPnlUsdt.toFixed(2)} USDT после комиссий, удержание ${Math.round(holdDurationMs / 60000)}м)`
-            : `Ротация капитала по тайм-ауту удержания (>55м). Чистый итог: ${tradeRecord.netPnlUsdt >= 0 ? '+' : ''}${tradeRecord.netPnlUsdt.toFixed(2)} USDT.`;
-
-          addBotLog({
-            botId: pos.botId || 'agent-risk-firewall',
-            botName: pos.botName || 'Execution Engine',
-            action: exitReason,
-            symbol: pos.symbol,
-            side: pos.side,
-            price: pos.currentPrice,
-            pnl: tradeRecord.netPnlUsdt,
-            message: `${reasonMsg} по ${pos.symbol}.`,
-            rttMs: systemState.pings.bybit,
-          });
-          continue;
         }
       }
     }
@@ -4278,9 +4244,9 @@ async function runBotEngineCycle() {
       }
     }
 
-    // 4. Autonomous Multi-Factor Institutional Bot Decision Generation (Zero Randomness — Multi-Symbol Tournament Scanner)
+    // 4. Autonomous Freqtrade NFI / Passivbot Trend-Pullback Scanner (Strict Top-20 Crypto Majors Whitelist)
     const effectiveCap = Math.max(1, systemState.capitalUsdt + systemState.totalRealizedPnlUsdt);
-    // On micro-balances (<= $50 USDT), strictly limit to 2 concurrent positions (Freqtrade Best Practice to avoid capital fragmentation)
+    // On micro-balances (<= $50 USDT), strictly limit to 2 concurrent positions to prevent margin fragmentation
     const maxAllowedOpenPositions = effectiveCap <= 50 ? 2 : effectiveCap <= 200 ? 3 : 5;
 
     if (systemState.activePositions.length < maxAllowedOpenPositions) {
@@ -4303,83 +4269,69 @@ async function runBotEngineCycle() {
           actingBot.brain = createDefaultBotBrain(actingBot.engineType, actingBot.agentId);
         }
 
-        // Institutional Liquidity Universe: exclude stock perps, pre-market tokens, and illiquid wide-spread meme coins
-        const noisyLowTierBlacklist = new Set([
-          'ESPORTSUSDT', 'APRUSDT', 'TRUMPUSDT', 'SOXLUSDT', 'SOXSUSDT', 'TQQQUSDT', 'SQQQUSDT',
-          'AMDSTOCKUSDT', 'NBISUSDT', 'SNDKUSDT', 'APPSTOCKUSDT', 'CASHCATUSDT', 'MUUSDT',
-          'SPCXUSDT', 'SKHYNIXUSDT', 'TSLAUSDT', 'NVDAUSDT', 'AAPLUSDT', 'COINUSDT', 'MSTRUSDT',
-          'ARMUSDT', 'WDCUSDT', 'CLANKERUSDT', 'PONSUSDT', 'CAPUSDT', 'EVAAUSDT', 'MUUUSDT', 'JCTUSDT'
-        ]);
+        // Strict Top-20 Institutional Crypto Whitelist: NEVER trade unvetted meme coins or stock synthetics
         const liquidScreenerPairs = systemState.screenerSymbols.filter(
           (s) =>
-            !noisyLowTierBlacklist.has(s.symbol) &&
-            !s.symbol.includes('STOCK') &&
-            !s.symbol.startsWith('1000000') &&
-            s.symbol.length <= 11 &&
-            (s.spreadBps || 1) <= Math.min(10.0, actingBot.brain?.maxSpreadBps || 12.0) &&
-            (s.turnover24h || 0) >= 8000000
+            INSTITUTIONAL_WHITELIST_SET.has(s.symbol) &&
+            (s.spreadBps || 1) <= Math.min(8.0, actingBot.brain?.maxSpreadBps || 10.0)
         );
 
-        // Sort candidates by 24h Trend Momentum & Liquidity score
+        // Sort whitelisted majors by 24h directional activity
         const trendingSorted = [...liquidScreenerPairs].sort((a, b) => {
           const aTrend = Math.abs(a.priceChangePct || 0);
           const bTrend = Math.abs(b.priceChangePct || 0);
           return bTrend - aTrend;
         });
 
-        // Pick top 25 institutional liquid trending breakout pairs across the whole crypto market
-        const topTrendingSymbols = trendingSorted.slice(0, 25).map((s) => s.symbol);
+        const topTrendingSymbols = trendingSorted.map((s) => s.symbol);
 
-        // Base configured symbols for the bot (institutional core + major altcoins)
+        // Base configured symbols for the bot, strictly intersected with the Top-20 Whitelist
+        const rawAllowed = Array.isArray(actingBot.allowedSymbols)
+          ? actingBot.allowedSymbols.filter((s: string) => INSTITUTIONAL_WHITELIST_SET.has(s))
+          : [];
         const baseAllowedSymbols: string[] =
-          Array.isArray(actingBot.allowedSymbols) && actingBot.allowedSymbols.length > 0
-            ? actingBot.allowedSymbols.filter((s: string) => !noisyLowTierBlacklist.has(s) && !s.includes('STOCK'))
-            : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'NEARUSDT', 'SUIUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'XRPUSDT', 'ENAUSDT', 'ONDOUSDT', 'AAVEUSDT', 'INJUSDT', 'FETUSDT', 'APTUSDT', 'ARBUSDT', 'OPUSDT', 'TIAUSDT', 'RENDERUSDT', 'ADAUSDT'];
+          rawAllowed.length > 0 ? rawAllowed : INSTITUTIONAL_CRYPTO_WHITELIST;
 
         const isDynamicScanEnabled =
           actingBot.dynamicScreenerScan !== false ||
-          baseAllowedSymbols.includes('ALL') ||
-          baseAllowedSymbols.includes('DYNAMIC_TRENDS');
+          (Array.isArray(actingBot.allowedSymbols) &&
+            (actingBot.allowedSymbols.includes('ALL') || actingBot.allowedSymbols.includes('DYNAMIC_TRENDS')));
 
         const combinedUniverse = isDynamicScanEnabled
-          ? Array.from(new Set([...topTrendingSymbols, ...baseAllowedSymbols.filter((s) => s !== 'ALL' && s !== 'DYNAMIC_TRENDS')]))
+          ? Array.from(new Set([...topTrendingSymbols, ...baseAllowedSymbols, ...INSTITUTIONAL_CRYPTO_WHITELIST]))
           : baseAllowedSymbols;
 
         // Filter out symbols already in position or in Cooldown / StoplossGuard
         const nowCycleTs = Date.now();
         const openSymbols = new Set(systemState.activePositions.map((p) => p.symbol));
         const availableCandidates = combinedUniverse.filter(
-          (s) => !openSymbols.has(s) && evaluateSymbolCooldownGuard(symbolCooldowns, s, nowCycleTs).allowed
+          (s) =>
+            INSTITUTIONAL_WHITELIST_SET.has(s) &&
+            !openSymbols.has(s) &&
+            evaluateSymbolCooldownGuard(symbolCooldowns, s, nowCycleTs).allowed
         );
 
         if (availableCandidates.length === 0) {
           return;
         }
 
-        // Build a deterministic 4-symbol tournament batch per cycle (2 hottest movers + 2 rotating liquid pairs)
-        const hotCandidates = availableCandidates.filter((sym) => {
-          const meta = systemState.screenerSymbols.find((s) => s.symbol === sym);
-          return meta && (meta.isTrendHot || Math.abs(meta.priceChangePct || 0) >= 2.0);
-        });
+        // Build a deterministic 4-symbol tournament batch per cycle across the Top-20 Whitelist
         const batchSet = new Set<string>();
-        for (let i = 0; i < Math.min(2, hotCandidates.length); i++) {
-          batchSet.add(hotCandidates[(tournamentScanCursor + i) % hotCandidates.length]);
-        }
         for (let i = 0; i < availableCandidates.length && batchSet.size < 4; i++) {
           batchSet.add(availableCandidates[(tournamentScanCursor + i) % availableCandidates.length]);
         }
-        tournamentScanCursor = (tournamentScanCursor + 2) % Math.max(1, availableCandidates.length);
+        tournamentScanCursor = (tournamentScanCursor + 4) % Math.max(1, availableCandidates.length);
         const batchSymbols = Array.from(batchSet);
 
         const btcMeta = systemState.screenerSymbols.find((s) => s.symbol === 'BTCUSDT');
         const btcChange24h = btcMeta?.priceChangePct || 0;
 
-        // Evaluate all batch candidates in parallel and rank by quantitative confluence score
+        // Evaluate all batch candidates on 15-minute klines (Freqtrade NFI timeframe) + L2 Orderbook
         const evaluatedBatch = await Promise.all(
           batchSymbols.map(async (sym) => {
             const [cBook, cKlines] = await Promise.all([
               fetchRealBybitOrderbook(sym),
-              fetchRealBybitKlines(sym, '5', 45),
+              fetchRealBybitKlines(sym, '15', 50),
             ]);
             const cBestBid = cBook.bids[0]?.price || priceMap[sym] || 100;
             const cBestAsk = cBook.asks[0]?.price || priceMap[sym] || 100;
@@ -4395,7 +4347,7 @@ async function runBotEngineCycle() {
                   Math.min(5, recentSymbolFeed.length)
                 : 0;
 
-            // Relative strength vs BTC + 24h momentum instead of single-candle random noise
+            // Relative strength vs BTC + 24h momentum
             const symMeta = systemState.screenerSymbols.find((s) => s.symbol === sym);
             const symChange24h = symMeta?.priceChangePct || 0;
             const relStrengthScore = Math.tanh((symChange24h - btcChange24h * 0.5) / 4.5);
@@ -4543,7 +4495,7 @@ async function runBotEngineCycle() {
           minutesToNextFunding,
           projectedFundingRate,
           side,
-          maxSpreadPct: (actingBot.brain.maxSpreadBps || 18.0) / 10000,
+          maxSpreadPct: (actingBot.brain.maxSpreadBps || 12.0) / 10000,
         });
 
         if (!guards.passed) {
@@ -4562,15 +4514,16 @@ async function runBotEngineCycle() {
 
         const botLeverage = Math.max(1, Math.min(20, Number(actingBot.leverage) || 10));
         const botRiskPct = Math.max(0.2, Math.min(5.0, Number(actingBot.riskPerTradePct) || 1.5));
-        const botTpSlRatio = Math.max(1.2, Math.min(4.0, Number(actingBot.tpSlRatio) || 1.8));
 
         const topBookPrice = side === 'LONG' ? bestAsk : bestBid;
         const inst = resolveInstrumentRules(targetSymbol, topBookPrice);
         const priceDecimals = inst.tickSize < 0.01 ? 4 : inst.tickSize < 0.1 ? 2 : 1;
         const qtyDecimals = Math.max(0, -Math.floor(Math.log10(inst.qtyStep) + 1e-9));
 
-        // Fee-aware minimum ATR Stop-Loss distance (>= 0.60%) so position notional does not balloon and bleed 30% of risk budget to taker fees
-        const effectiveSlPct = Math.max(0.60, evalResult.slDistancePct);
+        // Structural Stop-Loss distance (1.15% to 2.00%):
+        // Sits behind the 15m Bollinger Band / swing structure so normal 5m wicks do not trigger SL,
+        // and keeps position notional ~$10-$12 on a $10 account (cutting round-trip taker fees in half to ~$0.012).
+        const effectiveSlPct = Math.max(1.15, Math.min(2.00, evalResult.slDistancePct));
         const slDist = topBookPrice * (effectiveSlPct / 100);
         const slPrice = side === 'LONG' ? topBookPrice - slDist : topBookPrice + slDist;
 
@@ -4605,7 +4558,7 @@ async function runBotEngineCycle() {
           return;
         }
 
-        // Adapt order size to live Bybit orderbook depth for Altcoins & Trending pairs
+        // Adapt order size to live Bybit orderbook depth
         let plannedQty = sizeCalc.qty;
         const targetSideLevels = side === 'LONG' ? book.asks : book.bids;
         const topLevelsDepth = targetSideLevels.slice(0, 20).reduce((acc, lvl) => acc + lvl.qty, 0);
@@ -4620,7 +4573,6 @@ async function runBotEngineCycle() {
         // Walk L2-50 Orderbook for realistic VWAP execution & slippage verification
         let l2Exec = executeMarketOrderL2(book, side === 'LONG' ? 'BUY' : 'SELL', plannedQty, 0.00055);
         if ((!l2Exec.filled || l2Exec.slippagePct > 0.002) && plannedQty > inst.minQty) {
-          // Graceful fallback: scale down to half or minQty to fit tight inside book spread
           const fallbackQty = Math.max(inst.minQty, Number((Math.floor((plannedQty * 0.5) / inst.qtyStep) * inst.qtyStep).toFixed(qtyDecimals)));
           if (fallbackQty < plannedQty) {
             plannedQty = fallbackQty;
@@ -4644,11 +4596,13 @@ async function runBotEngineCycle() {
 
         const qty = l2Exec.executedQty;
         const entryPrice = l2Exec.vwapPrice;
-        // Freqtrade / Van Tharp Expectancy: TP1 must be at least 1.85x SL distance (positive mathematical expectation)
-        const effectiveTpRatio = Math.max(1.85, botTpSlRatio || 2.0);
+        // Freqtrade NFI / Passivbot Multi-Stage Take-Profit:
+        // TP1 at 1.55R locks 60% of the position and moves SL to Break-Even; TP2 at 2.65R captures the full wave.
+        const tp1Ratio = 1.55;
+        const tp2Ratio = 2.65;
         const actualSlPrice = side === 'LONG' ? entryPrice - slDist : entryPrice + slDist;
-        const tp1Price = side === 'LONG' ? entryPrice + slDist * effectiveTpRatio : entryPrice - slDist * effectiveTpRatio;
-        const tp2Price = side === 'LONG' ? entryPrice + slDist * (effectiveTpRatio * 1.65) : entryPrice - slDist * (effectiveTpRatio * 1.65);
+        const tp1Price = side === 'LONG' ? entryPrice + slDist * tp1Ratio : entryPrice - slDist * tp1Ratio;
+        const tp2Price = side === 'LONG' ? entryPrice + slDist * tp2Ratio : entryPrice - slDist * tp2Ratio;
 
         const tp1Qty = Number((Math.floor((qty * 0.6) / inst.qtyStep) * inst.qtyStep).toFixed(qtyDecimals));
         const tp2Qty = Number(Math.max(0, qty - tp1Qty).toFixed(qtyDecimals));

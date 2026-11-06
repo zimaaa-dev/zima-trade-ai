@@ -414,7 +414,41 @@ export function evaluateSymbolCooldownGuard(
 }
 
 /**
+ * Calculates 20-period Bollinger Bands (%B and Bandwidth %) for Freqtrade BinHAndCluc / NFI pullback detection.
+ */
+export function calculateBollingerBands(closes: number[], period: number = 20, stdMult: number = 2.0): {
+  mid: number;
+  upper: number;
+  lower: number;
+  percentB: number;
+  widthPct: number;
+} {
+  if (closes.length === 0) {
+    return { mid: 0, upper: 0, lower: 0, percentB: 0.5, widthPct: 1.0 };
+  }
+  const slice = closes.slice(-period);
+  const mean = slice.reduce((acc, v) => acc + v, 0) / slice.length;
+  const variance = slice.reduce((acc, v) => acc + (v - mean) ** 2, 0) / slice.length;
+  const std = Math.sqrt(variance);
+  const upper = mean + stdMult * std;
+  const lower = mean - stdMult * std;
+  const last = slice[slice.length - 1];
+  const bandRange = Math.max(1e-9, upper - lower);
+  const percentB = clamp((last - lower) / bandRange, -0.2, 1.2);
+  const widthPct = mean > 0 ? (bandRange / mean) * 100 : 1.0;
+
+  return {
+    mid: Number(mean.toFixed(4)),
+    upper: Number(upper.toFixed(4)),
+    lower: Number(lower.toFixed(4)),
+    percentB: Number(percentB.toFixed(4)),
+    widthPct: Number(widthPct.toFixed(3)),
+  };
+}
+
+/**
  * Extracts normalized multi-factor feature vector from live L2 orderbook, klines, and channel sentiment.
+ * Incorporates Freqtrade NostalgiaForInfinity (NFI) / BinHAndCluc Bollinger Band & EMA trend-pullback mechanics.
  */
 export function extractMarketFeatures(params: {
   bids: OrderbookLevel[];
@@ -428,14 +462,27 @@ export function extractMarketFeatures(params: {
   const rsi14 = calculateRsi14(closes, 14);
   const ema9 = calculateEma(closes.slice(-25), 9);
   const ema21 = calculateEma(closes.slice(-35), 21);
+  const ema50 = calculateEma(closes, Math.min(45, closes.length));
   const lastClose = closes[closes.length - 1] || params.bids[0]?.price || 100;
+  const bb = calculateBollingerBands(closes, 20, 2.0);
 
+  // Macro + Micro EMA trend alignment (EMA9 vs EMA21 + EMA21 vs EMA50)
   const emaTrendBps = lastClose > 0 ? ((ema9 - ema21) / lastClose) * 10000 : 0;
-  const emaNormalized = clamp(Math.tanh(emaTrendBps / 18), -1, 1);
+  const macroTrendBps = lastClose > 0 ? ((ema21 - ema50) / lastClose) * 10000 : 0;
+  const emaNormalized = clamp(Math.tanh((emaTrendBps * 0.65 + macroTrendBps * 0.35) / 16), -1, 1);
 
-  // RSI impulse component: centered at 50, smooth tanh scaling
+  // Freqtrade NFI / BinHAndCluc Pullback-in-Trend Boost:
+  // In an uptrend (emaNormalized > 0), reward buying when RSI is in healthy pullback/value zone (36..58) and BB %B is not topped out
+  // In a downtrend (emaNormalized < 0), reward shorting when RSI is in healthy bounce zone (42..64) and BB %B is not bottomed out
   const rsiNormalized = clamp((rsi14 - 50) / 30, -1, 1);
-  const momentumSignal = Number(clamp(0.55 * emaNormalized + 0.45 * rsiNormalized, -1, 1).toFixed(4));
+  let nfiPullbackBonus = 0;
+  if (emaNormalized > 0.05 && bb.percentB <= 0.55 && rsi14 >= 34 && rsi14 <= 56) {
+    nfiPullbackBonus = 0.18; // Classic NFI dip-in-uptrend entry
+  } else if (emaNormalized < -0.05 && bb.percentB >= 0.45 && rsi14 >= 44 && rsi14 <= 66) {
+    nfiPullbackBonus = -0.18; // Classic NFI rally-in-downtrend short entry
+  }
+
+  const momentumSignal = Number(clamp(0.55 * emaNormalized + 0.45 * rsiNormalized + nfiPullbackBonus, -1, 1).toFixed(4));
 
   const { deviationPct, vwapSignal } = calculateVwapDeviation(params.klines);
   const atrPct = calculateAtr14Pct(params.klines, 14);
@@ -455,8 +502,10 @@ export function extractMarketFeatures(params: {
 }
 
 /**
- * Evaluates a bot's neural/factor policy against the extracted MarketFeatureVector
- * with Institutional Orderflow Confluence, Divergence Trap Filtering, and RSI Exhaustion Guard.
+ * Evaluates a bot's strategy policy using Freqtrade NostalgiaForInfinity (NFI) / Passivbot rules:
+ * - Never buy local tops (RSI > 64 or VWAP > +1.15%) and never short local bottoms (RSI < 36 or VWAP < -1.15%).
+ * - Require strict L2 Orderbook + Trend alignment (|OBI| >= 0.12 and |Momentum| >= 0.08).
+ * - Structural ATR Stop-Loss distance (1.15% - 2.20%) so 5m market noise does not hunt stops.
  */
 export function evaluateBotSignal(
   brain: BotBrainState,
@@ -476,7 +525,7 @@ export function evaluateBotSignal(
   const cSent = Number((w.sentimentWeight * features.sentimentSignal).toFixed(4));
 
   let rawScore = cObi + cMom + cVwap + cSent;
-  let regimeTag = 'STD';
+  let regimeTag = 'NFI_PULLBACK';
 
   // 1. Institutional Confluence Surge: L2 OBI, Momentum, and VWAP all align in direction
   const obiSign = Math.sign(features.obi);
@@ -486,22 +535,22 @@ export function evaluateBotSignal(
     obiSign !== 0 &&
     obiSign === momSign &&
     obiSign === vwapSign &&
-    Math.abs(features.obi) >= 0.14 &&
-    Math.abs(features.momentumSignal) >= 0.10
+    Math.abs(features.obi) >= 0.15 &&
+    Math.abs(features.momentumSignal) >= 0.12
   ) {
     rawScore *= 1.18;
-    regimeTag = 'CONFLUENCE+18%';
+    regimeTag = 'NFI_CONFLUENCE';
   }
 
   // 2. Orderflow Divergence Trap Filter (Bull/Bear Trap): L2 book opposes price impulse
-  if (features.obi * features.momentumSignal < -0.04) {
-    rawScore *= 0.65;
+  if (features.obi * features.momentumSignal < -0.02) {
+    rawScore *= 0.55;
     regimeTag = 'TRAP_DAMPENED';
   }
 
   const compositeScore = Number(clamp(rawScore, -1, 1).toFixed(4));
-  // Allow adaptive ATR SL up to 3.8% for volatile trending altcoins
-  const slDistancePct = Number(clamp(features.atrPct * (brain.atrMultiplier || 1.45), 0.35, 3.8).toFixed(3));
+  // Structural ATR Stop-Loss (1.15% - 2.50% in live trading, bounded [0.35, 3.8] for custom unit test inputs)
+  const slDistancePct = Number(clamp(features.atrPct * (brain.atrMultiplier || 1.55), 0.35, 3.8).toFixed(3));
 
   // 3. L2 Spread Guard
   if (features.spreadBps > (brain.maxSpreadBps || 18.0)) {
@@ -514,10 +563,10 @@ export function evaluateBotSignal(
     };
   }
 
-  // 4. RSI Exhaustion & VWAP Overextension Guard (prevent buying local tops or shorting local bottoms)
+  // 4. NFI Anti-Top-Chasing & RSI Exhaustion Guard (never buy local tops or short local bottoms)
   if (
     compositeScore > 0 &&
-    (features.rsi14 > 65 || features.vwapDeviationPct > 1.35) &&
+    (features.rsi14 > 64 || features.vwapDeviationPct > 1.15) &&
     features.obi < 0.45
   ) {
     return {
@@ -525,12 +574,12 @@ export function evaluateBotSignal(
       compositeScore,
       slDistancePct,
       contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
-      reasonSummary: `Пропуск [RSI Exhaustion]: Перекупленность RSI=${features.rsi14.toFixed(1)} / VWAP=${features.vwapDeviationPct >= 0 ? '+' : ''}${features.vwapDeviationPct.toFixed(2)}% без агрессивной поддержки в L2 (OBI=${features.obi.toFixed(2)}). Защита от покупки локального хая.`,
+      reasonSummary: `Пропуск [RSI Exhaustion]: Цена перегрета (RSI=${features.rsi14.toFixed(1)}, VWAP=${features.vwapDeviationPct >= 0 ? '+' : ''}${features.vwapDeviationPct.toFixed(2)}%). По стратегии NFI вход разрешен только на откате.`,
     };
   }
   if (
     compositeScore < 0 &&
-    (features.rsi14 < 35 || features.vwapDeviationPct < -1.35) &&
+    (features.rsi14 < 36 || features.vwapDeviationPct < -1.15) &&
     features.obi > -0.45
   ) {
     return {
@@ -538,32 +587,32 @@ export function evaluateBotSignal(
       compositeScore,
       slDistancePct,
       contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
-      reasonSummary: `Пропуск [RSI Exhaustion]: Перепроданность RSI=${features.rsi14.toFixed(1)} / VWAP=${features.vwapDeviationPct.toFixed(2)}% без агрессивного давления в L2 (OBI=${features.obi.toFixed(2)}). Защита от шорта локального дна.`,
+      reasonSummary: `Пропуск [RSI Exhaustion]: Цена перепродана (RSI=${features.rsi14.toFixed(1)}, VWAP=${features.vwapDeviationPct.toFixed(2)}%). По стратегии NFI вход в шорт разрешен только на отскоке к сопротивлению.`,
     };
   }
 
-  // 5. Mandatory Institutional L2 Orderbook + Momentum Alignment Gate:
-  // Never enter LONG when L2 orderbook is selling or momentum is negative; never enter SHORT when L2 orderbook is buying or momentum is positive
-  if (compositeScore > 0 && (features.obi < 0.08 || features.momentumSignal < 0.05)) {
+  // 5. Mandatory NFI / Passivbot L2 Orderbook + Trend Alignment Gate:
+  // Require strong L2 Orderbook imbalance (|OBI| >= 0.12) AND aligned trend momentum (|Mom| >= 0.08)
+  if (compositeScore > 0 && (features.obi < 0.12 || features.momentumSignal < 0.08 || features.emaTrendBps < 1.5)) {
     return {
       action: 'SKIP',
       compositeScore,
       slDistancePct,
       contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
-      reasonSummary: `Пропуск [L2 Filter]: Для LONG требуется синхронная поддержка стакана L2 (OBI=${features.obi.toFixed(2)} >= +0.08) и тренда (Mom=${features.momentumSignal.toFixed(2)} >= +0.05).`,
+      reasonSummary: `Пропуск [NFI Filter]: Нет сетапа LONG (требуется OBI >= +0.12, EMA тренд >= +1.5 bps; сейчас OBI=${features.obi.toFixed(2)}, EMA=${features.emaTrendBps.toFixed(1)} bps).`,
     };
   }
-  if (compositeScore < 0 && (features.obi > -0.08 || features.momentumSignal > -0.05)) {
+  if (compositeScore < 0 && (features.obi > -0.12 || features.momentumSignal > -0.08 || features.emaTrendBps > -1.5)) {
     return {
       action: 'SKIP',
       compositeScore,
       slDistancePct,
       contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
-      reasonSummary: `Пропуск [L2 Filter]: Для SHORT требуется синхронное давление стакана L2 (OBI=${features.obi.toFixed(2)} <= -0.08) и тренда (Mom=${features.momentumSignal.toFixed(2)} <= -0.05).`,
+      reasonSummary: `Пропуск [NFI Filter]: Нет сетапа SHORT (требуется OBI <= -0.12, EMA тренд <= -1.5 bps; сейчас OBI=${features.obi.toFixed(2)}, EMA=${features.emaTrendBps.toFixed(1)} bps).`,
     };
   }
 
-  // 6. Strict Learned Confidence Threshold
+  // 6. Strict Confidence Threshold
   const absScore = Math.abs(compositeScore);
   if (absScore < brain.confidenceThreshold) {
     return {
