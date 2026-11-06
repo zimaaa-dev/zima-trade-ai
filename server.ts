@@ -882,47 +882,84 @@ const systemState: AppSystemState = {
   ],
 };
 
-// Persistent Disk Storage Engine (SQLite-compatible JSON WAL Store)
+// Persistent Disk Storage Engine (High-Performance Debounced JSON WAL Store)
 const PERSIST_DIR = path.resolve(process.cwd(), 'data');
 const PERSIST_FILE = path.join(PERSIST_DIR, 'runtime_state.json');
 let lastSavedAtTs = Date.now();
+let persistDebounceTimer: NodeJS.Timeout | null = null;
+let isPersistingToDisk = false;
 
-function savePersistedState(): void {
-  try {
-    if (!fs.existsSync(PERSIST_DIR)) {
-      fs.mkdirSync(PERSIST_DIR, { recursive: true });
+function buildPersistPayload() {
+  return {
+    savedAt: Date.now(),
+    capitalUsdt: systemState.capitalUsdt,
+    rolling24hPnlUsdt: systemState.rolling24hPnlUsdt,
+    totalRealizedPnlUsdt: systemState.totalRealizedPnlUsdt,
+    isKillSwitchActive: systemState.isKillSwitchActive,
+    killSwitchTriggerReason: systemState.killSwitchTriggerReason,
+    lastUnblockedAt: systemState.lastUnblockedAt || 0,
+    botTradingEnabled: systemState.botTradingEnabled,
+    autoMarketAdaptationEnabled: systemState.autoMarketAdaptationEnabled !== false,
+    lastAutoAdaptedAt: systemState.lastAutoAdaptedAt || Date.now(),
+    currentMarketRegime: systemState.currentMarketRegime,
+    activePositions: systemState.activePositions,
+    limitOrdersQueue: systemState.limitOrdersQueue,
+    closedTrades: systemState.closedTrades,
+    walletLedger: systemState.walletLedger,
+    agents: systemState.agents,
+    channels: systemState.channels,
+    parsedNewsFeed: systemState.parsedNewsFeed,
+    botTradeLogs: systemState.botTradeLogs,
+    xaiDecisions: systemState.xaiDecisions,
+    telegramBot: systemState.telegramBot,
+    notifications: systemState.notifications.slice(0, 50),
+  };
+}
+
+export function savePersistedState(immediate: boolean = false): void {
+  // If immediate (e.g. order filled, trade closed, kill-switch triggered), write synchronously without waiting
+  if (immediate) {
+    if (persistDebounceTimer) {
+      clearTimeout(persistDebounceTimer);
+      persistDebounceTimer = null;
     }
-    const payload = {
-      savedAt: Date.now(),
-      capitalUsdt: systemState.capitalUsdt,
-      rolling24hPnlUsdt: systemState.rolling24hPnlUsdt,
-      totalRealizedPnlUsdt: systemState.totalRealizedPnlUsdt,
-      isKillSwitchActive: systemState.isKillSwitchActive,
-      killSwitchTriggerReason: systemState.killSwitchTriggerReason,
-      lastUnblockedAt: systemState.lastUnblockedAt || 0,
-      botTradingEnabled: systemState.botTradingEnabled,
-      autoMarketAdaptationEnabled: systemState.autoMarketAdaptationEnabled !== false,
-      lastAutoAdaptedAt: systemState.lastAutoAdaptedAt || Date.now(),
-      currentMarketRegime: systemState.currentMarketRegime,
-      activePositions: systemState.activePositions,
-      limitOrdersQueue: systemState.limitOrdersQueue,
-      closedTrades: systemState.closedTrades,
-      walletLedger: systemState.walletLedger,
-      agents: systemState.agents,
-      channels: systemState.channels,
-      parsedNewsFeed: systemState.parsedNewsFeed,
-      botTradeLogs: systemState.botTradeLogs,
-      xaiDecisions: systemState.xaiDecisions,
-      telegramBot: systemState.telegramBot,
-      notifications: systemState.notifications.slice(0, 50),
-    };
-    const tmpFile = `${PERSIST_FILE}.tmp`;
-    fs.writeFileSync(tmpFile, JSON.stringify(payload, null, 2), 'utf-8');
-    fs.renameSync(tmpFile, PERSIST_FILE);
-    lastSavedAtTs = payload.savedAt;
-  } catch (err) {
-    console.warn('Failed to persist runtime state to disk:', err);
+    try {
+      if (!fs.existsSync(PERSIST_DIR)) {
+        fs.mkdirSync(PERSIST_DIR, { recursive: true });
+      }
+      const payload = buildPersistPayload();
+      const tmpFile = `${PERSIST_FILE}.tmp`;
+      fs.writeFileSync(tmpFile, JSON.stringify(payload), 'utf-8');
+      fs.renameSync(tmpFile, PERSIST_FILE);
+      lastSavedAtTs = payload.savedAt;
+    } catch (err) {
+      console.warn('Failed to persist runtime state immediately to disk:', err);
+    }
+    return;
   }
+
+  // Otherwise, debounce writes: coalesce rapid events into a single asynchronous write every 2000ms
+  if (persistDebounceTimer) return;
+
+  persistDebounceTimer = setTimeout(async () => {
+    persistDebounceTimer = null;
+    if (isPersistingToDisk) return;
+    isPersistingToDisk = true;
+    try {
+      if (!fs.existsSync(PERSIST_DIR)) {
+        await fs.promises.mkdir(PERSIST_DIR, { recursive: true });
+      }
+      const payload = buildPersistPayload();
+      const tmpFile = `${PERSIST_FILE}.tmp`;
+      await fs.promises.writeFile(tmpFile, JSON.stringify(payload), 'utf-8');
+      await fs.promises.rename(tmpFile, PERSIST_FILE);
+      lastSavedAtTs = payload.savedAt;
+    } catch (err) {
+      console.warn('Async persist state warning:', err);
+    } finally {
+      isPersistingToDisk = false;
+    }
+  }, 2000);
 }
 
 const CLEAN_AGENT_NAMES: Record<string, string> = {
@@ -8498,9 +8535,10 @@ async function startServer() {
     // Verify Telegram Bot (@zimatradeai_bot) on startup, enforce profile anti-spam guard, and start getUpdates / Production Relay Bridge
     verifyTelegramBot().catch(() => {});
     enforceTelegramBotProfileGuard(true).catch(() => {});
+    // Periodic profile verification every 30 minutes (prevent excessive Telegram API rate limits)
     setInterval(() => {
       enforceTelegramBotProfileGuard(false).catch(() => {});
-    }, 25000);
+    }, 30 * 60 * 1000);
     if (isProductionNode()) {
       pollTelegramUpdates().catch(() => {});
       setInterval(() => {
@@ -8510,20 +8548,20 @@ async function startServer() {
       runProductionTelegramRelayBridge().catch(() => {});
       setInterval(() => {
         runProductionTelegramRelayBridge().catch(() => {});
-      }, 2800);
+      }, 3500);
     }
 
-    // Start background Autonomous Bot Trading Engine
+    // Start background Autonomous Bot Trading Engine (optimized 6000ms cycle)
     setInterval(() => {
       if (systemState.botTradingEnabled && !systemState.isKillSwitchActive) {
         runBotEngineCycle().catch((err) => console.warn('Bot engine error:', err));
       }
-    }, systemState.botEngineSpeedMs || 3500);
+    }, systemState.botEngineSpeedMs || 6000);
 
-    // Background sweep for delayed Telegram notification escalation (25s grace period)
+    // Background sweep for delayed Telegram notification escalation (every 10s)
     setInterval(() => {
       processDelayedTelegramNotifications().catch(() => {});
-    }, 2500);
+    }, 10000);
 
     // Background GitHub Sync Check (every 10 minutes)
     setInterval(async () => {

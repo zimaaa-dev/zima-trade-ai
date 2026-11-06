@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Zap,
   ShieldCheck,
@@ -226,6 +226,7 @@ export const AiArenaView: React.FC = () => {
   const [isSyncingAdapt, setIsSyncingAdapt] = useState<boolean>(false);
   const [isAuditingTrends, setIsAuditingTrends] = useState<boolean>(false);
   const [copiedCmd, setCopiedCmd] = useState<boolean>(false);
+  const lastSlowMetaFetchTs = useRef<number>(0);
 
   const fetchTrendAudit = async () => {
     try {
@@ -334,20 +335,26 @@ export const AiArenaView: React.FC = () => {
         return null;
       };
 
+      const now = Date.now();
+      const shouldFetchSlowMeta = now - lastSlowMetaFetchTs.current > 25000;
+      if (shouldFetchSlowMeta) {
+        lastSlowMetaFetchTs.current = now;
+      }
+
       const [agentRes, botRes, posRes, newsRes, tgRes] = await Promise.all([
         fetch('/api/arena/agents').catch(() => null),
         fetch('/api/bots/state').catch(() => null),
         fetch('/api/positions').catch(() => null),
-        fetch('/api/news-sources').catch(() => null),
-        fetch('/api/telegram/status').catch(() => null),
+        shouldFetchSlowMeta ? fetch('/api/news-sources').catch(() => null) : Promise.resolve(null),
+        shouldFetchSlowMeta ? fetch('/api/telegram/status').catch(() => null) : Promise.resolve(null),
       ]);
 
       const [agentData, botData, posData, newsData, tgData] = await Promise.all([
         safeParse(agentRes),
         safeParse(botRes),
         safeParse(posRes),
-        safeParse(newsRes),
-        safeParse(tgRes),
+        newsRes ? safeParse(newsRes) : Promise.resolve(null),
+        tgRes ? safeParse(tgRes) : Promise.resolve(null),
       ]);
 
       if (newsData) {
@@ -403,7 +410,7 @@ export const AiArenaView: React.FC = () => {
   useEffect(() => {
     fetchAgentsAndBots();
     fetchTrendAudit();
-    const timer = setInterval(fetchAgentsAndBots, 2500);
+    const timer = setInterval(fetchAgentsAndBots, 5000);
     const trendTimer = setInterval(fetchTrendAudit, 45000);
     return () => {
       clearInterval(timer);

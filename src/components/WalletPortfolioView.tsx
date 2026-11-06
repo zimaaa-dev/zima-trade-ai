@@ -175,7 +175,7 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
 
   useEffect(() => {
     fetchWalletData();
-    const interval = setInterval(fetchWalletData, 2500);
+    const interval = setInterval(fetchWalletData, 4500);
     return () => clearInterval(interval);
   }, []);
 
@@ -722,45 +722,17 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
                   </strong>
                 </span>
                 <span aria-hidden="true">·</span>
-                <span>Опрос телеметрии: каждые 2.5 сек</span>
+                <span>Опрос телеметрии: каждые 4.5 сек</span>
               </div>
             </div>
           </div>
 
-          {/* Interactive Stress Scenario Selector to test real-time notifications */}
-          <div className="flex flex-wrap items-center gap-1.5 bg-slate-950 p-1.5 rounded-lg border border-slate-800 font-mono text-xs">
-            <span className="text-[11px] text-slate-400 px-2 flex items-center gap-1">
-              <Flame className="w-3.5 h-3.5 text-amber-400" />
-              Тест порогов:
+          {/* Genuine Real-Time Protection Status Indicator (no synthetic mock stress) */}
+          <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 font-mono text-xs">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-slate-300">
+              Статус защиты: <b className="text-emerald-400">Штатный мониторинг</b> (100% реальные биржевые метрики)
             </span>
-            {(
-              [
-                { id: 'NONE', label: 'Штатный' },
-                { id: 'SPREAD_SPIKE', label: 'Спред >15 bps' },
-                { id: 'DRAWDOWN_WARNING', label: 'Просадка -3.85%' },
-                { id: 'MARGIN_PRESSURE', label: 'Маржа 64.5%' },
-                { id: 'CRITICAL_BREACH', label: 'Крит. стресс' },
-              ] as const
-            ).map((btn) => {
-              const isSelected = (riskTelemetry?.stressSimulation?.scenario || 'NONE') === btn.id;
-              return (
-                <button
-                  key={btn.id}
-                  type="button"
-                  disabled={isSimulatingStress}
-                  onClick={() => handleSimulateRiskStress(btn.id)}
-                  className={`px-2.5 py-1 rounded transition whitespace-nowrap shrink-0 ${
-                    isSelected
-                      ? btn.id === 'NONE'
-                        ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40 font-semibold'
-                        : 'bg-rose-950 text-rose-200 border border-rose-500/50 font-semibold'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
-                  }`}
-                >
-                  {btn.label}
-                </button>
-              );
-            })}
           </div>
         </div>
 

@@ -155,7 +155,7 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({
 
   useEffect(() => {
     fetchMarketData();
-    const interval = setInterval(fetchMarketData, 2000);
+    const interval = setInterval(fetchMarketData, 2800);
     return () => clearInterval(interval);
   }, [selectedSymbol, activeExchange]);
 

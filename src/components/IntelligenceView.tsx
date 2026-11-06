@@ -165,7 +165,7 @@ export const IntelligenceView: React.FC = () => {
   useEffect(() => {
     fetchNewsSources();
     handleParse(PRESET_SIGNALS[0].text);
-    const timer = setInterval(fetchNewsSources, 5000);
+    const timer = setInterval(fetchNewsSources, 15000);
     return () => clearInterval(timer);
   }, []);
 

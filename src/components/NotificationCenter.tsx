@@ -151,9 +151,10 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
 
   useEffect(() => {
     fetchNotifications();
-    const timer = setInterval(fetchNotifications, 2500);
+    const intervalMs = isOpen ? 3500 : 9000;
+    const timer = setInterval(fetchNotifications, intervalMs);
     return () => clearInterval(timer);
-  }, []);
+  }, [isOpen]);
 
   // Countdown timer for toasts auto-dismiss
   useEffect(() => {
