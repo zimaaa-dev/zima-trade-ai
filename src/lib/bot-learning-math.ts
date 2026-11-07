@@ -502,10 +502,321 @@ export function extractMarketFeatures(params: {
 }
 
 /**
- * Evaluates a bot's strategy policy using Freqtrade NostalgiaForInfinity (NFI) / Passivbot rules:
- * - Never buy local tops (RSI > 64 or VWAP > +1.15%) and never short local bottoms (RSI < 36 or VWAP < -1.15%).
- * - Require strict L2 Orderbook + Trend alignment (|OBI| >= 0.12 and |Momentum| >= 0.08).
- * - Structural ATR Stop-Loss distance (1.15% - 2.20%) so 5m market noise does not hunt stops.
+ * Calculates FreqAI Dissimilarity Index (DI_values) from freqtrade/freqai/freqai_interface.py.
+ * Measures normalized Euclidean distance of the current market feature vector from healthy
+ * institutional trend-pullback distributions. If DI > diThreshold (default 1.85),
+ * flags the candle as an outlier (`doPredict = false`) to block entries during chaotic spikes.
+ */
+export function calculateFreqaiDissimilarityIndex(
+  features: MarketFeatureVector,
+  diThreshold: number = 1.85
+): { diValue: number; doPredict: boolean; outlierReason?: string } {
+  const dirSign = Math.sign(features.momentumSignal || features.obi || 1);
+  // Ideal cluster center for a trend entry: OBI ~ 0.30*dir, Mom ~ 0.35*dir, VWAP ~ 0.0*dir, RSI ~ 50, ATR ~ 1.8%
+  const zObi = (features.obi - 0.30 * dirSign) / 0.45;
+  const zMom = (features.momentumSignal - 0.35 * dirSign) / 0.45;
+  const zVwap = features.vwapDeviationPct / 0.65;
+  const zRsi = (features.rsi14 - 50) / 22;
+  const zAtr = Math.max(0, features.atrPct - 2.2) / 2.0;
+
+  const diValue = Number(
+    Math.sqrt((zObi ** 2 + zMom ** 2 + zVwap ** 2 + zRsi ** 2 + zAtr ** 2) / 5).toFixed(3)
+  );
+  const doPredict = diValue <= diThreshold;
+
+  return {
+    diValue,
+    doPredict,
+    outlierReason: doPredict
+      ? undefined
+      : `FreqAI DI Outlier [DI=${diValue.toFixed(2)} > ${diThreshold.toFixed(2)}]: Аномальное отклонение признаков (VWAP=${features.vwapDeviationPct.toFixed(2)}%, RSI=${features.rsi14.toFixed(1)}, ATR=${features.atrPct.toFixed(2)}%).`,
+  };
+}
+
+/**
+ * Freqtrade `minimal_roi` Time-Decaying ROI Table (ported from `freqtrade/strategy/interface.py:min_roi_reached`).
+ * Ensures profitable trades are systematically harvested as hold duration increases instead of
+ * waiting indefinitely for a distant static target and reversing into a stop-loss.
+ *
+ * Keys are hold duration in minutes; values are required net price profit ratio (after round-trip fees).
+ */
+export const DEFAULT_FREQTRADE_MINIMAL_ROI: Record<number, number> = {
+  0: 0.0165,   // 0+ min: +1.65% price move (+16.5% ROE at 10x)
+  15: 0.0105,  // 15+ min: +1.05% price move (+10.5% ROE at 10x)
+  35: 0.0072,  // 35+ min: +0.72% price move (+7.2% ROE at 10x)
+  60: 0.0048,  // 60+ min: +0.48% price move (+4.8% ROE at 10x)
+  120: 0.0028, // 120+ min: +0.28% net price move (+2.8% ROE at 10x)
+};
+
+export function checkFreqtradeMinimalRoi(
+  holdDurationMinutes: number,
+  currentNetProfitRatio: number,
+  roiTable: Record<number, number> = DEFAULT_FREQTRADE_MINIMAL_ROI
+): {
+  roiReached: boolean;
+  roiThreshold: number | null;
+  matchedBucketMinutes: number | null;
+} {
+  const buckets = Object.keys(roiTable)
+    .map((k) => Number(k))
+    .filter((m) => Number.isFinite(m) && m <= holdDurationMinutes)
+    .sort((a, b) => b - a);
+
+  if (buckets.length === 0) {
+    return { roiReached: false, roiThreshold: null, matchedBucketMinutes: null };
+  }
+
+  const matchedBucketMinutes = buckets[0];
+  const roiThreshold = roiTable[matchedBucketMinutes];
+  const roiReached = currentNetProfitRatio >= roiThreshold;
+
+  return {
+    roiReached,
+    roiThreshold,
+    matchedBucketMinutes,
+  };
+}
+
+/**
+ * Freqtrade `should_exit` Unified Exit Hierarchy (ported from `freqtrade/strategy/interface.py:1430-1523`).
+ * Evaluates in exact Freqtrade sequence:
+ * 1. EXIT_SIGNAL (`use_exit_signal = true`, `exit_profit_only = true`, `exit_profit_offset = 0.0025`):
+ *    If position is in net profit (> +0.25% price move after fees) AND live L2/RSI indicators reverse against the position, exit immediately!
+ * 2. STOP_LOSS / TRAILING_STOP_LOSS: Price breaches `slPrice`.
+ * 3. ROI (`min_roi_reached`): Time-decaying `minimal_roi` target reached for current `holdDurationMinutes`.
+ */
+export function evaluateFreqtradeShouldExit(params: {
+  side: 'LONG' | 'SHORT';
+  entryPrice: number;
+  currentPrice: number;
+  slPrice: number;
+  isTrailing?: boolean;
+  isBreakEven?: boolean;
+  openedAt: number;
+  nowTs?: number;
+  roundTripFeeRatio?: number;
+  liveFeatures?: {
+    obi: number;
+    rsi14: number;
+    momentumSignal: number;
+  };
+  roiTable?: Record<number, number>;
+}): {
+  shouldExit: boolean;
+  exitType: 'NONE' | 'EXIT_SIGNAL' | 'STOP_LOSS' | 'ROI' | 'TRAILING_STOP_LOSS';
+  exitReasonTag: string;
+  netProfitRatio: number;
+  holdDurationMinutes: number;
+} {
+  const {
+    side,
+    entryPrice,
+    currentPrice,
+    slPrice,
+    isTrailing = false,
+    isBreakEven = false,
+    openedAt,
+    nowTs = Date.now(),
+    roundTripFeeRatio = 0.0011,
+    liveFeatures,
+    roiTable = DEFAULT_FREQTRADE_MINIMAL_ROI,
+  } = params;
+
+  const dirSign = side === 'LONG' ? 1 : -1;
+  const rawProfitRatio = entryPrice > 0 ? ((currentPrice - entryPrice) / entryPrice) * dirSign : 0;
+  const netProfitRatio = Number((rawProfitRatio - roundTripFeeRatio).toFixed(5));
+  const holdDurationMinutes = Math.max(0, Math.floor((nowTs - openedAt) / 60000));
+
+  // 1. Check Stop-Loss / Trailing Stop-Loss breach first if price crossed slPrice
+  const slBreached = side === 'LONG' ? currentPrice <= slPrice : currentPrice >= slPrice;
+  if (slBreached) {
+    if (isTrailing || (isBreakEven && netProfitRatio > 0)) {
+      return {
+        shouldExit: true,
+        exitType: 'TRAILING_STOP_LOSS',
+        exitReasonTag: isTrailing ? 'trailing_stop_loss' : 'breakeven_stop_lock',
+        netProfitRatio,
+        holdDurationMinutes,
+      };
+    }
+    return {
+      shouldExit: true,
+      exitType: 'STOP_LOSS',
+      exitReasonTag: 'stop_loss',
+      netProfitRatio,
+      holdDurationMinutes,
+    };
+  }
+
+  // 2. Check `populate_exit_trend` + `exit_profit_only` (exit_profit_offset = +0.25% net price move)
+  if (liveFeatures && netProfitRatio >= 0.0025) {
+    const isLongReversal =
+      side === 'LONG' &&
+      (liveFeatures.rsi14 >= 67 ||
+        (liveFeatures.obi <= -0.16 && liveFeatures.momentumSignal < 0.05));
+    const isShortReversal =
+      side === 'SHORT' &&
+      (liveFeatures.rsi14 <= 33 ||
+        (liveFeatures.obi >= 0.16 && liveFeatures.momentumSignal > -0.05));
+
+    if (isLongReversal || isShortReversal) {
+      return {
+        shouldExit: true,
+        exitType: 'EXIT_SIGNAL',
+        exitReasonTag: `exit_signal_profit_lock (RSI=${liveFeatures.rsi14.toFixed(1)}, OBI=${liveFeatures.obi.toFixed(2)})`,
+        netProfitRatio,
+        holdDurationMinutes,
+      };
+    }
+  }
+
+  // 3. Check `minimal_roi` (`min_roi_reached`)
+  const roiCheck = checkFreqtradeMinimalRoi(holdDurationMinutes, netProfitRatio, roiTable);
+  if (roiCheck.roiReached) {
+    return {
+      shouldExit: true,
+      exitType: 'ROI',
+      exitReasonTag: `minimal_roi_${roiCheck.matchedBucketMinutes}m (+${(netProfitRatio * 100).toFixed(2)}%)`,
+      netProfitRatio,
+      holdDurationMinutes,
+    };
+  }
+
+  return {
+    shouldExit: false,
+    exitType: 'NONE',
+    exitReasonTag: '',
+    netProfitRatio,
+    holdDurationMinutes,
+  };
+}
+
+/**
+ * Freqtrade `LowProfitPairs` Protection Plugin (ported from `freqtrade/plugins/protections/low_profit_pairs.py`).
+ * Locks a pair if its cumulative closed PnL over `lookbackMinutes` (default 360m = 6h) is below `requiredProfitUsdt` (0.0).
+ */
+export function evaluateLowProfitPairsProtection(params: {
+  symbol: string;
+  closedTrades: Array<{
+    symbol: string;
+    netPnlUsdt: number;
+    closedAt: number;
+  }>;
+  nowTs?: number;
+  lookbackMinutes?: number;
+  stopDurationMinutes?: number;
+  tradeLimit?: number;
+  requiredProfitUsdt?: number;
+}): { allowed: boolean; reason?: string; unlockAtTs?: number } {
+  const {
+    symbol,
+    closedTrades,
+    nowTs = Date.now(),
+    lookbackMinutes = 360,
+    stopDurationMinutes = 90,
+    tradeLimit = 1,
+    requiredProfitUsdt = 0.0,
+  } = params;
+
+  const lookbackCutoff = nowTs - lookbackMinutes * 60 * 1000;
+  const recentPairTrades = closedTrades.filter(
+    (t) => t.symbol === symbol && (t.closedAt || 0) >= lookbackCutoff
+  );
+
+  if (recentPairTrades.length < tradeLimit) {
+    return { allowed: true };
+  }
+
+  const cumulativePnl = recentPairTrades.reduce((acc, t) => acc + (t.netPnlUsdt || 0), 0);
+  if (cumulativePnl < requiredProfitUsdt) {
+    const latestClose = Math.max(...recentPairTrades.map((t) => t.closedAt || 0));
+    const unlockAtTs = latestClose + stopDurationMinutes * 60 * 1000;
+    if (nowTs < unlockAtTs) {
+      const remMin = Math.ceil((unlockAtTs - nowTs) / 60000);
+      return {
+        allowed: false,
+        unlockAtTs,
+        reason: `LowProfitPairs Protection: пара ${symbol} в минусе ($${cumulativePnl.toFixed(2)}) за последние ${lookbackMinutes}м. Блокировка ещё ${remMin}м.`,
+      };
+    }
+  }
+
+  return { allowed: true };
+}
+
+/**
+ * Freqtrade Pairlist Pipeline (`VolumePairList -> SpreadFilter -> VolatilityFilter -> PerformanceFilter`)
+ * ported from `freqtrade/plugins/pairlist/PerformanceFilter.py` & `VolatilityFilter.py`.
+ * Filters out dead/hyper-volatile pairs and ranks the whitelist by historical `profit_ratio` (highest profit first,
+ * untested pairs neutral 0, losing pairs last).
+ */
+export function applyFreqtradePairlistPipeline(params: {
+  candidates: string[];
+  screenerMeta: Array<{
+    symbol: string;
+    spreadBps?: number;
+    atrPct?: number;
+    priceChangePct?: number;
+    turnover24h?: number;
+  }>;
+  closedTrades: Array<{
+    symbol: string;
+    netPnlUsdt: number;
+  }>;
+  maxSpreadBps?: number;
+  minVolatilityPct?: number;
+  maxVolatilityPct?: number;
+}): string[] {
+  const {
+    candidates,
+    screenerMeta,
+    closedTrades,
+    maxSpreadBps = 10.0,
+    minVolatilityPct = 0.35,
+    maxVolatilityPct = 6.5,
+  } = params;
+
+  const metaMap = new Map(screenerMeta.map((m) => [m.symbol, m]));
+
+  // 1. SpreadFilter & VolatilityFilter
+  const filtered = candidates.filter((sym) => {
+    const m = metaMap.get(sym);
+    if (!m) return true; // keep whitelisted major if screener metadata not loaded yet
+    const spreadOk = (m.spreadBps ?? 1.0) <= maxSpreadBps;
+    const atr = m.atrPct ?? 1.8;
+    const volOk = atr >= minVolatilityPct && atr <= maxVolatilityPct;
+    return spreadOk && volOk;
+  });
+
+  // 2. PerformanceFilter (aggregate profit & trade count per pair, exactly like PerformanceFilter.py)
+  const perfMap = new Map<string, { profitUsdt: number; count: number }>();
+  for (const t of closedTrades) {
+    const cur = perfMap.get(t.symbol) || { profitUsdt: 0, count: 0 };
+    cur.profitUsdt = Number((cur.profitUsdt + (t.netPnlUsdt || 0)).toFixed(4));
+    cur.count += 1;
+    perfMap.set(t.symbol, cur);
+  }
+
+  return [...filtered].sort((a, b) => {
+    const perfA = perfMap.get(a) || { profitUsdt: 0, count: 0 };
+    const perfB = perfMap.get(b) || { profitUsdt: 0, count: 0 };
+    if (perfA.profitUsdt !== perfB.profitUsdt) {
+      return perfB.profitUsdt - perfA.profitUsdt; // Higher realized profit first (0 beats negative!)
+    }
+    if (perfA.count !== perfB.count) {
+      return perfA.count - perfB.count; // Fewer trades preferred on equal profit
+    }
+    const metaA = metaMap.get(a);
+    const metaB = metaMap.get(b);
+    return Math.abs(metaB?.priceChangePct || 0) - Math.abs(metaA?.priceChangePct || 0);
+  });
+}
+
+/**
+ * Evaluates a bot's strategy policy using Freqtrade IStrategy + FreqAI DI_values + NFI rules:
+ * - FreqAI Dissimilarity Index (`DI_values`) filters out anomalous market spikes.
+ * - Strict VWAP Value-Zone Entry: never chase a candle that already moved > +0.58% above VWAP for LONG (or < -0.58% below VWAP for SHORT).
+ * - Require strict L2 Orderbook + Trend alignment (|OBI| >= 0.12, |Momentum| >= 0.08, |emaTrendBps| >= 1.5).
  */
 export function evaluateBotSignal(
   brain: BotBrainState,
@@ -525,7 +836,7 @@ export function evaluateBotSignal(
   const cSent = Number((w.sentimentWeight * features.sentimentSignal).toFixed(4));
 
   let rawScore = cObi + cMom + cVwap + cSent;
-  let regimeTag = 'NFI_PULLBACK';
+  let regimeTag = 'FREQTRADE_NFI';
 
   // 1. Institutional Confluence Surge: L2 OBI, Momentum, and VWAP all align in direction
   const obiSign = Math.sign(features.obi);
@@ -539,7 +850,7 @@ export function evaluateBotSignal(
     Math.abs(features.momentumSignal) >= 0.12
   ) {
     rawScore *= 1.18;
-    regimeTag = 'NFI_CONFLUENCE';
+    regimeTag = 'FT_CONFLUENCE';
   }
 
   // 2. Orderflow Divergence Trap Filter (Bull/Bear Trap): L2 book opposes price impulse
@@ -552,54 +863,67 @@ export function evaluateBotSignal(
   // Structural ATR Stop-Loss (1.15% - 2.50% in live trading, bounded [0.35, 3.8] for custom unit test inputs)
   const slDistancePct = Number(clamp(features.atrPct * (brain.atrMultiplier || 1.55), 0.35, 3.8).toFixed(3));
 
-  // 3. L2 Spread Guard
+  // 3. L2 Spread Guard (`SpreadFilter.py`)
   if (features.spreadBps > (brain.maxSpreadBps || 18.0)) {
     return {
       action: 'SKIP',
       compositeScore,
       slDistancePct,
       contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
-      reasonSummary: `Пропуск [Spread Guard]: Спред стакана (${features.spreadBps.toFixed(1)} bps) превышает лимит ${brain.maxSpreadBps} bps.`,
+      reasonSummary: `Пропуск [SpreadFilter]: Спред стакана (${features.spreadBps.toFixed(1)} bps) превышает лимит ${brain.maxSpreadBps} bps.`,
     };
   }
 
-  // 4. NFI Anti-Top-Chasing & RSI Exhaustion Guard (never buy local tops or short local bottoms)
+  // 4. Freqtrade NFI Anti-Top-Chasing & Value-Zone VWAP Guard:
+  // Blocks chasing green candles > +0.58% above VWAP (like UNIUSDT at +0.83%) or shorting red candles < -0.58% below VWAP (like BCHUSDT at -0.72%)
   if (
     compositeScore > 0 &&
-    (features.rsi14 > 64 || features.vwapDeviationPct > 1.15) &&
-    features.obi < 0.45
+    (features.rsi14 > 63 || features.vwapDeviationPct > 0.58) &&
+    features.obi < 0.55
   ) {
     return {
       action: 'SKIP',
       compositeScore,
       slDistancePct,
       contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
-      reasonSummary: `Пропуск [RSI Exhaustion]: Цена перегрета (RSI=${features.rsi14.toFixed(1)}, VWAP=${features.vwapDeviationPct >= 0 ? '+' : ''}${features.vwapDeviationPct.toFixed(2)}%). По стратегии NFI вход разрешен только на откате.`,
+      reasonSummary: `Пропуск [RSI Exhaustion / VWAP Overextension]: Цена уже ушла вверх от справедливой стоимости (RSI=${features.rsi14.toFixed(1)}, VWAP=${features.vwapDeviationPct >= 0 ? '+' : ''}${features.vwapDeviationPct.toFixed(2)}% > +0.58%). Ждем отката к средней полосе Боллинджера.`,
     };
   }
   if (
     compositeScore < 0 &&
-    (features.rsi14 < 36 || features.vwapDeviationPct < -1.15) &&
-    features.obi > -0.45
+    (features.rsi14 < 37 || features.vwapDeviationPct < -0.58) &&
+    features.obi > -0.55
   ) {
     return {
       action: 'SKIP',
       compositeScore,
       slDistancePct,
       contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
-      reasonSummary: `Пропуск [RSI Exhaustion]: Цена перепродана (RSI=${features.rsi14.toFixed(1)}, VWAP=${features.vwapDeviationPct.toFixed(2)}%). По стратегии NFI вход в шорт разрешен только на отскоке к сопротивлению.`,
+      reasonSummary: `Пропуск [RSI Exhaustion / VWAP Overextension]: Цена уже провалилась далеко ниже VWAP (RSI=${features.rsi14.toFixed(1)}, VWAP=${features.vwapDeviationPct.toFixed(2)}% < -0.58%). Ждем отскока к сопротивлению.`,
     };
   }
 
-  // 5. Mandatory NFI / Passivbot L2 Orderbook + Trend Alignment Gate:
-  // Require strong L2 Orderbook imbalance (|OBI| >= 0.12) AND aligned trend momentum (|Mom| >= 0.08)
+  // 5. FreqAI Dissimilarity Index Outlier Guard (`DI_values`)
+  const diCheck = calculateFreqaiDissimilarityIndex(features, 1.85);
+  if (!diCheck.doPredict) {
+    return {
+      action: 'SKIP',
+      compositeScore,
+      slDistancePct,
+      contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
+      reasonSummary: `Пропуск [${diCheck.outlierReason}]`,
+    };
+  }
+
+  // 6. Mandatory Freqtrade `populate_entry_trend` Gate:
+  // Require strong L2 Orderbook imbalance (|OBI| >= 0.12) AND aligned trend momentum (|Mom| >= 0.08) AND EMA trend
   if (compositeScore > 0 && (features.obi < 0.12 || features.momentumSignal < 0.08 || features.emaTrendBps < 1.5)) {
     return {
       action: 'SKIP',
       compositeScore,
       slDistancePct,
       contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
-      reasonSummary: `Пропуск [NFI Filter]: Нет сетапа LONG (требуется OBI >= +0.12, EMA тренд >= +1.5 bps; сейчас OBI=${features.obi.toFixed(2)}, EMA=${features.emaTrendBps.toFixed(1)} bps).`,
+      reasonSummary: `Пропуск [populate_entry_trend]: Нет сетапа LONG (требуется OBI >= +0.12, EMA >= +1.5 bps; сейчас OBI=${features.obi.toFixed(2)}, EMA=${features.emaTrendBps.toFixed(1)} bps).`,
     };
   }
   if (compositeScore < 0 && (features.obi > -0.12 || features.momentumSignal > -0.08 || features.emaTrendBps > -1.5)) {
@@ -608,11 +932,11 @@ export function evaluateBotSignal(
       compositeScore,
       slDistancePct,
       contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
-      reasonSummary: `Пропуск [NFI Filter]: Нет сетапа SHORT (требуется OBI <= -0.12, EMA тренд <= -1.5 bps; сейчас OBI=${features.obi.toFixed(2)}, EMA=${features.emaTrendBps.toFixed(1)} bps).`,
+      reasonSummary: `Пропуск [populate_entry_trend]: Нет сетапа SHORT (требуется OBI <= -0.12, EMA <= -1.5 bps; сейчас OBI=${features.obi.toFixed(2)}, EMA=${features.emaTrendBps.toFixed(1)} bps).`,
     };
   }
 
-  // 6. Strict Confidence Threshold
+  // 7. Strict Confidence Threshold
   const absScore = Math.abs(compositeScore);
   if (absScore < brain.confidenceThreshold) {
     return {
@@ -625,7 +949,7 @@ export function evaluateBotSignal(
   }
 
   const action: 'LONG' | 'SHORT' = compositeScore >= 0 ? 'LONG' : 'SHORT';
-  const reasonSummary = `Сигнал [${action} · ${regimeTag}]: Score=${compositeScore >= 0 ? '+' : ''}${compositeScore.toFixed(2)} (порог ${brain.confidenceThreshold.toFixed(2)}) · L2 OBI=${features.obi >= 0 ? '+' : ''}${features.obi.toFixed(2)} · RSI=${features.rsi14.toFixed(1)} · VWAP=${features.vwapDeviationPct >= 0 ? '+' : ''}${features.vwapDeviationPct.toFixed(2)}% · ATR SL=${slDistancePct.toFixed(2)}%`;
+  const reasonSummary = `Сигнал [${action} · ${regimeTag} · DI=${diCheck.diValue.toFixed(2)}]: Score=${compositeScore >= 0 ? '+' : ''}${compositeScore.toFixed(2)} (порог ${brain.confidenceThreshold.toFixed(2)}) · L2 OBI=${features.obi >= 0 ? '+' : ''}${features.obi.toFixed(2)} · RSI=${features.rsi14.toFixed(1)} · VWAP=${features.vwapDeviationPct >= 0 ? '+' : ''}${features.vwapDeviationPct.toFixed(2)}% · ATR SL=${slDistancePct.toFixed(2)}%`;
 
   return {
     action,

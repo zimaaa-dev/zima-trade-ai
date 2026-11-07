@@ -184,6 +184,9 @@ import {
   evaluateSymbolCooldownGuard,
   adaptBotBrainToMarketRegime,
   computeAdaptiveMarketProfile,
+  evaluateFreqtradeShouldExit,
+  evaluateLowProfitPairsProtection,
+  applyFreqtradePairlistPipeline,
   type MarketRegimeType,
   type AdaptiveMarketProfile,
   type SymbolCooldownEntry,
@@ -4061,13 +4064,36 @@ async function runBotEngineCycle() {
         const diff = (pos.currentPrice - pos.entryVwap) * dirSign;
         pos.unrealizedPnl = Number((diff * pos.qty).toFixed(2));
 
-        // 2a. Check Stop-Loss breach (including Break-Even SL or Trailing SL)
+        // 2a. Freqtrade `ft_stoploss_adjust` (trailing_stop_positive_offset = 0.90%, lockFraction = 0.65):
+        // Updates peakPrice and ratchets slPrice into profit BEFORE checking stop-loss breach,
+        // matching `freqtrade/strategy/interface.py:ft_stoploss_reached`.
+        const trailUpdate = computeTrailingStopPrice({
+          side: pos.side,
+          entryPrice: pos.entryVwap,
+          currentPrice: pos.currentPrice,
+          currentSlPrice: pos.slPrice,
+          previousPeakPrice: pos.peakPrice,
+          priceDecimals,
+          activationPct: 0.90,
+          feeBufferPct: 0.30,
+          lockFraction: 0.65,
+        });
+        pos.peakPrice = trailUpdate.newPeakPrice;
+        if (trailUpdate.updated) {
+          pos.slPrice = trailUpdate.newSlPrice;
+          pos.isBreakEven = true;
+          pos.isTrailing = true;
+        }
+
+        // 2b. Check Stop-Loss breach (including Break-Even SL or Trailing SL)
         const slHit = pos.side === 'LONG' ? pos.currentPrice <= pos.slPrice : pos.currentPrice >= pos.slPrice;
         if (slHit) {
           systemState.activePositions.splice(i, 1);
-          const tradeRecord = recordClosedPosition(pos, pos.currentPrice, 'SL_HIT');
+          const isProfitableTrailExit = (pos.isTrailing || pos.isBreakEven) && diff > pos.entryVwap * 0.0012;
+          const exitReasonCode = isProfitableTrailExit ? 'TP_HIT' : 'SL_HIT';
+          const tradeRecord = recordClosedPosition(pos, pos.currentPrice, exitReasonCode);
           const slTag = pos.isTrailing
-            ? 'Трейлинг-Стоп HWM (защита профита)'
+            ? 'Freqtrade Trailing-Stop (защита профита от пика)'
             : pos.isBreakEven
             ? 'Стоп в Безубытке после TP1'
             : 'Структурный ATR Stop-Loss';
@@ -4075,7 +4101,7 @@ async function runBotEngineCycle() {
           addBotLog({
             botId: pos.botId || 'agent-risk-firewall',
             botName: pos.botName || 'Риск-Файрвол',
-            action: 'SL_HIT',
+            action: exitReasonCode,
             symbol: pos.symbol,
             side: pos.side,
             price: pos.currentPrice,
@@ -4086,7 +4112,7 @@ async function runBotEngineCycle() {
           continue;
         }
 
-        // 2b. Check Multi-Tier Take-Profit Grid (Scale-Out TP1 -> Move SL to Break-Even -> Final TP2)
+        // 2c. Check Multi-Tier Take-Profit Grid (Scale-Out TP1 -> Move SL to Break-Even -> Final TP2)
         if (pos.tpGrid && pos.tpGrid.length > 0) {
           const targetTp = pos.tpGrid[0];
           const tpHit = pos.side === 'LONG' ? pos.currentPrice >= targetTp.price : pos.currentPrice <= targetTp.price;
@@ -4164,24 +4190,36 @@ async function runBotEngineCycle() {
           }
         }
 
-        // 2c. Institutional Dynamic Trailing Stop (Freqtrade trailing_stop_positive_offset = 2.10%)
-        // Never chokes a trade before TP1! Activates only on strong trend extensions (+2.10% move).
-        const trailUpdate = computeTrailingStopPrice({
+        // 2d. Freqtrade `should_exit` (`minimal_roi` time-decaying profit table & `exit_profit_only` reversal lock)
+        // Ported directly from `freqtrade/strategy/interface.py:min_roi_reached` & `should_exit`:
+        // Harvests profitable positions according to hold duration (`0m: +1.65%`, `15m: +1.05%`, `35m: +0.72%`, `60m: +0.48%`, `120m: +0.28%`)
+        // so winning trades never sit open for hours until they reverse into a stop-loss!
+        const ftExitCheck = evaluateFreqtradeShouldExit({
           side: pos.side,
           entryPrice: pos.entryVwap,
           currentPrice: pos.currentPrice,
-          currentSlPrice: pos.slPrice,
-          previousPeakPrice: pos.peakPrice,
-          priceDecimals,
-          activationPct: 2.10,
-          feeBufferPct: 0.65,
-          lockFraction: 0.65,
+          slPrice: pos.slPrice,
+          isTrailing: pos.isTrailing,
+          isBreakEven: pos.isBreakEven,
+          openedAt: pos.openedAt || Date.now(),
         });
-        pos.peakPrice = trailUpdate.newPeakPrice;
-        if (trailUpdate.updated) {
-          pos.slPrice = trailUpdate.newSlPrice;
-          pos.isBreakEven = true;
-          pos.isTrailing = true;
+
+        if (ftExitCheck.shouldExit && (ftExitCheck.exitType === 'ROI' || ftExitCheck.exitType === 'EXIT_SIGNAL')) {
+          systemState.activePositions.splice(i, 1);
+          const tradeRecord = recordClosedPosition(pos, pos.currentPrice, 'TP_HIT');
+
+          addBotLog({
+            botId: pos.botId || 'agent-tp-grid',
+            botName: pos.botName || 'Freqtrade ROI Engine',
+            action: 'TP_HIT',
+            symbol: pos.symbol,
+            side: pos.side,
+            price: pos.currentPrice,
+            pnl: tradeRecord.netPnlUsdt,
+            message: `Freqtrade [${ftExitCheck.exitReasonTag}] зафиксировал профит по ${pos.symbol} (удержание ${ftExitCheck.holdDurationMinutes}м, цена $${pos.currentPrice.toFixed(priceDecimals)}): чистый PnL +$${tradeRecord.netPnlUsdt.toFixed(2)} USDT!`,
+            rttMs: systemState.pings.bybit,
+          });
+          continue;
         }
       }
     }
@@ -4244,7 +4282,7 @@ async function runBotEngineCycle() {
       }
     }
 
-    // 4. Autonomous Freqtrade NFI / Passivbot Trend-Pullback Scanner (Strict Top-20 Crypto Majors Whitelist)
+    // 4. Autonomous Freqtrade IStrategy + Pairlist Pipeline + ProtectionManager Scanner
     const effectiveCap = Math.max(1, systemState.capitalUsdt + systemState.totalRealizedPnlUsdt);
     // On micro-balances (<= $50 USDT), strictly limit to 2 concurrent positions to prevent margin fragmentation
     const maxAllowedOpenPositions = effectiveCap <= 50 ? 2 : effectiveCap <= 200 ? 3 : 5;
@@ -4269,22 +4307,6 @@ async function runBotEngineCycle() {
           actingBot.brain = createDefaultBotBrain(actingBot.engineType, actingBot.agentId);
         }
 
-        // Strict Top-20 Institutional Crypto Whitelist: NEVER trade unvetted meme coins or stock synthetics
-        const liquidScreenerPairs = systemState.screenerSymbols.filter(
-          (s) =>
-            INSTITUTIONAL_WHITELIST_SET.has(s.symbol) &&
-            (s.spreadBps || 1) <= Math.min(8.0, actingBot.brain?.maxSpreadBps || 10.0)
-        );
-
-        // Sort whitelisted majors by 24h directional activity
-        const trendingSorted = [...liquidScreenerPairs].sort((a, b) => {
-          const aTrend = Math.abs(a.priceChangePct || 0);
-          const bTrend = Math.abs(b.priceChangePct || 0);
-          return bTrend - aTrend;
-        });
-
-        const topTrendingSymbols = trendingSorted.map((s) => s.symbol);
-
         // Base configured symbols for the bot, strictly intersected with the Top-20 Whitelist
         const rawAllowed = Array.isArray(actingBot.allowedSymbols)
           ? actingBot.allowedSymbols.filter((s: string) => INSTITUTIONAL_WHITELIST_SET.has(s))
@@ -4297,30 +4319,48 @@ async function runBotEngineCycle() {
           (Array.isArray(actingBot.allowedSymbols) &&
             (actingBot.allowedSymbols.includes('ALL') || actingBot.allowedSymbols.includes('DYNAMIC_TRENDS')));
 
-        const combinedUniverse = isDynamicScanEnabled
-          ? Array.from(new Set([...topTrendingSymbols, ...baseAllowedSymbols, ...INSTITUTIONAL_CRYPTO_WHITELIST]))
+        const rawUniverse = isDynamicScanEnabled
+          ? Array.from(new Set([...baseAllowedSymbols, ...INSTITUTIONAL_CRYPTO_WHITELIST]))
           : baseAllowedSymbols;
 
-        // Filter out symbols already in position or in Cooldown / StoplossGuard
+        // Freqtrade Pairlist Pipeline: SpreadFilter -> VolatilityFilter -> PerformanceFilter
+        const rankedPairlist = applyFreqtradePairlistPipeline({
+          candidates: rawUniverse,
+          screenerMeta: systemState.screenerSymbols,
+          closedTrades: systemState.closedTrades,
+          maxSpreadBps: Math.min(8.0, actingBot.brain?.maxSpreadBps || 10.0),
+          minVolatilityPct: 0.35,
+          maxVolatilityPct: 6.5,
+        });
+
+        // Freqtrade ProtectionManager: filter out symbols in position, CooldownPeriod, StoplossGuard, or LowProfitPairs
         const nowCycleTs = Date.now();
         const openSymbols = new Set(systemState.activePositions.map((p) => p.symbol));
-        const availableCandidates = combinedUniverse.filter(
-          (s) =>
-            INSTITUTIONAL_WHITELIST_SET.has(s) &&
-            !openSymbols.has(s) &&
-            evaluateSymbolCooldownGuard(symbolCooldowns, s, nowCycleTs).allowed
-        );
+        const availableCandidates = rankedPairlist.filter((s) => {
+          if (!INSTITUTIONAL_WHITELIST_SET.has(s) || openSymbols.has(s)) return false;
+          if (!evaluateSymbolCooldownGuard(symbolCooldowns, s, nowCycleTs).allowed) return false;
+          const lowProfitCheck = evaluateLowProfitPairsProtection({
+            symbol: s,
+            closedTrades: systemState.closedTrades,
+            nowTs: nowCycleTs,
+            lookbackMinutes: 360,
+            stopDurationMinutes: 90,
+          });
+          return lowProfitCheck.allowed;
+        });
 
         if (availableCandidates.length === 0) {
           return;
         }
 
-        // Build a deterministic 4-symbol tournament batch per cycle across the Top-20 Whitelist
+        // Build a deterministic 4-symbol tournament batch per cycle prioritizing top PerformanceFilter pairs
         const batchSet = new Set<string>();
+        // Always include the #1 highest-performing available pair from PerformanceFilter
+        batchSet.add(availableCandidates[0]);
         for (let i = 0; i < availableCandidates.length && batchSet.size < 4; i++) {
           batchSet.add(availableCandidates[(tournamentScanCursor + i) % availableCandidates.length]);
         }
-        tournamentScanCursor = (tournamentScanCursor + 4) % Math.max(1, availableCandidates.length);
+        tournamentScanCursor = (tournamentScanCursor + 3) % Math.max(1, availableCandidates.length);
         const batchSymbols = Array.from(batchSet);
 
         const btcMeta = systemState.screenerSymbols.find((s) => s.symbol === 'BTCUSDT');

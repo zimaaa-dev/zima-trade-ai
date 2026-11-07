@@ -13,6 +13,11 @@ import {
   evaluateSymbolCooldownGuard,
   computeAdaptiveMarketProfile,
   adaptBotBrainToMarketRegime,
+  calculateFreqaiDissimilarityIndex,
+  checkFreqtradeMinimalRoi,
+  evaluateFreqtradeShouldExit,
+  evaluateLowProfitPairsProtection,
+  applyFreqtradePairlistPipeline,
   type SymbolCooldownEntry,
   type KlineBar,
 } from './bot-learning-math.ts';
@@ -228,14 +233,14 @@ test('evaluateBotSignal blocks entry when L2 Orderbook (OBI) opposes momentum or
   });
   assert.equal(opposingObiDecision.action, 'SKIP');
 
-  // Case 2: Overextended above VWAP (+1.6%) and RSI 67 without extreme L2 absorption -> MUST SKIP
+  // Case 2: Overextended above VWAP (+0.83% like UNIUSDT) and RSI 67 without extreme L2 absorption -> MUST SKIP
   const overextendedTopDecision = evaluateBotSignal(brain, {
-    obi: 0.15,
+    obi: 0.25,
     spreadBps: 1.2,
     rsi14: 67.4,
     emaTrendBps: 20.0,
     momentumSignal: 0.65,
-    vwapDeviationPct: 1.65,
+    vwapDeviationPct: 0.83,
     vwapSignal: 0.30,
     atrPct: 0.85,
     sentimentSignal: 0.50,
@@ -243,5 +248,122 @@ test('evaluateBotSignal blocks entry when L2 Orderbook (OBI) opposes momentum or
   assert.equal(overextendedTopDecision.action, 'SKIP');
   assert.match(overextendedTopDecision.reasonSummary, /RSI Exhaustion/);
 });
+
+test('[Freqtrade Port] checkFreqtradeMinimalRoi and evaluateFreqtradeShouldExit harvest time-decayed ROI and EXIT_SIGNAL reversals', () => {
+  const now = 1794025000000;
+
+  // 1. Live UNIUSDT scenario: entry 6.969, current 7.047 (+1.12% move), held 45 minutes -> hits 35m minimal_roi bucket (0.0072)!
+  const uniExit = evaluateFreqtradeShouldExit({
+    side: 'LONG',
+    entryPrice: 6.969,
+    currentPrice: 7.047,
+    slPrice: 6.8889,
+    openedAt: now - 45 * 60 * 1000,
+    nowTs: now,
+  });
+  assert.equal(uniExit.shouldExit, true);
+  assert.equal(uniExit.exitType, 'ROI');
+  assert.match(uniExit.exitReasonTag, /minimal_roi_35m/);
+
+  // 2. Live BCHUSDT scenario: SHORT entry 263.15, current 261.74 (+0.535% move, net +0.425%), held 140 minutes -> hits 120m minimal_roi bucket (0.0028)!
+  const bchExit = evaluateFreqtradeShouldExit({
+    side: 'SHORT',
+    entryPrice: 263.15,
+    currentPrice: 261.74,
+    slPrice: 266.18,
+    openedAt: now - 140 * 60 * 1000,
+    nowTs: now,
+  });
+  assert.equal(bchExit.shouldExit, true);
+  assert.equal(bchExit.exitType, 'ROI');
+  assert.match(bchExit.exitReasonTag, /minimal_roi_120m/);
+
+  // 3. EXIT_SIGNAL (`exit_profit_only`): trade held 8 minutes, in +0.55% net profit, but L2 OBI flips to -0.25 and RSI hits 69
+  const signalExit = evaluateFreqtradeShouldExit({
+    side: 'LONG',
+    entryPrice: 100.0,
+    currentPrice: 100.7,
+    slPrice: 98.8,
+    openedAt: now - 8 * 60 * 1000,
+    nowTs: now,
+    liveFeatures: { obi: -0.25, rsi14: 69.2, momentumSignal: -0.1 },
+  });
+  assert.equal(signalExit.shouldExit, true);
+  assert.equal(signalExit.exitType, 'EXIT_SIGNAL');
+
+  // 4. checkFreqtradeMinimalRoi unit check
+  const roiAt20m = checkFreqtradeMinimalRoi(20, 0.011);
+  assert.equal(roiAt20m.roiReached, true);
+  assert.equal(roiAt20m.matchedBucketMinutes, 15);
+});
+
+test('[Freqtrade Port] evaluateLowProfitPairsProtection, applyFreqtradePairlistPipeline, and FreqAI DI_values work accurately', () => {
+  const now = 1794025000000;
+  const closedTrades = [
+    { symbol: 'OPUSDT', netPnlUsdt: -0.16, closedAt: now - 20 * 60 * 1000 },
+    { symbol: 'SOLUSDT', netPnlUsdt: 0.24, closedAt: now - 50 * 60 * 1000 },
+  ];
+
+  // LowProfitPairs locks OPUSDT because it lost -$0.16 20 minutes ago
+  const opLock = evaluateLowProfitPairsProtection({
+    symbol: 'OPUSDT',
+    closedTrades,
+    nowTs: now,
+    lookbackMinutes: 360,
+    stopDurationMinutes: 90,
+  });
+  assert.equal(opLock.allowed, false);
+  assert.match(opLock.reason!, /LowProfitPairs/);
+
+  // SOLUSDT is allowed (profitable)
+  const solLock = evaluateLowProfitPairsProtection({
+    symbol: 'SOLUSDT',
+    closedTrades,
+    nowTs: now,
+  });
+  assert.equal(solLock.allowed, true);
+
+  // PerformanceFilter ranks SOLUSDT (profitable) first, BTCUSDT (0 trades) second, OPUSDT (losing) last
+  const ranked = applyFreqtradePairlistPipeline({
+    candidates: ['OPUSDT', 'BTCUSDT', 'SOLUSDT'],
+    screenerMeta: [
+      { symbol: 'OPUSDT', spreadBps: 1.5, atrPct: 2.1, priceChangePct: 3.0 },
+      { symbol: 'BTCUSDT', spreadBps: 0.5, atrPct: 1.8, priceChangePct: 1.5 },
+      { symbol: 'SOLUSDT', spreadBps: 1.0, atrPct: 2.4, priceChangePct: 2.2 },
+    ],
+    closedTrades,
+  });
+  assert.equal(ranked[0], 'SOLUSDT');
+  assert.equal(ranked[1], 'BTCUSDT');
+  assert.equal(ranked[2], 'OPUSDT');
+
+  // FreqAI DissimilarityIndex detects extreme feature outlier
+  const normalDi = calculateFreqaiDissimilarityIndex({
+    obi: 0.28,
+    spreadBps: 1.0,
+    rsi14: 48,
+    emaTrendBps: 12,
+    momentumSignal: 0.32,
+    vwapDeviationPct: -0.12,
+    vwapSignal: -0.15,
+    atrPct: 1.8,
+    sentimentSignal: 0.25,
+  });
+  assert.equal(normalDi.doPredict, true);
+
+  const outlierDi = calculateFreqaiDissimilarityIndex({
+    obi: -0.85,
+    spreadBps: 4.0,
+    rsi14: 88,
+    emaTrendBps: 45,
+    momentumSignal: 0.9,
+    vwapDeviationPct: 2.8,
+    vwapSignal: 0.9,
+    atrPct: 7.5,
+    sentimentSignal: 0.1,
+  });
+  assert.equal(outlierDi.doPredict, false);
+});
+
 
 
