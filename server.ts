@@ -6084,7 +6084,7 @@ function detectSymbolInText(text: string, fallbackSymbol = 'BTCUSDT'): string {
   const hashtagMatch = upper.match(/#([A-Z]{2,8}?)(?:USDT)?\b/);
   if (hashtagMatch && hashtagMatch[1]) {
     const candidate = `${hashtagMatch[1]}USDT`;
-    if (systemState.screenerSymbols.some((s) => s.symbol === candidate)) {
+    if (INSTITUTIONAL_WHITELIST_SET.has(candidate)) {
       return candidate;
     }
   }
@@ -6271,12 +6271,16 @@ async function scanActiveNewsChannelOnce(notifyTelegram: boolean = true, preferr
   // 1. Try real live scraping (t.me/s/<channel>, Bybit V5 Announcements API, or RSS XML)
   const liveScraped = await fetchRealChannelLatestPost(pickedChannel);
 
-  const topScreenerSymbols = systemState.screenerSymbols.slice(0, 15).map((s) => s.symbol);
+  const topScreenerSymbols = systemState.screenerSymbols
+    .filter((s) => INSTITUTIONAL_WHITELIST_SET.has(s.symbol))
+    .slice(0, 15)
+    .map((s) => s.symbol);
   const fallbackSymbols =
     topScreenerSymbols.length > 0
       ? topScreenerSymbols
-      : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'HYPEUSDT', 'NEARUSDT', 'SUIUSDT', 'DOGEUSDT', 'AVAXUSDT'];
-  const sym = liveScraped?.symbol || fallbackSymbols[Math.floor(Math.random() * fallbackSymbols.length)];
+      : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'NEARUSDT', 'SUIUSDT', 'DOGEUSDT', 'AVAXUSDT'];
+  const rawSym = liveScraped?.symbol || fallbackSymbols[Math.floor(Math.random() * fallbackSymbols.length)];
+  const sym = INSTITUTIONAL_WHITELIST_SET.has(rawSym) ? rawSym : 'BTCUSDT';
   const book = await fetchRealBybitOrderbook(sym);
   const midPrice = book.bids[0]?.price || 68500;
   const decimals = midPrice >= 1000 ? 1 : midPrice >= 10 ? 2 : 4;
