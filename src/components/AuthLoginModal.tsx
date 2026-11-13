@@ -35,10 +35,51 @@ export const AuthLoginScreen: React.FC<AuthLoginScreenProps> = ({
   const [authTab, setAuthTab] = useState<'PASSWORD' | 'PIN'>('PASSWORD');
   const [username, setUsername] = useState<string>(defaultUsername || 'admin');
   const [password, setPassword] = useState<string>('');
+  const [confirmPassword, setConfirmPassword] = useState<string>('');
   const [pin, setPin] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+
+  const isDevDemoEnabled =
+    Boolean(import.meta.env?.DEV) && import.meta.env?.VITE_DEMO_LOGIN === 'true';
+
+  const handleInitialSetup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+
+    if (password.trim().length < 6) {
+      setError('Пароль администратора должен содержать минимум 6 символов');
+      return;
+    }
+    if (password.trim() !== confirmPassword.trim()) {
+      setError('Введенные пароли не совпадают');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch('/api/auth/setup-initial', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: username.trim() || 'admin',
+          newPassword: password.trim(),
+          newPin: pin.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success && data.token) {
+        onLoginSuccess(data.token, data.operator);
+      } else {
+        setError(data.error || 'Не удалось выполнить первичную настройку пароля');
+      }
+    } catch (err: any) {
+      setError(`Ошибка соединения с ядром: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,32 +110,6 @@ export const AuthLoginScreen: React.FC<AuthLoginScreenProps> = ({
     }
   };
 
-  const handleQuickDemoLogin = async () => {
-    setError(null);
-    setLoading(true);
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          authMethod: 'PASSWORD',
-          username: defaultUsername || 'admin',
-          password: 'zima2026',
-        }),
-      });
-      const data = await res.json();
-      if (res.ok && data.success && data.token) {
-        onLoginSuccess(data.token, data.operator);
-      } else {
-        setError(data.error || 'Не удалось выполнить быстрый вход');
-      }
-    } catch (err: any) {
-      setError(`Ошибка сети: ${err.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
     <div className="min-h-screen w-full bg-[#070A12] text-slate-100 flex items-center justify-center p-4 relative overflow-hidden">
       {/* Subtle Ambient Glow */}
@@ -109,10 +124,12 @@ export const AuthLoginScreen: React.FC<AuthLoginScreenProps> = ({
             </div>
             <div>
               <h1 className="text-base font-bold text-white tracking-tight">
-                ZimaTrade · Авторизация
+                {hasCustomPassword ? 'ZimaTrade · Авторизация' : 'ZimaTrade · Первый запуск'}
               </h1>
               <p className="text-xs text-slate-400">
-                Защищенный доступ к торговому терминалу
+                {hasCustomPassword
+                  ? 'Защищенный доступ к торговому терминалу'
+                  : 'Установите пароль оператора для защиты терминала'}
               </p>
             </div>
           </div>
@@ -121,126 +138,219 @@ export const AuthLoginScreen: React.FC<AuthLoginScreenProps> = ({
           </span>
         </div>
 
-        {/* Auth Method Switcher */}
-        <div className="grid grid-cols-2 gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800 font-mono text-xs">
-          <button
-            type="button"
-            onClick={() => {
-              setAuthTab('PASSWORD');
-              setError(null);
-            }}
-            className={`py-2 rounded-lg transition flex items-center justify-center gap-1.5 ${
-              authTab === 'PASSWORD'
-                ? 'bg-gradient-to-r from-cyan-500/30 to-blue-600/30 text-white font-bold border border-cyan-400/60 shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Lock className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Логин и Пароль</span>
-          </button>
+        {!hasCustomPassword ? (
+          <form onSubmit={handleInitialSetup} className="space-y-4">
+            <div className="bg-amber-950/40 border border-amber-500/30 rounded-xl p-3 text-xs text-amber-200 leading-relaxed">
+              Для безопасности торгового счета стандартные пароли отключены. Задайте персональный пароль администратора (минимум 6 символов).
+            </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              setAuthTab('PIN');
-              setError(null);
-            }}
-            className={`py-2 rounded-lg transition flex items-center justify-center gap-1.5 ${
-              authTab === 'PIN'
-                ? 'bg-gradient-to-r from-cyan-500/30 to-blue-600/30 text-white font-bold border border-cyan-400/60 shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <KeyRound className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Быстрый PIN-код</span>
-          </button>
-        </div>
+            <div>
+              <label className="block text-xs font-mono text-slate-300 mb-1.5">
+                Логин оператора
+              </label>
+              <input
+                type="text"
+                required
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="admin"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-cyan-400"
+              />
+            </div>
 
-        {/* Login Form */}
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {authTab === 'PASSWORD' ? (
-            <>
+            <div>
+              <label className="block text-xs font-mono text-slate-300 mb-1.5">
+                Новый пароль администратора (мин. 6 символов)
+              </label>
+              <div className="relative">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  minLength={6}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Введите надежный пароль..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-3.5 pr-10 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-cyan-400"
+                />
+                <button
+                  type="button"
+                  aria-label="Показать или скрыть пароль"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-mono text-slate-300 mb-1.5">
-                  Логин оператора
+                  Подтвердите пароль
                 </label>
                 <input
-                  type="text"
+                  type={showPassword ? 'text' : 'password'}
                   required
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  placeholder="admin"
+                  minLength={6}
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="Повторите пароль..."
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-cyan-400"
                 />
               </div>
 
               <div>
                 <label className="block text-xs font-mono text-slate-300 mb-1.5">
-                  Пароль доступа
+                  PIN-код (4–8 цифр, опц.)
                 </label>
-                <div className="relative">
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Введите пароль..."
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-3.5 pr-10 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-cyan-400"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((prev) => !prev)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={8}
+                  value={pin}
+                  onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
+                  placeholder="Необязательно"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-cyan-400"
+                />
               </div>
-            </>
-          ) : (
-            <div>
-              <label className="block text-xs font-mono text-slate-300 mb-1.5">
-                Пин-код терминала (4–8 цифр)
-              </label>
-              <input
-                type="password"
-                inputMode="numeric"
-                required
-                maxLength={8}
-                value={pin}
-                onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
-                placeholder="••••"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-center text-xl tracking-[0.5em] text-cyan-300 font-mono font-bold focus:outline-none focus:border-cyan-400"
-              />
             </div>
-          )}
 
-          {error && (
-            <div className="bg-rose-950/70 border border-rose-500/50 rounded-xl p-3 flex items-center gap-2.5 text-xs text-rose-200">
-              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-              <span>{error}</span>
+            {error && (
+              <div className="bg-rose-950/70 border border-rose-500/50 rounded-xl p-3 flex items-center gap-2.5 text-xs text-rose-200">
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-cyan-500/25 transition flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              <span>{loading ? 'Сохранение ключей...' : 'Установить пароль и войти'}</span>
+            </button>
+          </form>
+        ) : (
+          <>
+            {/* Auth Method Switcher */}
+            <div className="grid grid-cols-2 gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800 font-mono text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthTab('PASSWORD');
+                  setError(null);
+                }}
+                className={`py-2 rounded-lg transition flex items-center justify-center gap-1.5 ${
+                  authTab === 'PASSWORD'
+                    ? 'bg-gradient-to-r from-cyan-500/30 to-blue-600/30 text-white font-bold border border-cyan-400/60 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Lock className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Логин и Пароль</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthTab('PIN');
+                  setError(null);
+                }}
+                className={`py-2 rounded-lg transition flex items-center justify-center gap-1.5 ${
+                  authTab === 'PIN'
+                    ? 'bg-gradient-to-r from-cyan-500/30 to-blue-600/30 text-white font-bold border border-cyan-400/60 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <KeyRound className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Быстрый PIN-код</span>
+              </button>
             </div>
-          )}
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-cyan-500/25 transition flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
-          >
-            <ShieldCheck className="w-4 h-4" />
-            <span>{loading ? 'Проверка ключей...' : 'Войти в терминал'}</span>
-          </button>
-        </form>
+            {/* Login Form */}
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {authTab === 'PASSWORD' ? (
+                <>
+                  <div>
+                    <label className="block text-xs font-mono text-slate-300 mb-1.5">
+                      Логин оператора
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      placeholder="admin"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-cyan-400"
+                    />
+                  </div>
 
-        {!hasCustomPassword && (
-          <button
-            type="button"
-            disabled={loading}
-            onClick={handleQuickDemoLogin}
-            className="w-full py-2 px-3 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/40 text-cyan-200 font-mono text-xs font-semibold transition cursor-pointer"
-          >
-            Быстрый вход (admin)
-          </button>
+                  <div>
+                    <label className="block text-xs font-mono text-slate-300 mb-1.5">
+                      Пароль доступа
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="Введите пароль..."
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-3.5 pr-10 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-cyan-400"
+                      />
+                      <button
+                        type="button"
+                        aria-label="Показать или скрыть пароль"
+                        onClick={() => setShowPassword((prev) => !prev)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <label className="block text-xs font-mono text-slate-300 mb-1.5">
+                    Пин-код терминала (4–8 цифр)
+                  </label>
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    required
+                    maxLength={8}
+                    value={pin}
+                    onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
+                    placeholder="••••"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-center text-xl tracking-[0.5em] text-cyan-300 font-mono font-bold focus:outline-none focus:border-cyan-400"
+                  />
+                </div>
+              )}
+
+              {error && (
+                <div className="bg-rose-950/70 border border-rose-500/50 rounded-xl p-3 flex items-center gap-2.5 text-xs text-rose-200">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>{error}</span>
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-cyan-500/25 transition flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+              >
+                <ShieldCheck className="w-4 h-4" />
+                <span>{loading ? 'Проверка ключей...' : 'Войти в терминал'}</span>
+              </button>
+            </form>
+          </>
+        )}
+
+        {isDevDemoEnabled && (
+          <div className="text-[11px] font-mono text-slate-500 text-center">
+            Режим отладки (VITE_DEMO_LOGIN активен)
+          </div>
         )}
       </div>
     </div>
@@ -389,7 +499,7 @@ export const AuthSettingsModal: React.FC<AuthSettingsModalProps> = ({
                 maxLength={8}
                 value={newPin}
                 onChange={(e) => setNewPin(e.target.value.replace(/\D/g, ''))}
-                placeholder={hasCustomPassword ? 'Без изменений' : 'По умолч.: 2026'}
+                placeholder={hasCustomPassword ? 'Без изменений' : 'Задайте 4–8 цифр'}
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-cyan-400"
               />
             </div>
@@ -401,7 +511,7 @@ export const AuthSettingsModal: React.FC<AuthSettingsModalProps> = ({
               type="password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
-              placeholder={hasCustomPassword ? '••••••••' : 'По умолч.: zima2026'}
+              placeholder={hasCustomPassword ? '••••••••' : 'Минимум 6 символов'}
               className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-cyan-400"
             />
           </div>

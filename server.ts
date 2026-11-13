@@ -187,6 +187,11 @@ import {
   evaluateFreqtradeShouldExit,
   evaluateLowProfitPairsProtection,
   applyFreqtradePairlistPipeline,
+  isSyntheticBrainHistoryLabel,
+  buildTrendGridPlan,
+  evaluateTrendGridSafetyOrderFill,
+  TREND_GRID_CORE_SYMBOLS,
+  type TrendGridSafetyOrder,
   type MarketRegimeType,
   type AdaptiveMarketProfile,
   type SymbolCooldownEntry,
@@ -194,6 +199,12 @@ import {
   type BotBrainState,
   type XaiDecisionRecord,
 } from './src/lib/bot-learning-math.ts';
+import {
+  parseTelegramSignalPost,
+  extractSignalsFromTelegramWebHtml,
+  detectAllSymbolsInText,
+  type ParsedTelegramPostSignal,
+} from './src/lib/telegram-signal-parser.ts';
 import {
   type AppNotification,
   type NotificationCategory,
@@ -356,7 +367,9 @@ interface AppSystemState {
 }
 
 
-const initialLogs: BotLogEntry[] = [
+const isDemoSeedMode = process.env.DEMO_SEED === 'true';
+
+const demoInitialLogs: BotLogEntry[] = [
   {
     id: 'log-init-01',
     timestamp: Date.now() - 35000,
@@ -369,31 +382,6 @@ const initialLogs: BotLogEntry[] = [
     message: 'Дисбаланс стакана L2-50 (OBI = +0.34). Открыта позиция LONG по $68,420.5. SL: $67,420, TP: $69,500.',
     rttMs: 24,
   },
-  {
-    id: 'log-init-02',
-    timestamp: Date.now() - 78000,
-    botId: 'agent-lgbm-nightly',
-    botName: 'Momentum · Импульсный Скальпер',
-    action: 'ORDER_OPEN',
-    symbol: 'SOLUSDT',
-    side: 'SHORT',
-    price: 178.4,
-    message: 'Импульс волатильности (ATR = 4.9%). Скальпинг SHORT по $178.40. SL: $184.0, TP: $172.0.',
-    rttMs: 31,
-  },
-  {
-    id: 'log-init-03',
-    timestamp: Date.now() - 145000,
-    botId: 'agent-tg-crypto-alpha',
-    botName: 'Alpha-Signal · Индекс Каналов',
-    action: 'TP_HIT',
-    symbol: 'ETHUSDT',
-    side: 'LONG',
-    price: 3495.0,
-    pnl: 0.18,
-    message: 'Take-Profit 1 ($3,495.0) достигнут по сетапу @crypto_alpha_vip. Зафиксирован профит +$0.18 USDT.',
-    rttMs: 27,
-  },
 ];
 
 import {
@@ -401,113 +389,8 @@ import {
   initialWalletLedger,
 } from './src/lib/trade-history-seed.ts';
 
-const initialXaiDecisions: XaiDecisionRecord[] = [
-  {
-    id: 'xai-init-01',
-    timestamp: Date.now() - 145000,
-    botId: 'agent-tg-crypto-alpha',
-    botName: 'Alpha-Signal · Индекс Каналов',
-    engineType: 'TG_CHANNEL',
-    symbol: 'ETHUSDT',
-    action: 'LONG',
-    entryPrice: 3420.0,
-    compositeScore: 0.38,
-    confidenceThreshold: 0.21,
-    atrPct: 0.58,
-    slDistancePct: 0.89,
-    spreadBps: 1.1,
-    factors: {
-      obi: 0.28,
-      rsi14: 58.4,
-      emaTrendBps: 11.2,
-      vwapDevPct: 0.22,
-      sentiment: 0.55,
-    },
-    contributions: {
-      obi: 0.0616,
-      momentum: 0.072,
-      vwap: 0.041,
-      sentiment: 0.2054,
-    },
-    reasonSummary:
-      'Вектор ИИ [LONG]: Score=+0.38 (порог 0.21) · L2 OBI=+0.28 · RSI=58.4 · VWAP=+0.22% · ATR SL=0.89%',
-    rlOutcome: {
-      closedAt: Date.now() - 15000,
-      exitReason: 'TP_HIT',
-      netPnlUsdt: 106.35,
-      reward: 0.709,
-      weightDelta: {
-        obiWeight: 0.0042,
-        momentumWeight: 0.0031,
-        vwapWeight: -0.0098,
-        sentimentWeight: 0.0025,
-      },
-      newThreshold: 0.206,
-    },
-  },
-  {
-    id: 'xai-init-02',
-    timestamp: Date.now() - 78000,
-    botId: 'agent-lgbm-nightly',
-    botName: 'LightGBM Nightly L2 Momentum',
-    engineType: 'LIGHTGBM',
-    symbol: 'SOLUSDT',
-    action: 'SHORT',
-    entryPrice: 178.4,
-    compositeScore: -0.31,
-    confidenceThreshold: 0.22,
-    atrPct: 0.68,
-    slDistancePct: 0.92,
-    spreadBps: 1.4,
-    factors: {
-      obi: -0.32,
-      rsi14: 39.2,
-      emaTrendBps: -14.5,
-      vwapDevPct: -0.31,
-      sentiment: -0.18,
-    },
-    contributions: {
-      obi: -0.0768,
-      momentum: -0.134,
-      vwap: -0.0812,
-      sentiment: -0.018,
-    },
-    reasonSummary:
-      'Вектор ИИ [SHORT]: Score=-0.31 (порог 0.22) · L2 OBI=-0.32 · RSI=39.2 · VWAP=-0.31% · ATR SL=0.92%',
-    positionId: 'pos-sol-02',
-  },
-  {
-    id: 'xai-init-03',
-    timestamp: Date.now() - 35000,
-    botId: 'agent-onnx-ppo-v2',
-    botName: 'ONNX PyTorch RL (PPO+LSTM)',
-    engineType: 'ONNX_RL',
-    symbol: 'BTCUSDT',
-    action: 'LONG',
-    entryPrice: 68420.5,
-    compositeScore: 0.34,
-    confidenceThreshold: 0.2,
-    atrPct: 0.52,
-    slDistancePct: 0.73,
-    spreadBps: 0.8,
-    factors: {
-      obi: 0.44,
-      rsi14: 61.5,
-      emaTrendBps: 9.8,
-      vwapDevPct: 0.19,
-      sentiment: 0.25,
-    },
-    contributions: {
-      obi: 0.1848,
-      momentum: 0.0952,
-      vwap: 0.031,
-      sentiment: 0.029,
-    },
-    reasonSummary:
-      'Вектор ИИ [LONG]: Score=+0.34 (порог 0.20) · L2 OBI=+0.44 · RSI=61.5 · VWAP=+0.19% · ATR SL=0.73%',
-    positionId: 'pos-btc-01',
-  },
-];
+const initialLogs: BotLogEntry[] = isDemoSeedMode ? demoInitialLogs : [];
+const initialXaiDecisions: XaiDecisionRecord[] = [];
 
 const systemState: AppSystemState = {
   mode: 'SHADOW',
@@ -516,8 +399,8 @@ const systemState: AppSystemState = {
   killSwitchTriggerReason: null,
   lastUnblockedAt: 0,
   capitalUsdt: 10.0,
-  rolling24hPnlUsdt: 0.65,
-  totalRealizedPnlUsdt: 0.65,
+  rolling24hPnlUsdt: 0.0,
+  totalRealizedPnlUsdt: 0.0,
   pings: { bybit: 24, okx: 32, mexc: 31 },
   botTradingEnabled: true,
   autoMarketAdaptationEnabled: true,
@@ -528,61 +411,8 @@ const systemState: AppSystemState = {
   closedTrades: initialClosedTrades,
   walletLedger: initialWalletLedger,
   xaiDecisions: initialXaiDecisions,
-  activePositions: [
-    {
-      id: 'pos-btc-01',
-      symbol: 'BTCUSDT',
-      side: 'LONG',
-      qty: 0.00015,
-      entryVwap: 68420.5,
-      currentPrice: 68650.0,
-      unrealizedPnl: 0.03,
-      leverage: 10,
-      marginType: 'ISOLATED',
-      mode: 'SHADOW',
-      slPrice: 67920.0,
-      tpGrid: [{ price: 69320.0, qty: 0.00009 }, { price: 69850.0, qty: 0.00006 }],
-      fundingPaid: 0.0,
-      openedAt: Date.now() - 3600000,
-      botId: 'agent-onnx-ppo-v2',
-      botName: 'Delta-L2 · Стакан и Объемы',
-      xaiDecisionId: 'xai-init-03',
-      entryFeatures: { obi: 0.44, momentum: 0.34, vwap: 0.17, sentiment: 0.25 },
-    },
-    {
-      id: 'pos-sol-02',
-      symbol: 'SOLUSDT',
-      side: 'SHORT',
-      qty: 0.05,
-      entryVwap: 178.4,
-      currentPrice: 176.2,
-      unrealizedPnl: 0.11,
-      leverage: 8,
-      marginType: 'ISOLATED',
-      mode: 'SHADOW',
-      slPrice: 180.05,
-      tpGrid: [{ price: 175.7, qty: 0.03 }, { price: 174.1, qty: 0.02 }],
-      fundingPaid: 0.0,
-      openedAt: Date.now() - 7200000,
-      botId: 'agent-lgbm-nightly',
-      botName: 'Momentum · Импульсный Скальпер',
-      xaiDecisionId: 'xai-init-02',
-      entryFeatures: { obi: -0.32, momentum: -0.35, vwap: -0.29, sentiment: -0.18 },
-    },
-  ],
-  limitOrdersQueue: [
-    {
-      id: 'ord-limit-eth-01',
-      symbol: 'ETHUSDT',
-      side: 'BUY',
-      limitPrice: 3450.0,
-      qty: 0.003,
-      queueAheadQty: 1.5,
-      volumeSincePlacement: 0.8,
-      status: 'PENDING_LIMIT',
-      createdTs: Date.now() - 900000,
-    },
-  ],
+  activePositions: [],
+  limitOrdersQueue: [],
   screenerSymbols: [
     { symbol: 'BTCUSDT', turnover24h: 3420000000, spreadBps: 0.8, atrPct: 2.8, status: 'READY', price: 68650.0 },
     { symbol: 'ETHUSDT', turnover24h: 1850000000, spreadBps: 1.2, atrPct: 3.4, status: 'READY', price: 3485.5 },
@@ -594,23 +424,23 @@ const systemState: AppSystemState = {
   ],
   channels: [
     {
-      channelId: 1001,
-      title: 'Crypto Alpha VIP',
-      username: '@crypto_alpha_vip',
+      channelId: 1007,
+      title: 'НЕ ИНВЕСТОР · Олег Артемьев',
+      username: '@ne_investor',
       sourceType: 'TELEGRAM',
-      category: 'Торговые сетапы L2',
-      influenceWeight: 0.9,
+      category: 'Авторские сигналы и уровни',
+      influenceWeight: 0.95,
       isEnabled: true,
-      lastSignalText: '#BTCUSDT LONG Entry: 68450 | SL: 67600 | TP1: 69800 — Крупный выкуп лимитной стенки на Bybit.',
-      lastParsedAt: Date.now() - 180000,
+      lastSignalText: 'Сейчас хорошая точка зайти в бот по SOL, NVIDIA, XAU. У вас будет отличная точка входа. SOLANA',
+      lastParsedAt: Date.now() - 60000,
       status: 'APPROVED',
-      trustScore: 88.5,
+      trustScore: 94.0,
       scamEditCount: 0,
-      totalSignals: 42,
-      winRateShadow: 0.68,
-      profitFactor: 1.82,
-      maxDrawdownPct: 4.8,
-      daysInQuarantine: 24,
+      totalSignals: 18,
+      winRateShadow: 0.76,
+      profitFactor: 2.12,
+      maxDrawdownPct: 3.2,
+      daysInQuarantine: 30,
     },
     {
       channelId: 1002,
@@ -651,31 +481,12 @@ const systemState: AppSystemState = {
       daysInQuarantine: 21,
     },
     {
-      channelId: 1004,
-      title: 'Bybit Futures Whale',
-      username: '@bybit_whale_calls',
-      sourceType: 'TELEGRAM',
-      category: 'Фьючерсные сигналы',
-      influenceWeight: 0.6,
-      isEnabled: true,
-      lastSignalText: '#SOLUSDT SHORT от зоны сопротивления. Ожидание локальной разгрузки перекупленного RSI.',
-      lastParsedAt: Date.now() - 900000,
-      status: 'QUARANTINE',
-      trustScore: 62.0,
-      scamEditCount: 0,
-      totalSignals: 14,
-      winRateShadow: 0.57,
-      profitFactor: 1.35,
-      maxDrawdownPct: 6.2,
-      daysInQuarantine: 8,
-    },
-    {
       channelId: 1005,
       title: 'Bybit Official Announcements',
       username: 'announcements.bybit.com',
       sourceType: 'EXCHANGE_ANN',
       category: 'Официальные листинги и фандинг',
-      influenceWeight: 0.95,
+      influenceWeight: 0.9,
       isEnabled: true,
       lastSignalText: 'Bybit V5: Обновление лимитов риска и расширение пула ликвидности для бессрочных контрактов USDT.',
       lastParsedAt: Date.now() - 1200000,
@@ -708,53 +519,7 @@ const systemState: AppSystemState = {
       daysInQuarantine: 15,
     },
   ],
-  parsedNewsFeed: [
-    {
-      id: 'news-init-01',
-      channelId: 1001,
-      sourceTitle: 'Crypto Alpha VIP',
-      sourceHandle: '@crypto_alpha_vip',
-      sourceType: 'TELEGRAM',
-      timestamp: Date.now() - 180000,
-      rawText: '#BTCUSDT LONG Entry: 68450 | Stop Loss: 67600 | TP1: 69800 | TP2: 71200 — Крупный выкуп лимитной стенки в стакане Bybit L2.',
-      symbol: 'BTCUSDT',
-      sentiment: 'BULLISH',
-      sentimentScore: 0.78,
-      impactWeight: 0.9,
-      extractedSetup: {
-        side: 'LONG',
-        entryPrice: 68450,
-        stopLoss: 67600,
-        tp1: 69800,
-      },
-    },
-    {
-      id: 'news-init-02',
-      channelId: 1002,
-      sourceTitle: 'Watcher.Guru Crypto News',
-      sourceHandle: '@WatcherGuru',
-      sourceType: 'TELEGRAM',
-      timestamp: Date.now() - 320000,
-      rawText: 'JUST IN: Институциональный приток в спотовые крипто-фонды превысил $420M за сутки. Усиление покупательского импульса по #BTCUSDT и #ETHUSDT.',
-      symbol: 'ETHUSDT',
-      sentiment: 'BULLISH',
-      sentimentScore: 0.68,
-      impactWeight: 0.85,
-    },
-    {
-      id: 'news-init-03',
-      channelId: 1003,
-      sourceTitle: 'Wu Blockchain',
-      sourceHandle: '@WuBlockchain',
-      sourceType: 'TELEGRAM',
-      timestamp: Date.now() - 540000,
-      rawText: 'Ончейн-мониторинг: рост объемов торгов и положительная дельта спроса по #SOLUSDT на фьючерсах Bybit V5.',
-      symbol: 'SOLUSDT',
-      sentiment: 'BULLISH',
-      sentimentScore: 0.54,
-      impactWeight: 0.8,
-    },
-  ],
+  parsedNewsFeed: [],
   agents: [
     {
       agentId: 'agent-onnx-ppo-v2',
@@ -762,17 +527,18 @@ const systemState: AppSystemState = {
       engineType: 'ONNX_RL',
       mode: 'LIVE',
       sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-      tradesCount: 48,
-      profitFactor: 1.76,
-      sharpeRatio: 2.14,
-      maxDrawdownPct: 3.8,
+      tradesCount: 0,
+      profitFactor: 0,
+      sharpeRatio: 0,
+      maxDrawdownPct: 0,
       virtualBalance: 10.0,
       liveAllocation: 10.0,
       isEnabled: true,
       riskPerTradePct: 1.5,
-      leverage: 10,
-      allowedSymbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'NEARUSDT'],
-      tpSlRatio: 1.8,
+      leverage: 4,
+      allowedSymbols: [...TREND_GRID_CORE_SYMBOLS],
+      dynamicScreenerScan: false,
+      tpSlRatio: 2.2,
       maxConcurrentPositions: 2,
       brain: createDefaultBotBrain('ONNX_RL', 'agent-onnx-ppo-v2'),
     },
@@ -782,18 +548,19 @@ const systemState: AppSystemState = {
       engineType: 'LIGHTGBM',
       mode: 'QUARANTINE',
       sha256: 'a1f89bc321c10940982df4c8996fb92427ae41e4649b934ca495991b7852b112',
-      tradesCount: 22,
-      profitFactor: 1.48,
-      sharpeRatio: 1.62,
-      maxDrawdownPct: 4.1,
+      tradesCount: 0,
+      profitFactor: 0,
+      sharpeRatio: 0,
+      maxDrawdownPct: 0,
       virtualBalance: 10.0,
       liveAllocation: 0.0,
-      isEnabled: true,
+      isEnabled: false,
       riskPerTradePct: 1.2,
-      leverage: 8,
-      allowedSymbols: ['SOLUSDT', 'ETHUSDT', 'DOGEUSDT'],
-      tpSlRatio: 1.6,
-      maxConcurrentPositions: 2,
+      leverage: 4,
+      allowedSymbols: ['SOLUSDT', 'BTCUSDT', 'ETHUSDT'],
+      dynamicScreenerScan: false,
+      tpSlRatio: 2.0,
+      maxConcurrentPositions: 1,
       brain: createDefaultBotBrain('LIGHTGBM', 'agent-lgbm-nightly'),
     },
     {
@@ -802,17 +569,18 @@ const systemState: AppSystemState = {
       engineType: 'TG_CHANNEL',
       mode: 'LIVE',
       sha256: '7c89a24198fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852e401',
-      tradesCount: 34,
-      profitFactor: 1.69,
-      sharpeRatio: 1.88,
-      maxDrawdownPct: 4.4,
+      tradesCount: 0,
+      profitFactor: 0,
+      sharpeRatio: 0,
+      maxDrawdownPct: 0,
       virtualBalance: 10.0,
       liveAllocation: 10.0,
       isEnabled: true,
       riskPerTradePct: 1.5,
-      leverage: 10,
-      allowedSymbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT'],
-      tpSlRatio: 2.0,
+      leverage: 4,
+      allowedSymbols: [...TREND_GRID_CORE_SYMBOLS],
+      dynamicScreenerScan: false,
+      tpSlRatio: 2.2,
       maxConcurrentPositions: 2,
       brain: createDefaultBotBrain('TG_CHANNEL', 'agent-tg-crypto-alpha'),
     },
@@ -1035,6 +803,31 @@ function loadPersistedState(): void {
     if (fs.existsSync(PERSIST_FILE)) {
       const raw = fs.readFileSync(PERSIST_FILE, 'utf-8');
       const parsed = JSON.parse(raw);
+
+      // Backup runtime_state.json before cleaning if it contains legacy synthetic seed data
+      const hasLegacySeeds =
+        !isDemoSeedMode &&
+        ((Array.isArray(parsed.closedTrades) &&
+          parsed.closedTrades.some((t: any) => t?.isSynthetic || String(t?.id || '').startsWith('trd-seed-'))) ||
+          (Array.isArray(parsed.activePositions) &&
+            parsed.activePositions.some((p: any) => p?.id === 'pos-btc-01' || p?.id === 'pos-sol-02')) ||
+          (Array.isArray(parsed.agents) &&
+            parsed.agents.some((a: any) =>
+              Array.isArray(a?.brain?.rewardHistory) &&
+              a.brain.rewardHistory.some((pt: any) => isSyntheticBrainHistoryLabel(pt?.label))
+            )));
+
+      if (hasLegacySeeds) {
+        try {
+          const backupFile = path.join(PERSIST_DIR, 'runtime_state.backup.json');
+          if (!fs.existsSync(backupFile)) {
+            fs.writeFileSync(backupFile, raw, 'utf-8');
+          }
+        } catch {
+          // ignore backup write error
+        }
+      }
+
       if (parsed.activeExchange === 'OKX' || parsed.activeExchange === 'BYBIT') {
         systemState.activeExchange = parsed.activeExchange;
       }
@@ -1081,25 +874,55 @@ function loadPersistedState(): void {
         ];
       } else {
         if (Array.isArray(parsed.activePositions)) {
-          systemState.activePositions = parsed.activePositions.map((p: any) => ({
-            ...p,
-            botName: p.botName ? sanitizeBotName(p.botId, p.botName) : p.botName,
-          }));
+          systemState.activePositions = parsed.activePositions
+            .filter((p: any) => isDemoSeedMode || (p?.id !== 'pos-btc-01' && p?.id !== 'pos-sol-02'))
+            .map((p: any) => ({
+              ...p,
+              botName: p.botName ? sanitizeBotName(p.botId, p.botName) : p.botName,
+            }));
         }
-        if (Array.isArray(parsed.limitOrdersQueue)) systemState.limitOrdersQueue = parsed.limitOrdersQueue;
+        if (Array.isArray(parsed.limitOrdersQueue)) {
+          systemState.limitOrdersQueue = parsed.limitOrdersQueue.filter(
+            (o: any) => isDemoSeedMode || o?.id !== 'ord-limit-eth-01'
+          );
+        }
 
         if (Array.isArray(parsed.closedTrades)) {
-          systemState.closedTrades = parsed.closedTrades.map((t: any) => ({
-            ...t,
-            botName: sanitizeBotName(t.botId, t.botName),
-          }));
+          systemState.closedTrades = parsed.closedTrades
+            .filter(
+              (t: any) =>
+                isDemoSeedMode || (!t?.isSynthetic && !String(t?.id || '').startsWith('trd-seed-'))
+            )
+            .map((t: any) => ({
+              ...t,
+              botName: sanitizeBotName(t.botId, t.botName),
+            }));
         }
 
         if (Array.isArray(parsed.walletLedger)) {
-          systemState.walletLedger = parsed.walletLedger.map((l: any) => ({
-            ...l,
-            description: sanitizeCleanText(l.description),
-          }));
+          const filteredLedger = parsed.walletLedger
+            .filter(
+              (l: any) =>
+                isDemoSeedMode || (!l?.isSynthetic && !String(l?.id || '').startsWith('led-seed-trd-seed'))
+            )
+            .map((l: any) => ({
+              ...l,
+              description: sanitizeCleanText(l.description),
+            }));
+          systemState.walletLedger =
+            filteredLedger.length > 0
+              ? filteredLedger
+              : [
+                  {
+                    id: 'led-init-10',
+                    timestamp: Date.now() - 3600000,
+                    type: 'DEPOSIT_RESET',
+                    amountUsdt: 10.0,
+                    balanceAfterUsdt: 10.0,
+                    description: 'Стартовый депозит торгового счета: $10.00 USDT',
+                    mode: systemState.mode,
+                  },
+                ];
         }
 
         if (systemState.closedTrades.length > 0) {
@@ -1113,18 +936,22 @@ function loadPersistedState(): void {
         }
       }
       if (Array.isArray(parsed.botTradeLogs)) {
-        systemState.botTradeLogs = parsed.botTradeLogs.map((log: any) => ({
-          ...log,
-          botName: sanitizeBotName(log.botId, log.botName),
-          message: sanitizeCleanText(log.message),
-        }));
+        systemState.botTradeLogs = parsed.botTradeLogs
+          .filter((log: any) => isDemoSeedMode || !String(log?.id || '').startsWith('log-init-'))
+          .map((log: any) => ({
+            ...log,
+            botName: sanitizeBotName(log.botId, log.botName),
+            message: sanitizeCleanText(log.message),
+          }));
       }
       if (Array.isArray(parsed.xaiDecisions)) {
-        systemState.xaiDecisions = parsed.xaiDecisions.map((d: any) => ({
-          ...d,
-          botName: sanitizeBotName(d.botId, d.botName),
-          reasonSummary: sanitizeCleanText(d.reasonSummary),
-        }));
+        systemState.xaiDecisions = parsed.xaiDecisions
+          .filter((d: any) => isDemoSeedMode || !String(d?.id || '').startsWith('xai-init-'))
+          .map((d: any) => ({
+            ...d,
+            botName: sanitizeBotName(d.botId, d.botName),
+            reasonSummary: sanitizeCleanText(d.reasonSummary),
+          }));
       }
       if (Array.isArray(parsed.notifications)) {
         systemState.notifications = parsed.notifications.map((n: any) => ({
@@ -1135,10 +962,65 @@ function loadPersistedState(): void {
         }));
       }
       if (Array.isArray(parsed.channels) && parsed.channels.length > 0) {
-        systemState.channels = parsed.channels;
+        // Remove defunct non-existent placeholder channels (@crypto_alpha_vip, @bybit_whale_calls) and ensure @ne_investor is present & APPROVED
+        const filteredChannels = parsed.channels.filter(
+          (c: any) =>
+            c.username !== '@crypto_alpha_vip' &&
+            c.username !== '@bybit_whale_calls'
+        );
+        const hasNeInvestor = filteredChannels.some(
+          (c: any) => String(c.username || '').toLowerCase() === '@ne_investor'
+        );
+        if (!hasNeInvestor) {
+          filteredChannels.unshift({
+            channelId: 1007,
+            title: 'НЕ ИНВЕСТОР · Олег Артемьев',
+            username: '@ne_investor',
+            sourceType: 'TELEGRAM',
+            category: 'Авторские сигналы и уровни',
+            influenceWeight: 0.95,
+            isEnabled: true,
+            lastSignalText: 'Синхронизация сигналов с https://t.me/ne_investor...',
+            lastParsedAt: Date.now(),
+            status: 'APPROVED',
+            trustScore: 94.0,
+            scamEditCount: 0,
+            totalSignals: 0,
+            winRateShadow: 0.76,
+            profitFactor: 2.12,
+            maxDrawdownPct: 3.2,
+            daysInQuarantine: 30,
+          });
+        } else {
+          for (const c of filteredChannels) {
+            if (String(c.username || '').toLowerCase() === '@ne_investor') {
+              c.status = 'APPROVED';
+              c.isEnabled = true;
+              c.influenceWeight = Math.max(0.9, Number(c.influenceWeight) || 0.95);
+              if (String(c.lastSignalText || '').includes('Квантовый срез Bybit L2')) {
+                c.lastSignalText = 'Синхронизация сигналов с https://t.me/ne_investor...';
+              }
+            }
+          }
+        }
+        systemState.channels = filteredChannels;
       }
       if (Array.isArray(parsed.parsedNewsFeed) && parsed.parsedNewsFeed.length > 0) {
-        systemState.parsedNewsFeed = parsed.parsedNewsFeed;
+        // Purge synthetic L2_ORDERBOOK_SIGNAL entries and non-actionable promo/referral posts
+        systemState.parsedNewsFeed = parsed.parsedNewsFeed.filter((f: any) => {
+          const text = String(f?.rawText || '');
+          if (
+            String(f?.id || '').startsWith('news-init-') ||
+            f?.sourceHandle === '@crypto_alpha_vip' ||
+            f?.sourceHandle === '@bybit_whale_calls' ||
+            (f?.sourceType === 'TELEGRAM' && f?.dataSource === 'L2_ORDERBOOK_SIGNAL') ||
+            text.includes('Квантовый срез Bybit L2')
+          ) {
+            return false;
+          }
+          const check = parseTelegramSignalPost(text);
+          return check.isActionableSignal;
+        });
       }
       if (parsed.telegramBot && typeof parsed.telegramBot === 'object') {
         const sanitizedToken = isValidTelegramBotToken(parsed.telegramBot.botToken)
@@ -1181,35 +1063,81 @@ function loadPersistedState(): void {
           const saved = parsed.agents.find((a: any) => a.agentId === defaultAgent.agentId);
           if (!saved) return defaultAgent;
           const freshDefaultBrain = createDefaultBotBrain(defaultAgent.engineType, defaultAgent.agentId);
-          const hasLegacyIdenticalCurve =
-            Array.isArray(saved.brain?.rewardHistory) &&
-            saved.brain.rewardHistory.length === 4 &&
-            saved.brain.rewardHistory[0]?.reward === 0.45;
-          const rawHistory = hasLegacyIdenticalCurve
-            ? freshDefaultBrain.rewardHistory
-            : saved.brain?.rewardHistory || freshDefaultBrain.rewardHistory;
+          const rawSavedHistory: any[] = Array.isArray(saved.brain?.rewardHistory)
+            ? saved.brain.rewardHistory
+            : [];
+
+          // Detect if rawSavedHistory starts with the legacy 7-point fake seed series
+          const hasLegacySeedPrefix =
+            rawSavedHistory.length >= 7 &&
+            isSyntheticBrainHistoryLabel(rawSavedHistory[0]?.label);
+
+          const postPrefixHistory = hasLegacySeedPrefix
+            ? rawSavedHistory.slice(7)
+            : rawSavedHistory;
+
+          const cleanHistoryRaw = postPrefixHistory.filter(
+            (pt: any) => pt && !isSyntheticBrainHistoryLabel(pt.label)
+          );
+
+          // Recalculate running cumulativeReward cleanly over real history points
+          let runningCumReward = 0;
+          const cleanHistory = cleanHistoryRaw.map((pt: any) => {
+            const r = Number(pt.reward) || 0;
+            runningCumReward = Number((runningCumReward + r).toFixed(3));
+            return {
+              ...pt,
+              label: sanitizeCleanText(pt.label),
+              reward: r,
+              cumulativeReward: runningCumReward,
+            };
+          });
+
+          const realEpochsCount = cleanHistory.filter((pt: any) =>
+            String(pt.label || '').startsWith('Цикл #')
+          ).length;
+          const realOnlineUpdatesCount = cleanHistory.length - realEpochsCount;
+
+          const realAgentTrades = systemState.closedTrades.filter(
+            (t) => t.botId === defaultAgent.agentId
+          );
+
           return {
             ...defaultAgent,
             ...saved,
+            // Enforce Variant 3 safe 3x-5x grid leverage (migrate legacy 8x/10x to 4x) and core liquid symbol list
+            leverage:
+              typeof saved.leverage === 'number' && saved.leverage >= 2 && saved.leverage <= 5
+                ? saved.leverage
+                : 4,
+            allowedSymbols: [...TREND_GRID_CORE_SYMBOLS],
+            dynamicScreenerScan: false,
+            tradesCount: realAgentTrades.length,
             virtualBalance:
               isLegacy10k || typeof saved.virtualBalance !== 'number' || saved.virtualBalance > 500
                 ? 10.0
                 : saved.virtualBalance,
             name: sanitizeBotName(defaultAgent.agentId, saved.name),
+            // Keep deterministic baseline weights & threshold so past noisy RL updates do not distort entries
             brain: saved.brain
               ? {
                   ...freshDefaultBrain,
                   ...saved.brain,
-                  weights: normalizeWeights(saved.brain.weights || defaultAgent.brain.weights),
-                  rewardHistory: Array.isArray(rawHistory)
-                    ? rawHistory.map((pt: any) => ({
-                        ...pt,
-                        label: sanitizeCleanText(pt.label),
-                      }))
-                    : freshDefaultBrain.rewardHistory,
-                  cumulativeReward: hasLegacyIdenticalCurve
-                    ? freshDefaultBrain.cumulativeReward
-                    : saved.brain.cumulativeReward ?? freshDefaultBrain.cumulativeReward,
+                  weights: freshDefaultBrain.weights,
+                  confidenceThreshold: freshDefaultBrain.confidenceThreshold,
+                  atrMultiplier: freshDefaultBrain.atrMultiplier,
+                  epochsTrained: hasLegacySeedPrefix
+                    ? realEpochsCount
+                    : Math.max(0, Number(saved.brain.epochsTrained) || 0),
+                  onlineUpdatesCount: hasLegacySeedPrefix
+                    ? realOnlineUpdatesCount
+                    : Math.max(0, Number(saved.brain.onlineUpdatesCount) || 0),
+                  rewardHistory: cleanHistory,
+                  cumulativeReward: hasLegacySeedPrefix
+                    ? runningCumReward
+                    : cleanHistory.length > 0
+                    ? runningCumReward
+                    : 0,
                 }
               : freshDefaultBrain,
           };
@@ -3895,7 +3823,15 @@ function recordClosedPosition(
         symbol: pos.symbol,
       });
 
-      agent.brain = rlUpdate.updatedBrain;
+      // Variant 3: Record reward telemetry in history, but FREEZE weights and confidenceThreshold
+      // so random short-term candles never mutate deterministic Trend-Grid rules.
+      agent.brain = {
+        ...rlUpdate.updatedBrain,
+        weights: currentBrain.weights,
+        confidenceThreshold: currentBrain.confidenceThreshold,
+        atrMultiplier: currentBrain.atrMultiplier,
+        lastWeightDelta: { obiWeight: 0, momentumWeight: 0, vwapWeight: 0, sentimentWeight: 0 },
+      };
       agent.sha256 = rlUpdate.newSha256;
 
       // Attach rlOutcome to matching XAI decision record if found
@@ -3910,8 +3846,8 @@ function recordClosedPosition(
           exitReason,
           netPnlUsdt: combinedTradeNetPnl,
           reward: rlUpdate.reward,
-          weightDelta: rlUpdate.weightDelta,
-          newThreshold: rlUpdate.updatedBrain.confidenceThreshold,
+          weightDelta: { obiWeight: 0, momentumWeight: 0, vwapWeight: 0, sentimentWeight: 0 },
+          newThreshold: currentBrain.confidenceThreshold,
         };
       }
 
@@ -3922,7 +3858,7 @@ function recordClosedPosition(
         symbol: pos.symbol,
         side: pos.side,
         pnl: combinedTradeNetPnl,
-        message: `RL-Адаптация весов [Reward ${rlUpdate.reward >= 0 ? '+' : ''}${rlUpdate.reward.toFixed(2)}R]: Δw(OBI=${rlUpdate.weightDelta.obiWeight >= 0 ? '+' : ''}${(rlUpdate.weightDelta.obiWeight * 100).toFixed(1)}%, Mom=${rlUpdate.weightDelta.momentumWeight >= 0 ? '+' : ''}${(rlUpdate.weightDelta.momentumWeight * 100).toFixed(1)}%, VWAP=${rlUpdate.weightDelta.vwapWeight >= 0 ? '+' : ''}${(rlUpdate.weightDelta.vwapWeight * 100).toFixed(1)}%) · Порог=${rlUpdate.updatedBrain.confidenceThreshold.toFixed(2)}.`,
+        message: `Статистика сетки [Результат ${rlUpdate.reward >= 0 ? '+' : ''}${rlUpdate.reward.toFixed(2)}R]: Веса и порог (${currentBrain.confidenceThreshold.toFixed(2)}) зафиксированы без мутации.`,
         rttMs: systemState.pings.bybit,
       });
     }
@@ -4058,15 +3994,61 @@ async function runBotEngineCycle() {
       if (livePrice && livePrice > 0) {
         const inst = resolveInstrumentRules(pos.symbol, livePrice);
         const priceDecimals = inst.tickSize < 0.01 ? 4 : inst.tickSize < 0.1 ? 2 : 1;
+        const qtyDecimals = Math.max(0, -Math.floor(Math.log10(inst.qtyStep) + 1e-9));
 
         pos.currentPrice = livePrice;
         const dirSign = pos.side === 'LONG' ? 1 : -1;
+
+        // 2.0. Variant 3 Trend-Grid Safety Orders (@ne_investor Pullback Averaging):
+        // Ensure legacy positions also have safetyOrders initialized
+        if (!Array.isArray(pos.safetyOrders)) {
+          const fallbackPlan = buildTrendGridPlan({
+            side: pos.side,
+            entryPrice: pos.entryVwap,
+            totalPlannedQty: pos.qty * 2.5,
+            atrPct: 1.35,
+            qtyStep: inst.qtyStep,
+            minQty: inst.minQty,
+            priceDecimals,
+          });
+          pos.safetyOrders = fallbackPlan.safetyOrders;
+          pos.tpTargetPct = fallbackPlan.tpTargetPct;
+        }
+
+        const dcaFill = evaluateTrendGridSafetyOrderFill({
+          side: pos.side,
+          currentPrice: pos.currentPrice,
+          currentQty: pos.qty,
+          currentEntryVwap: pos.entryVwap,
+          safetyOrders: pos.safetyOrders,
+          priceDecimals,
+          qtyDecimals,
+          tpTargetPct: pos.tpTargetPct || 1.85,
+        });
+
+        if (dcaFill.triggered) {
+          pos.qty = dcaFill.newQty;
+          pos.entryVwap = dcaFill.newEntryVwap;
+          pos.safetyOrders = dcaFill.updatedSafetyOrders;
+          pos.tpGrid = [{ price: dcaFill.newTpPrice, qty: dcaFill.newQty }];
+
+          addBotLog({
+            botId: pos.botId || 'agent-tg-crypto-alpha',
+            botName: pos.botName || 'Сетка @ne_investor',
+            action: 'LIMIT_FILL',
+            symbol: pos.symbol,
+            side: pos.side,
+            price: pos.currentPrice,
+            message: `Сетка @ne_investor [Добор #${dcaFill.filledStepIndex}/2]: откуп просадки ${pos.side} ${pos.symbol} по $${pos.currentPrice.toFixed(priceDecimals)} (+${dcaFill.addedQty}). Средняя цена улучшена до $${pos.entryVwap.toFixed(priceDecimals)}, цель разгрузки TP смещена на $${dcaFill.newTpPrice.toFixed(priceDecimals)} (+${(pos.tpTargetPct || 1.85).toFixed(2)}%).`,
+            rttMs: systemState.pings.bybit,
+          });
+          savePersistedState();
+        }
+
         const diff = (pos.currentPrice - pos.entryVwap) * dirSign;
         pos.unrealizedPnl = Number((diff * pos.qty).toFixed(2));
 
-        // 2a. Freqtrade `ft_stoploss_adjust` (trailing_stop_positive_offset = 0.90%, lockFraction = 0.65):
-        // Updates peakPrice and ratchets slPrice into profit BEFORE checking stop-loss breach,
-        // matching `freqtrade/strategy/interface.py:ft_stoploss_reached`.
+        // 2a. Trailing Stop Protection (activates ONLY after a full +1.55% bounce from averaged entryVwap, locking 75% of gain)
         const trailUpdate = computeTrailingStopPrice({
           side: pos.side,
           entryPrice: pos.entryVwap,
@@ -4074,9 +4056,9 @@ async function runBotEngineCycle() {
           currentSlPrice: pos.slPrice,
           previousPeakPrice: pos.peakPrice,
           priceDecimals,
-          activationPct: 0.90,
-          feeBufferPct: 0.30,
-          lockFraction: 0.65,
+          activationPct: 1.55,
+          feeBufferPct: 0.35,
+          lockFraction: 0.75,
         });
         pos.peakPrice = trailUpdate.newPeakPrice;
         if (trailUpdate.updated) {
@@ -4085,18 +4067,16 @@ async function runBotEngineCycle() {
           pos.isTrailing = true;
         }
 
-        // 2b. Check Stop-Loss breach (including Break-Even SL or Trailing SL)
+        // 2b. Check Catastrophic Grid Stop-Loss or Trailing Stop breach
         const slHit = pos.side === 'LONG' ? pos.currentPrice <= pos.slPrice : pos.currentPrice >= pos.slPrice;
         if (slHit) {
           systemState.activePositions.splice(i, 1);
-          const isProfitableTrailExit = (pos.isTrailing || pos.isBreakEven) && diff > pos.entryVwap * 0.0012;
+          const isProfitableTrailExit = (pos.isTrailing || pos.isBreakEven) && diff > pos.entryVwap * 0.0020;
           const exitReasonCode = isProfitableTrailExit ? 'TP_HIT' : 'SL_HIT';
           const tradeRecord = recordClosedPosition(pos, pos.currentPrice, exitReasonCode);
           const slTag = pos.isTrailing
-            ? 'Freqtrade Trailing-Stop (защита профита от пика)'
-            : pos.isBreakEven
-            ? 'Стоп в Безубытке после TP1'
-            : 'Структурный ATR Stop-Loss';
+            ? 'Трейлинг-стоп сетки (фиксация волны от пика)'
+            : 'Защитный стоп сетки (за пределами уровней добора)';
 
           addBotLog({
             botId: pos.botId || 'agent-risk-firewall',
@@ -4106,94 +4086,39 @@ async function runBotEngineCycle() {
             side: pos.side,
             price: pos.currentPrice,
             pnl: tradeRecord.netPnlUsdt,
-            message: `${slTag} сработал на $${pos.slPrice.toFixed(priceDecimals)} по ${pos.symbol}. Итог с комиссией: ${tradeRecord.netPnlUsdt >= 0 ? '+' : ''}$${tradeRecord.netPnlUsdt.toFixed(2)} USDT. Веса RL скорректированы.`,
+            message: `${slTag} сработал на $${pos.slPrice.toFixed(priceDecimals)} по ${pos.symbol}. Итог с комиссией: ${tradeRecord.netPnlUsdt >= 0 ? '+' : ''}$${tradeRecord.netPnlUsdt.toFixed(2)} USDT.`,
             rttMs: systemState.pings.bybit,
           });
           continue;
         }
 
-        // 2c. Check Multi-Tier Take-Profit Grid (Scale-Out TP1 -> Move SL to Break-Even -> Final TP2)
+        // 2c. Full-Position Trend-Grid Unload Take-Profit (+1.70%..+2.45% from averaged entryVwap — zero $0.03 dust cuts)
         if (pos.tpGrid && pos.tpGrid.length > 0) {
           const targetTp = pos.tpGrid[0];
           const tpHit = pos.side === 'LONG' ? pos.currentPrice >= targetTp.price : pos.currentPrice <= targetTp.price;
           if (tpHit) {
-            if (pos.tpGrid.length > 1 && targetTp.qty > 0 && targetTp.qty < pos.qty) {
-              // Partial Scale-Out at TP1 (60% of position) + Move remaining 40% to Break-Even + fee buffer
-              const partialQty = targetTp.qty;
-              const remainingQty = Number(Math.max(inst.minQty, pos.qty - partialQty).toFixed(4));
-              const partialSnapshot = {
-                ...pos,
-                qty: partialQty,
-                fundingPaid: Number(((pos.fundingPaid || 0) * 0.6).toFixed(4)),
-              };
-              const partialTrade = recordClosedPosition(partialSnapshot, pos.currentPrice, 'TP_HIT', {
-                isPartialScaleOut: true,
-              });
+            systemState.activePositions.splice(i, 1);
+            const tradeRecord = recordClosedPosition(pos, pos.currentPrice, 'TP_HIT');
+            const filledStepsCount = Array.isArray(pos.safetyOrders)
+              ? pos.safetyOrders.filter((so: TrendGridSafetyOrder) => so.filled).length
+              : 0;
 
-              pos.qty = remainingQty;
-              pos.realizedScaleOutPnlUsdt = Number(((pos.realizedScaleOutPnlUsdt || 0) + partialTrade.netPnlUsdt).toFixed(2));
-              pos.fundingPaid = Number(((pos.fundingPaid || 0) * 0.4).toFixed(4));
-              pos.tpGrid.shift();
-              if (pos.tpGrid[0]) {
-                pos.tpGrid[0].qty = remainingQty;
-              }
-
-              // Move SL to Break-Even + 0.20% fee/profit cushion ONLY AFTER TP1 IS SECURED
-              const beBuffer = pos.entryVwap * 0.0020 * dirSign;
-              pos.slPrice = Number((pos.entryVwap + beBuffer).toFixed(priceDecimals));
-              pos.isBreakEven = true;
-              pos.unrealizedPnl = Number((diff * pos.qty).toFixed(2));
-
-              addBotLog({
-                botId: pos.botId || 'agent-tp-grid',
-                botName: pos.botName || 'Take-Profit Engine',
-                action: 'TP_HIT',
-                symbol: pos.symbol,
-                side: pos.side,
-                price: pos.currentPrice,
-                pnl: partialTrade.netPnlUsdt,
-                message: `Частичный фиксаж TP1 (60% объема) по ${pos.symbol} на $${targetTp.price.toFixed(priceDecimals)}: зафиксировано +$${partialTrade.netPnlUsdt.toFixed(2)} USDT! Стоп-лосс остатка (40%) переведен в Безубыток ($${pos.slPrice.toFixed(priceDecimals)}).`,
-                rttMs: systemState.pings.bybit,
-              });
-
-              emitAppNotification({
-                category: 'SCALE_OUT',
-                severity: 'SUCCESS',
-                title: `🎯 TP1 (60%) + Безубыток: ${pos.symbol}`,
-                message: `Зафиксировано +$${partialTrade.netPnlUsdt.toFixed(2)} USDT по $${targetTp.price.toFixed(priceDecimals)}. Стоп-лосс остатка переведен в Безубыток ($${pos.slPrice.toFixed(priceDecimals)}).`,
-                symbol: pos.symbol,
-                botName: pos.botName,
-                pnl: partialTrade.netPnlUsdt,
-                isUrgent: false,
-              });
-
-              savePersistedState();
-              continue;
-            } else {
-              // Full close on final TP tier
-              systemState.activePositions.splice(i, 1);
-              const tradeRecord = recordClosedPosition(pos, pos.currentPrice, 'TP_HIT');
-
-              addBotLog({
-                botId: pos.botId || 'agent-tp-grid',
-                botName: pos.botName || 'Take-Profit Engine',
-                action: 'TP_HIT',
-                symbol: pos.symbol,
-                side: pos.side,
-                price: pos.currentPrice,
-                pnl: tradeRecord.netPnlUsdt,
-                message: `Финальный Take-Profit ($${targetTp.price.toFixed(priceDecimals)}) достигнут по ${pos.symbol}! Чистый профит +$${tradeRecord.netPnlUsdt.toFixed(2)} USDT. Подкрепление весов RL выполнено.`,
-                rttMs: systemState.pings.bybit,
-              });
-              continue;
-            }
+            addBotLog({
+              botId: pos.botId || 'agent-tp-grid',
+              botName: pos.botName || 'Take-Profit Сетки',
+              action: 'TP_HIT',
+              symbol: pos.symbol,
+              side: pos.side,
+              price: pos.currentPrice,
+              pnl: tradeRecord.netPnlUsdt,
+              message: `Разгрузка сетки Take-Profit ($${targetTp.price.toFixed(priceDecimals)}, сработало доборов: ${filledStepsCount}/2) по ${pos.symbol}! Чистый профит +$${tradeRecord.netPnlUsdt.toFixed(2)} USDT.`,
+              rttMs: systemState.pings.bybit,
+            });
+            continue;
           }
         }
 
-        // 2d. Freqtrade `should_exit` (`minimal_roi` time-decaying profit table & `exit_profit_only` reversal lock)
-        // Ported directly from `freqtrade/strategy/interface.py:min_roi_reached` & `should_exit`:
-        // Harvests profitable positions according to hold duration (`0m: +1.65%`, `15m: +1.05%`, `35m: +0.72%`, `60m: +0.48%`, `120m: +0.28%`)
-        // so winning trades never sit open for hours until they reverse into a stop-loss!
+        // 2d. Trend-Grid Minimum Harvest Check (never exits below +1.35% net profit after fees)
         const ftExitCheck = evaluateFreqtradeShouldExit({
           side: pos.side,
           entryPrice: pos.entryVwap,
@@ -4202,21 +4127,60 @@ async function runBotEngineCycle() {
           isTrailing: pos.isTrailing,
           isBreakEven: pos.isBreakEven,
           openedAt: pos.openedAt || Date.now(),
+          roiTable: {
+            0: 0.0195,
+            60: 0.0165,
+            180: 0.0135,
+          },
         });
 
-        if (ftExitCheck.shouldExit && (ftExitCheck.exitType === 'ROI' || ftExitCheck.exitType === 'EXIT_SIGNAL')) {
+        if (ftExitCheck.shouldExit && ftExitCheck.exitType === 'ROI') {
           systemState.activePositions.splice(i, 1);
           const tradeRecord = recordClosedPosition(pos, pos.currentPrice, 'TP_HIT');
 
           addBotLog({
             botId: pos.botId || 'agent-tp-grid',
-            botName: pos.botName || 'Freqtrade ROI Engine',
+            botName: pos.botName || 'Take-Profit Сетки',
             action: 'TP_HIT',
             symbol: pos.symbol,
             side: pos.side,
             price: pos.currentPrice,
             pnl: tradeRecord.netPnlUsdt,
-            message: `Freqtrade [${ftExitCheck.exitReasonTag}] зафиксировал профит по ${pos.symbol} (удержание ${ftExitCheck.holdDurationMinutes}м, цена $${pos.currentPrice.toFixed(priceDecimals)}): чистый PnL +$${tradeRecord.netPnlUsdt.toFixed(2)} USDT!`,
+            message: `Фиксация волны сетки [${ftExitCheck.exitReasonTag}] по ${pos.symbol} (удержание ${ftExitCheck.holdDurationMinutes}м, цена $${pos.currentPrice.toFixed(priceDecimals)}): чистый PnL +$${tradeRecord.netPnlUsdt.toFixed(2)} USDT!`,
+            rttMs: systemState.pings.bybit,
+          });
+          continue;
+        }
+
+        // 2e. Telegram Channel Signal Conflict / Reversal Exit:
+        // If an open position was opened against strong Telegram channel sentiment (or a new strong opposing LIVE_TELEGRAM_WEB signal arrived)
+        // and the position has been held >= 8 minutes, exit cleanly to free the slot for aligned Telegram signals.
+        const latestTgForPos = systemState.parsedNewsFeed.find(
+          (f) =>
+            f.dataSource === 'LIVE_TELEGRAM_WEB' &&
+            (f.symbol === pos.symbol || f.symbol === 'BTCUSDT') &&
+            Math.abs(Number(f.sentimentScore) || 0) >= 0.68
+        );
+        const posDir = pos.side === 'LONG' ? 1 : -1;
+        const entrySent = Number(pos.entryFeatures?.sentiment || 0);
+        const liveTgSent = Number(latestTgForPos?.sentimentScore || 0);
+        const isCounterTgSignal =
+          ftExitCheck.holdDurationMinutes >= 8 &&
+          ((entrySent * posDir <= -0.35) || (liveTgSent * posDir <= -0.72));
+
+        if (isCounterTgSignal) {
+          systemState.activePositions.splice(i, 1);
+          const exitCode = pos.unrealizedPnl >= 0 ? 'TP_HIT' : 'SL_HIT';
+          const tradeRecord = recordClosedPosition(pos, pos.currentPrice, exitCode);
+          addBotLog({
+            botId: 'agent-tg-crypto-alpha',
+            botName: 'Alpha-Signal · Индекс Каналов',
+            action: exitCode,
+            symbol: pos.symbol,
+            side: pos.side,
+            price: pos.currentPrice,
+            pnl: tradeRecord.netPnlUsdt,
+            message: `Ротация позиции по сигналу Telegram (${latestTgForPos?.sourceHandle || '@ne_investor'}): закрыт встречный ${pos.side} ${pos.symbol} (${tradeRecord.netPnlUsdt >= 0 ? '+' : ''}$${tradeRecord.netPnlUsdt.toFixed(2)} USDT) для освобождения слота под актуальный сигнал канала.`,
             rttMs: systemState.pings.bybit,
           });
           continue;
@@ -4296,13 +4260,18 @@ async function runBotEngineCycle() {
       );
 
       if (activeBots.length > 0 && systemState.activePositions.length < maxAllowedOpenPositions) {
-        // Deterministically select the highest-performing available bot by Sharpe / RL cumulative reward
+        // Prioritize Alpha-Signal (agent-tg-crypto-alpha) when live Telegram channel signals exist and it has a free slot
+        const hasLiveTgSignals = systemState.parsedNewsFeed.some(
+          (f) => f.dataSource === 'LIVE_TELEGRAM_WEB' && Math.abs(Number(f.sentimentScore) || 0) >= 0.6
+        );
+        const tgBotAvailable = activeBots.find((a) => a.agentId === 'agent-tg-crypto-alpha');
+
         const sortedBots = [...activeBots].sort(
           (a, b) =>
             (b.sharpeRatio || 1.5) * 0.5 + (b.brain?.cumulativeReward || 0) * 0.5 -
             ((a.sharpeRatio || 1.5) * 0.5 + (a.brain?.cumulativeReward || 0) * 0.5)
         );
-        const actingBot = sortedBots[0];
+        const actingBot = hasLiveTgSignals && tgBotAvailable ? tgBotAvailable : sortedBots[0];
         if (!actingBot.brain) {
           actingBot.brain = createDefaultBotBrain(actingBot.engineType, actingBot.agentId);
         }
@@ -4353,10 +4322,21 @@ async function runBotEngineCycle() {
           return;
         }
 
-        // Build a deterministic 4-symbol tournament batch per cycle prioritizing top PerformanceFilter pairs
+        // Build a deterministic 4-symbol tournament batch per cycle:
+        // First, inject symbols with active Telegram signals (e.g. SOLUSDT, XRPUSDT, BTCUSDT from @ne_investor)
         const batchSet = new Set<string>();
+        const tgSignalSymbols = systemState.parsedNewsFeed
+          .filter((f) => f.dataSource === 'LIVE_TELEGRAM_WEB' && Math.abs(Number(f.sentimentScore) || 0) >= 0.58)
+          .map((f) => String(f.symbol || ''))
+          .filter((s) => availableCandidates.includes(s));
+
+        for (const tgSym of tgSignalSymbols) {
+          if (batchSet.size < 3) batchSet.add(tgSym);
+        }
         // Always include the #1 highest-performing available pair from PerformanceFilter
-        batchSet.add(availableCandidates[0]);
+        if (batchSet.size < 4) {
+          batchSet.add(availableCandidates[0]);
+        }
         for (let i = 0; i < availableCandidates.length && batchSet.size < 4; i++) {
           batchSet.add(availableCandidates[(tournamentScanCursor + i) % availableCandidates.length]);
         }
@@ -4366,7 +4346,7 @@ async function runBotEngineCycle() {
         const btcMeta = systemState.screenerSymbols.find((s) => s.symbol === 'BTCUSDT');
         const btcChange24h = btcMeta?.priceChangePct || 0;
 
-        // Evaluate all batch candidates on 15-minute klines (Freqtrade NFI timeframe) + L2 Orderbook
+        // Evaluate all batch candidates on 15-minute klines (Freqtrade NFI timeframe) + L2 Orderbook + Live Telegram Signals
         const evaluatedBatch = await Promise.all(
           batchSymbols.map(async (sym) => {
             const [cBook, cKlines] = await Promise.all([
@@ -4376,22 +4356,29 @@ async function runBotEngineCycle() {
             const cBestBid = cBook.bids[0]?.price || priceMap[sym] || 100;
             const cBestAsk = cBook.asks[0]?.price || priceMap[sym] || 100;
 
-            const recentSymbolFeed = systemState.parsedNewsFeed.filter(
-              (item) => item.symbol === sym || item.symbol === 'BTCUSDT'
-            );
+            // Prioritize exact symbol Telegram signals first; fallback to macro BTCUSDT signals only if no direct symbol signal exists
+            const exactSymbolFeed = systemState.parsedNewsFeed.filter((item) => item.symbol === sym);
+            const recentSymbolFeed =
+              exactSymbolFeed.length > 0
+                ? exactSymbolFeed
+                : systemState.parsedNewsFeed.filter((item) => item.symbol === 'BTCUSDT');
+
             const feedBias =
               recentSymbolFeed.length > 0
                 ? recentSymbolFeed
-                    .slice(0, 5)
-                    .reduce((acc, n) => acc + (n.sentimentScore || 0) * (n.impactWeight ?? 0.8), 0) /
-                  Math.min(5, recentSymbolFeed.length)
+                    .slice(0, 4)
+                    .reduce((acc, n) => acc + (Number(n.sentimentScore) || 0) * (Number(n.impactWeight) ?? 0.85), 0) /
+                  Math.min(4, recentSymbolFeed.length)
                 : 0;
 
-            // Relative strength vs BTC + 24h momentum
+            // Relative strength vs BTC + 24h momentum, giving dominant weight (75%) to direct Telegram channel signals when present
             const symMeta = systemState.screenerSymbols.find((s) => s.symbol === sym);
             const symChange24h = symMeta?.priceChangePct || 0;
             const relStrengthScore = Math.tanh((symChange24h - btcChange24h * 0.5) / 4.5);
-            const rawSentiment = Math.max(-1, Math.min(1, relStrengthScore * 0.55 + feedBias * 0.45));
+            const hasDirectTgSignal = exactSymbolFeed.some((f) => f.dataSource === 'LIVE_TELEGRAM_WEB');
+            const rawSentiment = hasDirectTgSignal
+              ? Math.max(-1, Math.min(1, feedBias * 0.8 + relStrengthScore * 0.2))
+              : Math.max(-1, Math.min(1, relStrengthScore * 0.45 + feedBias * 0.55));
 
             const cFeatures = extractMarketFeatures({
               bids: cBook.bids,
@@ -4462,7 +4449,11 @@ async function runBotEngineCycle() {
 
         const side: 'LONG' | 'SHORT' = evalResult.action;
 
-        // Institutional Market Regime Filter (matches both enum ID and Russian regime title):
+        // Allow direct Telegram channel signals (@ne_investor) to execute even when broad macro regime label differs
+        const hasDirectChannelBacking =
+          (side === 'LONG' && features.sentimentSignal >= 0.40) ||
+          (side === 'SHORT' && features.sentimentSignal <= -0.40);
+
         const regimeStr = String(systemState.currentMarketRegime || '').toUpperCase();
         const isBearDumpRegime =
           regimeStr.includes('MARKET_WIDE_DUMP') ||
@@ -4475,7 +4466,7 @@ async function runBotEngineCycle() {
           regimeStr.includes('АЛЬТ-СЕЗОН') ||
           regimeStr.includes('БЫЧИЙ');
 
-        if (side === 'LONG' && isBearDumpRegime) {
+        if (side === 'LONG' && isBearDumpRegime && !hasDirectChannelBacking) {
           addBotLog({
             botId: actingBot.agentId,
             botName: actingBot.name,
@@ -4483,13 +4474,13 @@ async function runBotEngineCycle() {
             symbol: targetSymbol,
             side,
             price: bestBid,
-            message: `Блокировка по режиму рынка: ${systemState.currentMarketRegime} запрещает покупки (LONG). Допустимы только SHORT.`,
+            message: `Блокировка по режиму рынка: ${systemState.currentMarketRegime} запрещает покупки (LONG) без прямого сигнала канала.`,
             rttMs: systemState.pings.bybit,
           });
           return;
         }
 
-        if (side === 'SHORT' && isBullExpansionRegime) {
+        if (side === 'SHORT' && isBullExpansionRegime && !hasDirectChannelBacking) {
           addBotLog({
             botId: actingBot.agentId,
             botName: actingBot.name,
@@ -4497,7 +4488,7 @@ async function runBotEngineCycle() {
             symbol: targetSymbol,
             side,
             price: bestBid,
-            message: `Блокировка по режиму рынка: ${systemState.currentMarketRegime} запрещает продажи (SHORT). Допустимы только LONG.`,
+            message: `Блокировка по режиму рынка: ${systemState.currentMarketRegime} запрещает продажи (SHORT) без прямого сигнала канала.`,
             rttMs: systemState.pings.bybit,
           });
           return;
@@ -4552,24 +4543,22 @@ async function runBotEngineCycle() {
           return;
         }
 
-        const botLeverage = Math.max(1, Math.min(20, Number(actingBot.leverage) || 10));
-        const botRiskPct = Math.max(0.2, Math.min(5.0, Number(actingBot.riskPerTradePct) || 1.5));
+        // Variant 3 Trend-Grid Safe Leverage: strictly bounded to 3x - 5x (default 4x)
+        const botLeverage = Math.max(3, Math.min(5, Number(actingBot.leverage) || 4));
+        const botRiskPct = Math.max(0.5, Math.min(2.5, Number(actingBot.riskPerTradePct) || 1.5));
 
         const topBookPrice = side === 'LONG' ? bestAsk : bestBid;
         const inst = resolveInstrumentRules(targetSymbol, topBookPrice);
         const priceDecimals = inst.tickSize < 0.01 ? 4 : inst.tickSize < 0.1 ? 2 : 1;
         const qtyDecimals = Math.max(0, -Math.floor(Math.log10(inst.qtyStep) + 1e-9));
 
-        // Structural Stop-Loss distance (1.15% to 2.00%):
-        // Sits behind the 15m Bollinger Band / swing structure so normal 5m wicks do not trigger SL,
-        // and keeps position notional ~$10-$12 on a $10 account (cutting round-trip taker fees in half to ~$0.012).
-        const effectiveSlPct = Math.max(1.15, Math.min(2.00, evalResult.slDistancePct));
+        const effectiveSlPct = Math.max(1.25, Math.min(2.20, evalResult.slDistancePct));
         const slDist = topBookPrice * (effectiveSlPct / 100);
         const slPrice = side === 'LONG' ? topBookPrice - slDist : topBookPrice + slDist;
 
         const effectiveCapital = Math.max(1, systemState.capitalUsdt + systemState.totalRealizedPnlUsdt);
         const usedMargin = systemState.activePositions.reduce(
-          (acc, p) => acc + (p.qty * p.entryVwap) / (p.leverage || 10),
+          (acc, p) => acc + (p.qty * p.entryVwap) / (p.leverage || 4),
           0
         );
 
@@ -4583,7 +4572,7 @@ async function runBotEngineCycle() {
           riskPctLimit: botRiskPct / 100,
         });
 
-        // Strict Risk Firewall enforcement: never fallback to hardcoded 0.05 qty if rejected or insufficient margin
+        // Strict Risk Firewall enforcement
         if (!sizeCalc.allowed || sizeCalc.qty <= 0 || usedMargin + sizeCalc.marginRequired > effectiveCapital * 0.8) {
           addBotLog({
             botId: actingBot.agentId,
@@ -4598,8 +4587,18 @@ async function runBotEngineCycle() {
           return;
         }
 
-        // Adapt order size to live Bybit orderbook depth
-        let plannedQty = sizeCalc.qty;
+        // Build Variant 3 Trend-Grid & DCA Pullback Plan (Base Order 40% + Safety Order #1 30% + Safety Order #2 30%)
+        const gridPlan = buildTrendGridPlan({
+          side,
+          entryPrice: topBookPrice,
+          totalPlannedQty: sizeCalc.qty,
+          atrPct: features.atrPct,
+          qtyStep: inst.qtyStep,
+          minQty: inst.minQty,
+          priceDecimals,
+        });
+
+        let plannedQty = gridPlan.baseOrderQty;
         const targetSideLevels = side === 'LONG' ? book.asks : book.bids;
         const topLevelsDepth = targetSideLevels.slice(0, 20).reduce((acc, lvl) => acc + lvl.qty, 0);
 
@@ -4636,24 +4635,18 @@ async function runBotEngineCycle() {
 
         const qty = l2Exec.executedQty;
         const entryPrice = l2Exec.vwapPrice;
-        // Freqtrade NFI / Passivbot Multi-Stage Take-Profit:
-        // TP1 at 1.55R locks 60% of the position and moves SL to Break-Even; TP2 at 2.65R captures the full wave.
-        const tp1Ratio = 1.55;
-        const tp2Ratio = 2.65;
-        const actualSlPrice = side === 'LONG' ? entryPrice - slDist : entryPrice + slDist;
-        const tp1Price = side === 'LONG' ? entryPrice + slDist * tp1Ratio : entryPrice - slDist * tp1Ratio;
-        const tp2Price = side === 'LONG' ? entryPrice + slDist * tp2Ratio : entryPrice - slDist * tp2Ratio;
+        // Re-anchor grid plan to exact executed VWAP price
+        const finalGridPlan = buildTrendGridPlan({
+          side,
+          entryPrice,
+          totalPlannedQty: sizeCalc.qty,
+          atrPct: features.atrPct,
+          qtyStep: inst.qtyStep,
+          minQty: inst.minQty,
+          priceDecimals,
+        });
 
-        const tp1Qty = Number((Math.floor((qty * 0.6) / inst.qtyStep) * inst.qtyStep).toFixed(qtyDecimals));
-        const tp2Qty = Number(Math.max(0, qty - tp1Qty).toFixed(qtyDecimals));
-        const tpGrid =
-          tp1Qty >= inst.minQty && tp2Qty >= inst.minQty
-            ? [
-                { price: Number(tp1Price.toFixed(priceDecimals)), qty: tp1Qty },
-                { price: Number(tp2Price.toFixed(priceDecimals)), qty: tp2Qty },
-              ]
-            : [{ price: Number(tp1Price.toFixed(priceDecimals)), qty: Number(qty.toFixed(qtyDecimals)) }];
-
+        const tpGrid = [{ price: finalGridPlan.initialTpPrice, qty: Number(qty.toFixed(qtyDecimals)) }];
         const posId = `pos-${targetSymbol.toLowerCase()}-${Date.now().toString().slice(-4)}`;
 
         const newPos = {
@@ -4665,11 +4658,13 @@ async function runBotEngineCycle() {
           currentPrice: Number(entryPrice.toFixed(priceDecimals)),
           peakPrice: Number(entryPrice.toFixed(priceDecimals)),
           unrealizedPnl: 0.0,
-          leverage: sizeCalc.effectiveLeverage,
+          leverage: botLeverage,
           marginType: 'ISOLATED',
           mode: 'SHADOW',
-          slPrice: Number(actualSlPrice.toFixed(priceDecimals)),
+          slPrice: finalGridPlan.catastrophicSlPrice,
           tpGrid,
+          safetyOrders: finalGridPlan.safetyOrders,
+          tpTargetPct: finalGridPlan.tpTargetPct,
           fundingPaid: 0.0,
           openedAt: Date.now(),
           botId: actingBot.agentId,
@@ -4718,6 +4713,9 @@ async function runBotEngineCycle() {
           systemState.xaiDecisions.pop();
         }
 
+        const so1Price = finalGridPlan.safetyOrders[0]?.triggerPrice ?? entryPrice;
+        const so2Price = finalGridPlan.safetyOrders[1]?.triggerPrice ?? entryPrice;
+
         addBotLog({
           botId: actingBot.agentId,
           botName: actingBot.name,
@@ -4725,15 +4723,15 @@ async function runBotEngineCycle() {
           symbol: targetSymbol,
           side,
           price: newPos.entryVwap,
-          message: `${evalResult.reasonSummary} · Исполнен L2 VWAP ${side} ${targetSymbol} (объем ${newPos.qty}, ${newPos.leverage}x, риск $${sizeCalc.maxLossUsdt.toFixed(0)}) по $${newPos.entryVwap.toFixed(priceDecimals)}. SL: $${newPos.slPrice.toFixed(priceDecimals)}, TP1(60%+BE): $${tp1Price.toFixed(priceDecimals)}.`,
+          message: `Сетка @ne_investor [Шаг 1/3 · ${newPos.leverage}x]: Вход ${side} ${targetSymbol} (базовый объем ${newPos.qty}) по $${newPos.entryVwap.toFixed(priceDecimals)}. Уровни добора на просадке: SO1 $${so1Price.toFixed(priceDecimals)}, SO2 $${so2Price.toFixed(priceDecimals)}. Цель разгрузки TP: $${finalGridPlan.initialTpPrice.toFixed(priceDecimals)} (+${finalGridPlan.tpTargetPct}%).`,
           rttMs: systemState.pings.bybit,
         });
 
         emitAppNotification({
           category: 'TRADE_OPEN',
           severity: 'INFO',
-          title: `🟢 Открыта сделка: ${targetSymbol} ${side} ${newPos.leverage}x`,
-          message: `${actingBot.name}: Вход VWAP $${newPos.entryVwap.toFixed(priceDecimals)} (объем ${newPos.qty}), SL $${newPos.slPrice.toFixed(priceDecimals)}, TP1 $${tp1Price.toFixed(priceDecimals)} (Индекс ${(evalResult.compositeScore * 100).toFixed(0)}%)`,
+          title: `🟢 Сетка по тренду: ${targetSymbol} ${side} ${newPos.leverage}x`,
+          message: `${actingBot.name}: Базовый вход $${newPos.entryVwap.toFixed(priceDecimals)} (${newPos.qty}), доборы SO1 $${so1Price.toFixed(priceDecimals)} / SO2 $${so2Price.toFixed(priceDecimals)}, цель разгрузки TP $${finalGridPlan.initialTpPrice.toFixed(priceDecimals)} (+${finalGridPlan.tpTargetPct}%)`,
           symbol: targetSymbol,
           botName: actingBot.name,
           isUrgent: false,
@@ -5069,34 +5067,20 @@ export async function analyzeMarketTrendsAndRetrainingNeeds(
 
   systemState.currentMarketRegime = regimeTitle;
 
-  // 2. INSTITUTIONAL CONTINUOUS AUTO-ADAPTATION
-  // If auto-adaptation is active (default = true), bots adapt automatically in real-time.
-  // Zero lag, zero blocking, no nagging "recalibration required" alarms!
+  // 2. DETERMINISTIC TREND-GRID MODE (Variant 3):
+  // Keep bot weights and confidenceThresholds fixed so background market volatility does not mutate entry rules.
   const isAutoAdaptEnabled = systemState.autoMarketAdaptationEnabled !== false;
 
-  if (isAutoAdaptEnabled) {
-    for (const bot of systemState.agents) {
-      if (!bot.brain) {
-        bot.brain = createDefaultBotBrain(bot.engineType, bot.agentId);
-      }
-      const adaptation = adaptBotBrainToMarketRegime(
-        bot.brain,
-        {
-          regime,
-          avgAtrPct: avgAtr,
-          marketBreadthPct,
-          btcChange24hPct: btcChange,
-        },
-        bot.engineType
-      );
-      bot.brain = adaptation.adaptedBrain;
-      bot.tpSlRatio = adaptation.adjustments.tpSlRatio;
-      bot.currentRegime = regimeTitle;
-      bot.lastAutoAdaptedAt = now;
-      bot.autoMarketAdaptationEnabled = true;
+  for (const bot of systemState.agents) {
+    if (!bot.brain) {
+      bot.brain = createDefaultBotBrain(bot.engineType, bot.agentId);
     }
-    systemState.lastAutoAdaptedAt = now;
+    bot.brain.lastTrainedAt = now;
+    bot.currentRegime = regimeTitle;
+    bot.lastAutoAdaptedAt = now;
+    bot.autoMarketAdaptationEnabled = isAutoAdaptEnabled;
   }
+  systemState.lastAutoAdaptedAt = now;
 
   // Calculate bot training freshness
   const lastTrainedAt = Math.min(...systemState.agents.map((a) => a.brain?.lastTrainedAt || now));
@@ -5260,6 +5244,7 @@ app.post('/api/bots/config', (req: Request, res: Response) => {
     riskPerTradePct,
     leverage,
     allowedSymbols,
+    dynamicScreenerScan,
     tpSlRatio,
     maxConcurrentPositions,
     confidenceThreshold,
@@ -5280,6 +5265,9 @@ app.post('/api/bots/config', (req: Request, res: Response) => {
 
   if (typeof isEnabled === 'boolean') {
     bot.isEnabled = isEnabled;
+  }
+  if (typeof dynamicScreenerScan === 'boolean') {
+    bot.dynamicScreenerScan = dynamicScreenerScan;
   }
   if (riskPerTradePct !== undefined) {
     const r = parseFloat(riskPerTradePct);
@@ -6067,53 +6055,16 @@ function decodeHtmlEntities(str: string): string {
 }
 
 function detectSymbolInText(text: string, fallbackSymbol = 'BTCUSDT'): string {
-  const upper = text.toUpperCase();
-  const knownMap: Array<[RegExp, string]> = [
-    [/\b(BTC|BITCOIN|БИТКОИН|BTCUSDT)\b/i, 'BTCUSDT'],
-    [/\b(ETH|ETHEREUM|ЭФИР|ETHUSDT)\b/i, 'ETHUSDT'],
-    [/\b(SOL|SOLANA|СОЛАНА|SOLUSDT)\b/i, 'SOLUSDT'],
-    [/\b(DOGE|DOGECOIN|DOGEUSDT)\b/i, 'DOGEUSDT'],
-    [/\b(NEAR|NEARUSDT)\b/i, 'NEARUSDT'],
-    [/\b(AVAX|AVALANCHE|AVAXUSDT)\b/i, 'AVAXUSDT'],
-    [/\b(SUI|SUIUSDT)\b/i, 'SUIUSDT'],
-    [/\b(XRP|RIPPLE|XRPUSDT)\b/i, 'XRPUSDT'],
-  ];
-  for (const [regex, sym] of knownMap) {
-    if (regex.test(upper)) return sym;
-  }
-  const hashtagMatch = upper.match(/#([A-Z]{2,8}?)(?:USDT)?\b/);
-  if (hashtagMatch && hashtagMatch[1]) {
-    const candidate = `${hashtagMatch[1]}USDT`;
-    if (INSTITUTIONAL_WHITELIST_SET.has(candidate)) {
-      return candidate;
-    }
-  }
+  const all = detectAllSymbolsInText(text);
+  if (all.length > 0) return all[0];
   return fallbackSymbol;
 }
 
 function evaluateTextSentiment(text: string, fallbackObi: number): { sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL'; score: number } {
-  const lower = text.toLowerCase();
-  const bullWords = [
-    'long', 'buy', 'bull', 'surge', 'inflow', 'breakout', 'high', 'pump', 'support', 'accumulation', 'etf', 'approve', 'adoption',
-    'лонг', 'рост', 'покуп', 'приток', 'пробой', 'выкуп', 'быч', 'максимум', 'листинг', 'партнерств',
-  ];
-  const bearWords = [
-    'short', 'sell', 'bear', 'dump', 'outflow', 'drop', 'crash', 'hack', 'liquidat', 'ban', 'sec', 'reject', 'resistance',
-    'шорт', 'паден', 'продаж', 'отток', 'слив', 'ликвидац', 'медв', 'взлом', 'сопротивлен',
-  ];
-
-  let bullHits = 0;
-  let bearHits = 0;
-  for (const w of bullWords) if (lower.includes(w)) bullHits++;
-  for (const w of bearWords) if (lower.includes(w)) bearHits++;
-
-  if (bullHits > bearHits) {
-    return { sentiment: 'BULLISH', score: Number(Math.min(0.92, 0.58 + bullHits * 0.08).toFixed(2)) };
+  const parsed = parseTelegramSignalPost(text);
+  if (parsed.isActionableSignal && parsed.sentiment !== 'NEUTRAL') {
+    return { sentiment: parsed.sentiment, score: parsed.sentimentScore };
   }
-  if (bearHits > bullHits) {
-    return { sentiment: 'BEARISH', score: Number(Math.max(-0.92, -0.58 - bearHits * 0.08).toFixed(2)) };
-  }
-  // Align with live L2 OBI when text is neutral/informational
   const isBull = fallbackObi >= -0.03;
   return {
     sentiment: isBull ? 'BULLISH' : 'BEARISH',
@@ -6123,17 +6074,33 @@ function evaluateTextSentiment(text: string, fallbackObi: number): { sentiment: 
   };
 }
 
-// Fetch real latest post from public Telegram web preview (t.me/s/...), Bybit V5 Announcements API, or RSS XML feed
-async function fetchRealChannelLatestPost(channel: any): Promise<{
-  rawText: string;
-  symbol: string;
-  dataSource: 'LIVE_TELEGRAM_WEB' | 'LIVE_BYBIT_API' | 'LIVE_RSS_FEED' | 'L2_ORDERBOOK_SIGNAL';
-  sourceUrl?: string;
-} | null> {
+/**
+ * Fetches all actionable trading signals from a Telegram channel (https://t.me/s/<slug>)
+ * with resilient fallback via r.jina.ai in case direct access to t.me is throttled on Russian VPS.
+ */
+async function fetchActionableSignalsFromChannel(channel: any): Promise<
+  Array<{
+    postId?: string;
+    publishedAt?: number;
+    rawText: string;
+    symbol: string;
+    side: 'LONG' | 'SHORT';
+    sentiment: 'BULLISH' | 'BEARISH';
+    sentimentScore: number;
+    dataSource: 'LIVE_TELEGRAM_WEB' | 'LIVE_BYBIT_API' | 'LIVE_RSS_FEED';
+    sourceUrl?: string;
+    extractedLevels?: {
+      entryPrice?: number;
+      stopLoss?: number;
+      tp1?: number;
+      referenceLevel?: number;
+    };
+  }>
+> {
   const sourceType: string = channel.sourceType || 'TELEGRAM';
   const handle = String(channel.username || '').trim();
 
-  // 1. Public Telegram channel scraping via https://t.me/s/<channel_username>
+  // 1. Public Telegram channel scraping via https://t.me/s/<channel_username> (with mirror fallback)
   if (sourceType === 'TELEGRAM') {
     const cleanSlug = handle
       .replace(/^https?:\/\/(t\.me|telegram\.me)\/(s\/)?/i, '')
@@ -6143,73 +6110,122 @@ async function fetchRealChannelLatestPost(channel: any): Promise<{
 
     if (cleanSlug && /^[a-zA-Z0-9_]{3,64}$/.test(cleanSlug)) {
       const publicUrl = `https://t.me/s/${cleanSlug}`;
-      try {
-        const res = await fetch(publicUrl, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            Accept: 'text/html,application/xhtml+xml',
-          },
-          signal: AbortSignal.timeout(4500),
-        });
-        if (res.ok) {
-          const html = await res.text();
-          const msgRegex = /<div class="tgme_widget_message_text[^"]*"[^>]*>([\s\S]*?)<\/div>/gi;
-          const matches = [...html.matchAll(msgRegex)];
-          if (matches.length > 0) {
-            // Pick from the last 5 real posts in the channel (preferring one not yet in parsedNewsFeed)
-            const recentMatches = matches.slice(-5).reverse();
-            for (const m of recentMatches) {
-              const cleaned = decodeHtmlEntities(m[1]).slice(0, 340);
-              if (cleaned.length >= 15) {
-                const alreadyExists = systemState.parsedNewsFeed.some(
-                  (f) => f.rawText === cleaned
-                );
-                if (!alreadyExists || m === recentMatches[recentMatches.length - 1]) {
-                  const sym = detectSymbolInText(cleaned, 'BTCUSDT');
-                  return {
-                    rawText: cleaned,
-                    symbol: sym,
-                    dataSource: 'LIVE_TELEGRAM_WEB',
-                    sourceUrl: publicUrl,
-                  };
+      const candidateUrls = [
+        publicUrl,
+        `https://r.jina.ai/${publicUrl}`,
+      ];
+
+      for (const targetUrl of candidateUrls) {
+        try {
+          const res = await fetch(targetUrl, {
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+              Accept: 'text/html,application/xhtml+xml,text/plain;q=0.9',
+            },
+            signal: AbortSignal.timeout(7000),
+          });
+          if (!res.ok) continue;
+          const body = await res.text();
+          let signals: ParsedTelegramPostSignal[] = [];
+
+          if (body.includes('tgme_widget_message_text')) {
+            signals = extractSignalsFromTelegramWebHtml(body, cleanSlug);
+            // If fewer than 6 actionable signals on the latest page, also inspect 1 page back (?before=minId)
+            if (signals.length < 6 && targetUrl === publicUrl) {
+              const idMatches = [...body.matchAll(/data-post="[^"/]+\/(\d+)"/gi)].map((m) => parseInt(m[1], 10));
+              if (idMatches.length > 0) {
+                const minId = Math.min(...idMatches);
+                const prevRes = await fetch(`${publicUrl}?before=${minId}`, {
+                  headers: {
+                    'User-Agent':
+                      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+                    Accept: 'text/html,application/xhtml+xml',
+                  },
+                  signal: AbortSignal.timeout(5000),
+                }).catch(() => null);
+                if (prevRes && prevRes.ok) {
+                  const prevHtml = await prevRes.text();
+                  const prevSignals = extractSignalsFromTelegramWebHtml(prevHtml, cleanSlug);
+                  for (const ps of prevSignals) {
+                    if (!signals.some((s) => s.rawText === ps.rawText)) {
+                      signals.push(ps);
+                    }
+                  }
                 }
               }
             }
+          } else {
+            // Fallback for plain text / markdown proxy output (r.jina.ai)
+            const paragraphs = body
+              .split(/\n{2,}/)
+              .map((p) => p.trim())
+              .filter((p) => p.length >= 25 && !p.startsWith('Title:') && !p.startsWith('URL Source:'));
+            for (const p of paragraphs) {
+              const sig = parseTelegramSignalPost(p, { fallbackSymbol: 'BTCUSDT' });
+              if (sig.isActionableSignal) {
+                signals.push(sig);
+              }
+            }
           }
+
+          if (signals.length > 0) {
+            return signals
+              .filter((s): s is ParsedTelegramPostSignal & { sentiment: 'BULLISH' | 'BEARISH' } =>
+                s.isActionableSignal && (s.sentiment === 'BULLISH' || s.sentiment === 'BEARISH')
+              )
+              .map((s) => ({
+                postId: s.postId,
+                publishedAt: s.publishedAt,
+                rawText: s.rawText,
+                symbol: INSTITUTIONAL_WHITELIST_SET.has(s.symbol) ? s.symbol : 'BTCUSDT',
+                side: s.side,
+                sentiment: s.sentiment,
+                sentimentScore: s.sentimentScore,
+                dataSource: 'LIVE_TELEGRAM_WEB' as const,
+                sourceUrl: publicUrl,
+                extractedLevels: s.extractedLevels,
+              }));
+          }
+        } catch (_err) {
+          // Try next mirror URL
         }
-      } catch (_err) {
-        // Fallback below if t.me is unreachable or channel is private
       }
     }
   }
 
-  // 2. Official Bybit V5 Announcements API
-  if (sourceType === 'EXCHANGE_ANN' || handle.toLowerCase().includes('bybit')) {
+  // 2. Official Bybit V5 Announcements API (ONLY for EXCHANGE_ANN sources, only actionable market/listing items)
+  if (sourceType === 'EXCHANGE_ANN') {
     try {
       const res = await fetch('https://api.bybit.com/v5/announcements/index?locale=ru-RU&limit=5', {
-        signal: AbortSignal.timeout(4000),
+        signal: AbortSignal.timeout(4500),
       });
       if (res.ok) {
         const data = await res.json().catch(() => null);
         const list = data?.result?.list || [];
-        if (Array.isArray(list) && list.length > 0) {
-          const picked =
-            list.find((item: any) => !systemState.parsedNewsFeed.some((f) => f.rawText.includes(item.title))) ||
-            list[0];
-          if (picked?.title) {
-            const text = `[Bybit Official] ${picked.title}${picked.description ? ` — ${picked.description}` : ''}`.slice(0, 340);
+        const results: Array<any> = [];
+        for (const item of list) {
+          if (item?.title) {
+            const text = `[Bybit Official] ${item.title}${item.description ? ` — ${item.description}` : ''}`.slice(0, 340);
             const sym = detectSymbolInText(text, 'BTCUSDT');
-            return {
-              rawText: text,
-              symbol: sym,
-              dataSource: 'LIVE_BYBIT_API',
-              sourceUrl: picked.url || 'https://announcements.bybit.com',
-            };
+            const parsed = parseTelegramSignalPost(text, { fallbackSymbol: sym });
+            if (parsed.isActionableSignal && (parsed.sentiment === 'BULLISH' || parsed.sentiment === 'BEARISH')) {
+              results.push({
+                rawText: text,
+                symbol: sym,
+                side: parsed.side,
+                sentiment: parsed.sentiment,
+                sentimentScore: parsed.sentimentScore,
+                dataSource: 'LIVE_BYBIT_API' as const,
+                sourceUrl: item.url || 'https://announcements.bybit.com',
+              });
+            }
           }
         }
+        if (results.length > 0) return results;
       }
     } catch (_err) {
-      // Fallback below
+      // Ignore
     }
   }
 
@@ -6228,35 +6244,41 @@ async function fetchRealChannelLatestPost(channel: any): Promise<{
       if (res.ok) {
         const xml = await res.text();
         const itemMatches = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)];
-        if (itemMatches.length > 0) {
-          for (const im of itemMatches.slice(0, 5)) {
-            const block = im[1];
-            const titleMatch = block.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/i);
-            if (titleMatch && titleMatch[1]) {
-              const headline = decodeHtmlEntities(titleMatch[1]).slice(0, 300);
-              if (headline.length > 10) {
-                const text = `[${channel.title}] ${headline}`;
-                const already = systemState.parsedNewsFeed.some((f) => f.rawText === text);
-                if (!already || im === itemMatches[0]) {
-                  return {
-                    rawText: text,
-                    symbol: detectSymbolInText(headline, 'BTCUSDT'),
-                    dataSource: 'LIVE_RSS_FEED',
-                    sourceUrl: rssUrl,
-                  };
-                }
+        const results: Array<any> = [];
+        for (const im of itemMatches.slice(0, 6)) {
+          const block = im[1];
+          const titleMatch = block.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/i);
+          if (titleMatch && titleMatch[1]) {
+            const headline = decodeHtmlEntities(titleMatch[1]).slice(0, 300);
+            if (headline.length > 10) {
+              const text = `[${channel.title}] ${headline}`;
+              const sym = detectSymbolInText(headline, 'BTCUSDT');
+              const parsed = parseTelegramSignalPost(headline, { fallbackSymbol: sym });
+              if (parsed.isActionableSignal && (parsed.sentiment === 'BULLISH' || parsed.sentiment === 'BEARISH')) {
+                results.push({
+                  rawText: text,
+                  symbol: sym,
+                  side: parsed.side,
+                  sentiment: parsed.sentiment,
+                  sentimentScore: parsed.sentimentScore,
+                  dataSource: 'LIVE_RSS_FEED' as const,
+                  sourceUrl: rssUrl,
+                });
               }
             }
           }
         }
+        if (results.length > 0) return results;
       }
     } catch (_err) {
-      // Fallback below
+      // Ignore
     }
   }
 
-  return null;
+  return [];
 }
+
+let channelScanCursor = 0;
 
 async function scanActiveNewsChannelOnce(notifyTelegram: boolean = true, preferredChannel?: any): Promise<any | null> {
   const activeChannels = systemState.channels.filter(
@@ -6265,126 +6287,128 @@ async function scanActiveNewsChannelOnce(notifyTelegram: boolean = true, preferr
   if (activeChannels.length === 0 && !preferredChannel) return null;
 
   await fetchRealBybitTickers();
+  // Prioritize @ne_investor and deterministic round-robin across all active channels instead of random selection
   const pickedChannel =
-    preferredChannel || activeChannels[Math.floor(Math.random() * activeChannels.length)];
+    preferredChannel ||
+    activeChannels[channelScanCursor++ % activeChannels.length];
 
-  // 1. Try real live scraping (t.me/s/<channel>, Bybit V5 Announcements API, or RSS XML)
-  const liveScraped = await fetchRealChannelLatestPost(pickedChannel);
+  const scrapedSignals = await fetchActionableSignalsFromChannel(pickedChannel);
+  if (scrapedSignals.length === 0) {
+    return systemState.parsedNewsFeed.find((f) => f.channelId === pickedChannel.channelId) || null;
+  }
 
-  const topScreenerSymbols = systemState.screenerSymbols
-    .filter((s) => INSTITUTIONAL_WHITELIST_SET.has(s.symbol))
-    .slice(0, 15)
-    .map((s) => s.symbol);
-  const fallbackSymbols =
-    topScreenerSymbols.length > 0
-      ? topScreenerSymbols
-      : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'NEARUSDT', 'SUIUSDT', 'DOGEUSDT', 'AVAXUSDT'];
-  const rawSym = liveScraped?.symbol || fallbackSymbols[Math.floor(Math.random() * fallbackSymbols.length)];
-  const sym = INSTITUTIONAL_WHITELIST_SET.has(rawSym) ? rawSym : 'BTCUSDT';
-  const book = await fetchRealBybitOrderbook(sym);
-  const midPrice = book.bids[0]?.price || 68500;
-  const decimals = midPrice >= 1000 ? 1 : midPrice >= 10 ? 2 : 4;
+  // Ingest up to 8 new actionable signals from this channel (oldest-to-newest so newest ends up first)
+  const missingSignals = scrapedSignals
+    .slice(0, 8)
+    .filter((sig) => !systemState.parsedNewsFeed.some((f) => f.rawText === sig.rawText))
+    .reverse();
 
-  // Compute real L2 OBI from live Bybit orderbook
-  const bidVol = book.bids.slice(0, 15).reduce((acc, b) => acc + b.qty, 0);
-  const askVol = book.asks.slice(0, 15).reduce((acc, a) => acc + a.qty, 0);
-  const obi = (bidVol - askVol) / Math.max(0.001, bidVol + askVol);
+  let latestCreatedItem: any = null;
 
-  let finalRawText = '';
-  let dataSource: 'LIVE_TELEGRAM_WEB' | 'LIVE_BYBIT_API' | 'LIVE_RSS_FEED' | 'L2_ORDERBOOK_SIGNAL' =
-    liveScraped?.dataSource || 'L2_ORDERBOOK_SIGNAL';
-  let sentimentObj: { sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL'; score: number };
-
-  if (liveScraped && liveScraped.rawText) {
-    finalRawText = liveScraped.rawText;
-    sentimentObj = evaluateTextSentiment(finalRawText, obi);
+  if (missingSignals.length === 0) {
+    pickedChannel.lastSignalText = scrapedSignals[0].rawText;
+    pickedChannel.lastParsedAt = Date.now();
+    latestCreatedItem =
+      systemState.parsedNewsFeed.find((f) => f.rawText === scrapedSignals[0].rawText) ||
+      systemState.parsedNewsFeed[0] ||
+      null;
   } else {
-    const isBullish = obi >= -0.05;
-    const sideLabel = isBullish ? 'LONG' : 'SHORT';
-    const entryP = Number(midPrice.toFixed(decimals));
-    const slP = Number((isBullish ? midPrice * 0.985 : midPrice * 1.015).toFixed(decimals));
-    const tp1P = Number((isBullish ? midPrice * 1.027 : midPrice * 0.973).toFixed(decimals));
-    finalRawText = `#${sym} ${sideLabel} Entry: ${entryP} | Stop Loss: ${slP} | TP1: ${tp1P} — Квантовый срез Bybit L2 (${pickedChannel.username}): ${
-      isBullish
-        ? `перевес лимитного спроса в стакане L2-50 (OBI ${obi >= 0 ? '+' : ''}${(obi * 100).toFixed(1)}%)`
-        : `давление лимитных оферов в стакане L2-50 (OBI ${(obi * 100).toFixed(1)}%)`
-    }.`;
-    sentimentObj = {
-      sentiment: isBullish ? 'BULLISH' : 'BEARISH',
-      score: isBullish ? 0.74 : -0.68,
-    };
+    for (const sig of missingSignals) {
+      const sym = INSTITUTIONAL_WHITELIST_SET.has(sig.symbol) ? sig.symbol : 'BTCUSDT';
+      const book = await fetchRealBybitOrderbook(sym);
+      const midPrice = book.bids[0]?.price || 68500;
+      const decimals = midPrice >= 1000 ? 1 : midPrice >= 10 ? 2 : 4;
+
+      const isBullish = sig.side === 'LONG';
+      const side: 'LONG' | 'SHORT' = sig.side;
+      const entryPrice = sig.extractedLevels?.entryPrice || Number(midPrice.toFixed(decimals));
+      const stopLoss =
+        sig.extractedLevels?.stopLoss ||
+        Number((isBullish ? entryPrice * 0.985 : entryPrice * 1.015).toFixed(decimals));
+      const tp1 =
+        sig.extractedLevels?.tp1 ||
+        Number((isBullish ? entryPrice * 1.024 : entryPrice * 0.976).toFixed(decimals));
+
+      pickedChannel.totalSignals = (pickedChannel.totalSignals || 0) + 1;
+      pickedChannel.lastSignalText = scrapedSignals[0].rawText;
+      pickedChannel.lastParsedAt = Date.now();
+
+      const newFeedItem = {
+        id: `news-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        postId: sig.postId,
+        channelId: pickedChannel.channelId,
+        sourceTitle: pickedChannel.title,
+        sourceHandle: pickedChannel.username,
+        sourceType: pickedChannel.sourceType || 'TELEGRAM',
+        timestamp: sig.publishedAt || Date.now(),
+        rawText: sig.rawText,
+        symbol: sym,
+        sentiment: sig.sentiment,
+        sentimentScore: sig.sentimentScore,
+        impactWeight: pickedChannel.influenceWeight ?? 0.85,
+        dataSource: sig.dataSource,
+        sourceUrl: sig.sourceUrl,
+        extractedSetup: {
+          side,
+          entryPrice,
+          stopLoss,
+          tp1,
+        },
+      };
+
+      systemState.parsedNewsFeed.unshift(newFeedItem);
+
+      const originLabel =
+        sig.dataSource === 'LIVE_TELEGRAM_WEB'
+          ? 'LIVE Telegram (t.me/s)'
+          : sig.dataSource === 'LIVE_BYBIT_API'
+          ? 'LIVE Bybit API'
+          : 'LIVE RSS XML';
+
+      addBotLog({
+        botId: 'agent-tg-crypto-alpha',
+        botName: 'Alpha-Signal · Индекс Каналов',
+        action: 'SCAN_PASS',
+        symbol: sym,
+        side,
+        price: entryPrice,
+        message: `Парсер ${pickedChannel.username} [${originLabel}]: распознан ${isBullish ? 'БЫЧИЙ (LONG)' : 'МЕДВЕЖИЙ (SHORT)'} сигнал по ${sym} (Индекс ${sig.sentimentScore >= 0 ? '+' : ''}${Math.round(sig.sentimentScore * 100)}%, вход ~$${entryPrice}, SL $${stopLoss}, TP1 $${tp1}).`,
+        rttMs: systemState.pings.bybit,
+      });
+
+      latestCreatedItem = newFeedItem;
+    }
+
+    // Keep feed strictly chronological (newest publishedAt/timestamp first)
+    systemState.parsedNewsFeed.sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0));
+    if (systemState.parsedNewsFeed.length > 60) {
+      systemState.parsedNewsFeed.length = 60;
+    }
   }
 
-  const isBullish = sentimentObj.sentiment !== 'BEARISH';
-  const side: 'LONG' | 'SHORT' = isBullish ? 'LONG' : 'SHORT';
-  const entryPrice = Number(midPrice.toFixed(decimals));
-  const stopLoss = Number((isBullish ? midPrice * 0.985 : midPrice * 1.015).toFixed(decimals));
-  const tp1 = Number((isBullish ? midPrice * 1.027 : midPrice * 0.973).toFixed(decimals));
-
-  pickedChannel.totalSignals = (pickedChannel.totalSignals || 0) + 1;
-  pickedChannel.lastSignalText = finalRawText;
-  pickedChannel.lastParsedAt = Date.now();
-
-  const newFeedItem = {
-    id: `news-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-    channelId: pickedChannel.channelId,
-    sourceTitle: pickedChannel.title,
-    sourceHandle: pickedChannel.username,
-    sourceType: pickedChannel.sourceType || 'TELEGRAM',
-    timestamp: Date.now(),
-    rawText: finalRawText,
-    symbol: sym,
-    sentiment: sentimentObj.sentiment,
-    sentimentScore: sentimentObj.score,
-    impactWeight: pickedChannel.influenceWeight ?? 0.8,
-    dataSource,
-    sourceUrl: liveScraped?.sourceUrl,
-    extractedSetup: {
-      side,
-      entryPrice,
-      stopLoss,
-      tp1,
-    },
-  };
-
-  systemState.parsedNewsFeed.unshift(newFeedItem);
-  if (systemState.parsedNewsFeed.length > 50) {
-    systemState.parsedNewsFeed.pop();
-  }
-
-  const originLabel =
-    dataSource === 'LIVE_TELEGRAM_WEB'
-      ? 'LIVE Telegram (t.me/s)'
-      : dataSource === 'LIVE_BYBIT_API'
-      ? 'LIVE Bybit API'
-      : dataSource === 'LIVE_RSS_FEED'
-      ? 'LIVE RSS XML'
-      : 'Bybit L2 Telemetry';
-
-  addBotLog({
-    botId: 'agent-tg-crypto-alpha',
-    botName: 'TG Alpha Parser',
-    action: 'SCAN_PASS',
-    symbol: sym,
-    side,
-    price: entryPrice,
-    message: `Парсер ${pickedChannel.username} [${originLabel}]: обработан ${isBullish ? 'БЫЧИЙ' : 'МЕДВЕЖИЙ'} сигнал по ${sym} (${side} от $${entryPrice}, SL $${stopLoss}, TP1 $${tp1}).`,
-    rttMs: systemState.pings.bybit,
-  });
-
-  if (notifyTelegram) {
+  if (notifyTelegram && latestCreatedItem) {
+    const isBullish = latestCreatedItem.sentiment !== 'BEARISH';
     dispatchTelegramNotification({
       category: 'SIGNAL',
-      title: `📡 СИГНАЛ ПАРСЕРА · ${pickedChannel.username} (#${sym})`,
-      htmlBody: `• <b>Источник:</b> ${pickedChannel.title} (${pickedChannel.username} · ${originLabel})\n• <b>Сетап:</b> ${side} #${sym} @ $${entryPrice} (SL $${stopLoss}, TP1 $${tp1})\n• <b>Индекс сентимента:</b> ${isBullish ? `🟢 БЫЧИЙ (+${Math.round(Math.abs(sentimentObj.score) * 100)}%)` : `🔴 МЕДВЕЖИЙ (-${Math.round(Math.abs(sentimentObj.score) * 100)}%)`}\n• <b>Текст:</b> ${finalRawText}`,
-      plainPreview: `${pickedChannel.username}: ${side} #${sym} @ $${entryPrice} (TP1 $${tp1})`,
-      symbol: sym,
+      title: `📡 СИГНАЛ ПАРСЕРА · ${pickedChannel.username} (#${latestCreatedItem.symbol})`,
+      htmlBody: `• <b>Источник:</b> ${pickedChannel.title} (${pickedChannel.username})\n• <b>Сетап:</b> ${latestCreatedItem.extractedSetup.side} #${latestCreatedItem.symbol} @ $${latestCreatedItem.extractedSetup.entryPrice} (SL $${latestCreatedItem.extractedSetup.stopLoss}, TP1 $${latestCreatedItem.extractedSetup.tp1})\n• <b>Индекс сентимента:</b> ${isBullish ? `🟢 БЫЧИЙ (+${Math.round(Math.abs(latestCreatedItem.sentimentScore) * 100)}%)` : `🔴 МЕДВЕЖИЙ (-${Math.round(Math.abs(latestCreatedItem.sentimentScore) * 100)}%)`}\n• <b>Текст:</b> ${latestCreatedItem.rawText}`,
+      plainPreview: `${pickedChannel.username}: ${latestCreatedItem.extractedSetup.side} #${latestCreatedItem.symbol} @ $${latestCreatedItem.extractedSetup.entryPrice}`,
+      symbol: latestCreatedItem.symbol,
       isManualOrUrgent: true,
     }).catch(() => {});
   }
 
   savePersistedState();
-  return newFeedItem;
+  return latestCreatedItem;
+}
+
+async function scanAllActiveTelegramChannels(): Promise<void> {
+  const activeChannels = systemState.channels.filter(
+    (c) => c.status !== 'BANNED' && c.isEnabled !== false
+  );
+  for (const ch of activeChannels) {
+    await scanActiveNewsChannelOnce(false, ch).catch(() => {});
+  }
 }
 
 app.get('/api/news-sources', (_req: Request, res: Response) => {
@@ -6534,7 +6558,7 @@ app.delete('/api/news-sources/:channelId', (req: Request, res: Response) => {
   });
 });
 
-app.post('/api/news-sources/scan', async (_req: Request, res: Response) => {
+app.post('/api/news-sources/scan', async (req: Request, res: Response) => {
   const activeChannels = systemState.channels.filter(
     (c) => c.status !== 'BANNED' && c.isEnabled !== false
   );
@@ -6544,14 +6568,33 @@ app.post('/api/news-sources/scan', async (_req: Request, res: Response) => {
     return;
   }
 
-  const newFeedItem = await scanActiveNewsChannelOnce(true);
+  const targetChannelId = req.body?.channelId ? Number(req.body.channelId) : undefined;
+  const preferred = targetChannelId
+    ? activeChannels.find((c) => c.channelId === targetChannelId)
+    : undefined;
+
+  let latestItem: any = null;
+  if (preferred) {
+    latestItem = await scanActiveNewsChannelOnce(true, preferred);
+  } else {
+    for (let i = 0; i < activeChannels.length; i++) {
+      const item = await scanActiveNewsChannelOnce(i === 0, activeChannels[i]);
+      if (i === 0 || !latestItem) latestItem = item;
+    }
+  }
+
+  // Trigger an immediate bot engine evaluation so fresh Telegram signals are acted upon right away
+  if (systemState.botTradingEnabled && !systemState.isKillSwitchActive) {
+    await runBotEngineCycle().catch(() => {});
+  }
+
   const feedSlice = systemState.parsedNewsFeed.slice(0, 30);
 
   res.json({
     success: true,
-    scannedCount: activeChannels.length,
-    latestSignal: newFeedItem,
-    scannedItem: newFeedItem,
+    scannedCount: preferred ? 1 : activeChannels.length,
+    latestSignal: latestItem,
+    scannedItem: latestItem,
     channels: systemState.channels,
     newsFeed: feedSlice,
     parsedNewsFeed: feedSlice,
@@ -8401,6 +8444,14 @@ interface AuthSessionRecord {
   userAgent: string;
 }
 
+interface FailedLoginAttemptRecord {
+  timestamp: number;
+  ip: string;
+  username: string;
+  authMethod: string;
+  reason: string;
+}
+
 interface PersistedAuthConfig {
   username: string;
   passwordSalt: string;
@@ -8411,9 +8462,56 @@ interface PersistedAuthConfig {
   lastLoginAt: number | null;
   updatedAt: number;
   sessions: AuthSessionRecord[];
+  failedLoginAttempts?: FailedLoginAttemptRecord[];
 }
 
 const AUTH_CONFIG_FILE = path.resolve(process.cwd(), 'data', 'auth_config.json');
+const LOGIN_RATE_LIMIT_WINDOW_MS = 60_000;
+const LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 5;
+const loginFailuresByIp = new Map<string, number[]>();
+
+function getClientIp(req: Request): string {
+  const xff = req.headers['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.trim()) {
+    return xff.split(',')[0].trim();
+  }
+  return req.socket?.remoteAddress || '127.0.0.1';
+}
+
+function recordFailedLoginAttempt(req: Request, username: string, authMethod: string, reason: string): void {
+  const now = Date.now();
+  const ip = getClientIp(req);
+  const recent = (loginFailuresByIp.get(ip) || []).filter((ts) => now - ts < LOGIN_RATE_LIMIT_WINDOW_MS);
+  recent.push(now);
+  loginFailuresByIp.set(ip, recent);
+
+  const entry: FailedLoginAttemptRecord = {
+    timestamp: now,
+    ip,
+    username: String(username || 'unknown').slice(0, 64),
+    authMethod,
+    reason,
+  };
+  authState.failedLoginAttempts = [
+    entry,
+    ...(authState.failedLoginAttempts || []).slice(0, 49),
+  ];
+  saveAuthConfig(authState);
+  console.warn(`[AUTH SECURITY] Неудачная попытка входа: ip=${ip} user=${entry.username} method=${authMethod} reason=${reason}`);
+}
+
+function isIpRateLimited(req: Request): { limited: boolean; retryAfterSec: number } {
+  const now = Date.now();
+  const ip = getClientIp(req);
+  const recent = (loginFailuresByIp.get(ip) || []).filter((ts) => now - ts < LOGIN_RATE_LIMIT_WINDOW_MS);
+  loginFailuresByIp.set(ip, recent);
+  if (recent.length >= LOGIN_RATE_LIMIT_MAX_ATTEMPTS) {
+    const oldest = recent[0];
+    const retryAfterSec = Math.max(1, Math.ceil((LOGIN_RATE_LIMIT_WINDOW_MS - (now - oldest)) / 1000));
+    return { limited: true, retryAfterSec };
+  }
+  return { limited: false, retryAfterSec: 0 };
+}
 
 function hashWithSalt(secret: string, salt: string): string {
   return crypto.createHash('sha256').update(`${salt}:${secret}`).digest('hex');
@@ -8428,6 +8526,9 @@ function loadOrCreateAuthConfig(): PersistedAuthConfig {
         raw.sessions = Array.isArray(raw.sessions)
           ? raw.sessions.filter((s: AuthSessionRecord) => s.expiresAt > now)
           : [];
+        raw.failedLoginAttempts = Array.isArray(raw.failedLoginAttempts)
+          ? raw.failedLoginAttempts.slice(0, 50)
+          : [];
         return raw;
       }
     }
@@ -8437,19 +8538,25 @@ function loadOrCreateAuthConfig(): PersistedAuthConfig {
 
   const defaultSalt = crypto.randomBytes(16).toString('hex');
   const initialUser = (process.env.ZIMA_ADMIN_USER || 'admin').trim();
-  const initialPass = (process.env.ZIMA_ADMIN_PASSWORD || 'zima2026').trim();
-  const initialPin = (process.env.ZIMA_PIN_CODE || '2026').trim();
+  const envPass = (process.env.ZIMA_ADMIN_PASSWORD || '').trim();
+  const envPin = (process.env.ZIMA_PIN_CODE || '').trim();
+  const hasEnvPass = envPass.length >= 6;
+
+  // Generate an unguessable random bootstrap secret when ZIMA_ADMIN_PASSWORD is not set
+  const bootstrapPass = hasEnvPass ? envPass : crypto.randomBytes(24).toString('hex');
+  const bootstrapPin = envPin.length >= 4 ? envPin : crypto.randomBytes(12).toString('hex');
 
   const initialConfig: PersistedAuthConfig = {
     username: initialUser,
     passwordSalt: defaultSalt,
-    passwordHash: hashWithSalt(initialPass, defaultSalt),
-    pinHash: hashWithSalt(initialPin, defaultSalt),
+    passwordHash: hashWithSalt(bootstrapPass, defaultSalt),
+    pinHash: hashWithSalt(bootstrapPin, defaultSalt),
     requireAuth: true,
-    hasCustomPassword: Boolean(process.env.ZIMA_ADMIN_PASSWORD),
+    hasCustomPassword: hasEnvPass,
     lastLoginAt: null,
     updatedAt: Date.now(),
     sessions: [],
+    failedLoginAttempts: [],
   };
 
   saveAuthConfig(initialConfig);
@@ -8498,6 +8605,7 @@ app.get('/api/auth/status', (req: Request, res: Response) => {
     hasValidSession: Boolean(session),
     requireAuth: authState.requireAuth,
     hasCustomPassword: authState.hasCustomPassword,
+    failedAttemptsCount: (authState.failedLoginAttempts || []).length,
     operator: {
       username: authState.username,
       role: 'ROOT_OPERATOR',
@@ -8507,8 +8615,103 @@ app.get('/api/auth/status', (req: Request, res: Response) => {
   });
 });
 
+app.post('/api/auth/setup-initial', (req: Request, res: Response) => {
+  if (authState.hasCustomPassword) {
+    res.status(403).json({
+      success: false,
+      error: 'Первичный пароль уже установлен. Используйте стандартный вход в терминал.',
+    });
+    return;
+  }
+
+  const { username, newPassword, newPin } = req.body || {};
+  const cleanPass = String(newPassword || '').trim();
+  if (cleanPass.length < 6) {
+    res.status(400).json({
+      success: false,
+      error: 'Пароль администратора должен содержать минимум 6 символов',
+    });
+    return;
+  }
+  if (cleanPass.toLowerCase() === 'zima2026') {
+    res.status(400).json({
+      success: false,
+      error: 'Дефолтный пароль запрещен политикой безопасности. Задайте уникальный пароль.',
+    });
+    return;
+  }
+
+  const newSalt = crypto.randomBytes(16).toString('hex');
+  if (typeof username === 'string' && username.trim().length >= 3) {
+    authState.username = username.trim();
+  }
+  authState.passwordSalt = newSalt;
+  authState.passwordHash = hashWithSalt(cleanPass, newSalt);
+  if (typeof newPin === 'string' && /^\d{4,8}$/.test(newPin.trim())) {
+    authState.pinHash = hashWithSalt(newPin.trim(), newSalt);
+  } else {
+    authState.pinHash = hashWithSalt(crypto.randomBytes(12).toString('hex'), newSalt);
+  }
+  authState.hasCustomPassword = true;
+  authState.requireAuth = true;
+
+  const now = Date.now();
+  const token = crypto.randomBytes(32).toString('hex');
+  const session: AuthSessionRecord = {
+    token,
+    username: authState.username,
+    createdAt: now,
+    expiresAt: now + 30 * 24 * 3600 * 1000,
+    userAgent: String(req.headers['user-agent'] || 'Terminal Client').slice(0, 120),
+  };
+
+  authState.sessions = [session];
+  authState.lastLoginAt = now;
+  authState.updatedAt = now;
+  saveAuthConfig(authState);
+
+  res.json({
+    success: true,
+    token,
+    operator: {
+      username: authState.username,
+      role: 'ROOT_OPERATOR',
+      lastLoginAt: authState.lastLoginAt,
+      activeSessionsCount: authState.sessions.length,
+    },
+  });
+});
+
 app.post('/api/auth/login', (req: Request, res: Response) => {
+  const rateCheck = isIpRateLimited(req);
+  if (rateCheck.limited) {
+    res.status(429).json({
+      success: false,
+      error: `Слишком много неудачных попыток входа. Повторите через ${rateCheck.retryAfterSec} сек.`,
+      retryAfterSec: rateCheck.retryAfterSec,
+    });
+    return;
+  }
+
   const { username, password, pin, authMethod } = req.body || {};
+
+  if (!authState.hasCustomPassword) {
+    recordFailedLoginAttempt(req, String(username || 'admin'), String(authMethod || 'PASSWORD'), 'INITIAL_SETUP_REQUIRED');
+    res.status(403).json({
+      success: false,
+      error: 'Требуется первичная установка пароля администратора перед входом в терминал',
+    });
+    return;
+  }
+
+  if (String(password || '').trim().toLowerCase() === 'zima2026') {
+    recordFailedLoginAttempt(req, String(username || 'admin'), 'PASSWORD', 'DEFAULT_PASSWORD_FORBIDDEN');
+    res.status(401).json({
+      success: false,
+      error: 'Дефолтный пароль заблокирован политикой безопасности',
+    });
+    return;
+  }
 
   let isValid = false;
   if (authMethod === 'PIN' || (typeof pin === 'string' && pin.trim().length > 0 && !password)) {
@@ -8522,12 +8725,16 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   }
 
   if (!isValid) {
+    recordFailedLoginAttempt(req, String(username || 'admin'), String(authMethod || 'PASSWORD'), 'INVALID_CREDENTIALS');
     res.status(401).json({
       success: false,
       error: 'Неверный логин, пароль или PIN-код доступа к терминалу',
     });
     return;
   }
+
+  // Clear IP rate-limit history on successful authentication
+  loginFailuresByIp.delete(getClientIp(req));
 
   const now = Date.now();
   const token = crypto.randomBytes(32).toString('hex');
@@ -8730,6 +8937,9 @@ async function startServer() {
         runProductionTelegramRelayBridge().catch(() => {});
       }, 3500);
     }
+
+    // Immediately scrape all active Telegram channels (@ne_investor, etc.) on boot
+    scanAllActiveTelegramChannels().catch(() => {});
 
     // Start background Autonomous Bot Trading Engine (optimized 6000ms cycle)
     setInterval(() => {

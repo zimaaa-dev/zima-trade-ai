@@ -98,16 +98,25 @@ test('Market Guards: Spread Guard triggers when spread > 0.25%', () => {
   assert.match(blownSpread.reason!, /Spread Guard Triggered/);
 });
 
-test('Market Guards: Funding Guard triggers 15m before funding if adverse', () => {
+test('Market Guards: Funding Guard triggers 15m before funding if adverse (>= 0.05%)', () => {
   const adverseFunding = checkMarketGuards({
     bestBid: 60000,
     bestAsk: 60010,
     minutesToNextFunding: 10,
-    projectedFundingRate: 0.0015, // 0.15% adverse to LONG
+    projectedFundingRate: 0.0005, // 0.05% adverse to LONG
     side: 'LONG',
   });
   assert.equal(adverseFunding.passed, false);
   assert.match(adverseFunding.reason!, /Funding Guard Triggered/);
+
+  const mildFunding = checkMarketGuards({
+    bestBid: 60000,
+    bestAsk: 60010,
+    minutesToNextFunding: 10,
+    projectedFundingRate: 0.0002, // 0.02% < 0.05% threshold -> allowed
+    side: 'LONG',
+  });
+  assert.equal(mildFunding.passed, true);
 });
 
 test('Matching Engine: VWAP Slippage through L2-50 orderbook and taker fee', () => {

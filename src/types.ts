@@ -126,6 +126,16 @@ export interface Position {
   mode: ExecutionMode;
   slPrice: number;
   tpGrid: { price: number; qty: number }[];
+  safetyOrders?: {
+    stepIndex: number;
+    triggerPrice: number;
+    qty: number;
+    stepPctFromEntry: number;
+    filled: boolean;
+    filledAt?: number;
+    fillPrice?: number;
+  }[];
+  tpTargetPct?: number;
   fundingPaid: number;
   openedAt: number;
   botId?: string;

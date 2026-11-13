@@ -152,8 +152,17 @@ export function checkMarketGuards(params: {
   projectedFundingRate: number;
   side: 'LONG' | 'SHORT';
   maxSpreadPct?: number; // 0.0025 (0.25%)
+  maxAdverseFundingRate?: number; // 0.0005 (0.05%)
 }): { passed: boolean; reason?: string } {
-  const { bestBid, bestAsk, minutesToNextFunding, projectedFundingRate, side, maxSpreadPct = 0.0025 } = params;
+  const {
+    bestBid,
+    bestAsk,
+    minutesToNextFunding,
+    projectedFundingRate,
+    side,
+    maxSpreadPct = 0.0025,
+    maxAdverseFundingRate = 0.0005,
+  } = params;
 
   // Spread guard
   const spreadPct = (bestAsk - bestBid) / bestBid;
@@ -164,10 +173,12 @@ export function checkMarketGuards(params: {
     };
   }
 
-  // Funding guard: 15 min before funding if funding rate against position > 0.10%
+  // Funding guard: 15 min before funding if funding rate against position >= 0.05% (0.0005)
   // LONG pays funding if funding rate > 0
   // SHORT pays funding if funding rate < 0
-  const isPayingFunding = (side === 'LONG' && projectedFundingRate > 0.001) || (side === 'SHORT' && projectedFundingRate < -0.001);
+  const isPayingFunding =
+    (side === 'LONG' && projectedFundingRate >= maxAdverseFundingRate) ||
+    (side === 'SHORT' && projectedFundingRate <= -maxAdverseFundingRate);
 
   if (minutesToNextFunding <= 15 && isPayingFunding) {
     return {

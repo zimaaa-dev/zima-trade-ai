@@ -255,44 +255,52 @@ test('[Level 3 · Crypto Contract] Bybit V5 HMAC-SHA256 signature matches offici
   assert.equal(signature, expected);
 });
 
-test('[Level 3 · Live Bybit V5] Real-time Bybit Server Time & NTP Clock Drift < 3000ms', async () => {
-  const t0 = Date.now();
-  const res = await fetch('https://api.bybit.com/v5/market/time', {
-    signal: AbortSignal.timeout(8000),
-  });
-  const t1 = Date.now();
-  assert.equal(res.status, 200);
-  const data = (await res.json()) as {
-    retCode: number;
-    result?: { timeSecond?: string; timeNano?: string };
-    time?: number;
-  };
-  assert.equal(data.retCode, 0);
+const RUN_LIVE_TESTS = process.env.RUN_LIVE_TESTS === '1';
 
-  const serverTimeMs = data.result?.timeNano
-    ? Math.floor(Number(data.result.timeNano) / 1_000_000)
-    : Number(data.time || t1);
-  const midpointLocal = Math.round((t0 + t1) / 2);
-  const driftMs = Math.abs(midpointLocal - serverTimeMs);
+test(
+  '[Level 3 · Live Bybit V5] Real-time Bybit Server Time & NTP Clock Drift < 3000ms',
+  { skip: !RUN_LIVE_TESTS ? 'Skipped in hermetic CI mode (set RUN_LIVE_TESTS=1 to enable)' : false },
+  async () => {
+    const t0 = Date.now();
+    const res = await fetch('https://api.bybit.com/v5/market/time', {
+      signal: AbortSignal.timeout(8000),
+    });
+    const t1 = Date.now();
+    assert.equal(res.status, 200);
+    const data = (await res.json()) as {
+      retCode: number;
+      result?: { timeSecond?: string; timeNano?: string };
+      time?: number;
+    };
+    assert.equal(data.retCode, 0);
 
-  assert.ok(
-    driftMs < 3000,
-    `Clock drift ${driftMs}ms exceeds safe threshold for Bybit V5 signed orders`
-  );
-});
+    const serverTimeMs = data.result?.timeNano
+      ? Math.floor(Number(data.result.timeNano) / 1_000_000)
+      : Number(data.time || t1);
+    const midpointLocal = Math.round((t0 + t1) / 2);
+    const driftMs = Math.abs(midpointLocal - serverTimeMs);
+
+    assert.ok(
+      driftMs < 3000,
+      `Clock drift ${driftMs}ms exceeds safe threshold for Bybit V5 signed orders`
+    );
+  }
+);
 
 // ============================================================================
 // LEVEL 4 & 5: END-TO-END LIVE SERVER API SMOKE & STATE INTEGRITY SUITE
 // ============================================================================
 
 test('[Level 4 & 5 · E2E API & Persistence] Full API lifecycle smoke test with lossless state restoration', async () => {
-  // Check if live HTTP server is currently listening on port 3000
+  // Check if live HTTP server is currently listening on port 3000 AND RUN_LIVE_TESTS=1 is set
   let isServerRunning = false;
-  try {
-    const probe = await fetch(`${API_BASE}/api/system/health`, { signal: AbortSignal.timeout(1500) });
-    if (probe.ok) isServerRunning = true;
-  } catch {
-    isServerRunning = false;
+  if (RUN_LIVE_TESTS) {
+    try {
+      const probe = await fetch(`${API_BASE}/api/system/health`, { signal: AbortSignal.timeout(1500) });
+      if (probe.ok) isServerRunning = true;
+    } catch {
+      isServerRunning = false;
+    }
   }
 
   // 1. Backup existing disk state so our stress tests leave zero residue

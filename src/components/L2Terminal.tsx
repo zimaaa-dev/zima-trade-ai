@@ -1096,10 +1096,15 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({
                         </span>
                       </td>
                       <td className="py-2.5 px-3 text-[11px] text-slate-400">
-                        <div>SL: ${pos.slPrice.toFixed(1)}</div>
+                        <div>SL сетки: ${pos.slPrice.toFixed(2)}</div>
                         <div className="text-[10px] text-cyan-300">
-                          {pos.tpGrid?.length ? `${pos.tpGrid.length} ур. TP ($${pos.tpGrid[0]?.price?.toFixed(1) || '0'})` : 'Без TP'}
+                          {pos.tpGrid?.length ? `Разгрузка TP: $${pos.tpGrid[0]?.price?.toFixed(2) || '0'}` : 'Без TP'}
                         </div>
+                        {Array.isArray(pos.safetyOrders) && pos.safetyOrders.length > 0 && (
+                          <div className="text-[10px] text-amber-300/90 mt-0.5">
+                            Сетка добора: {pos.safetyOrders.filter((s) => s.filled).length}/{pos.safetyOrders.length} (SO1 ${pos.safetyOrders[0]?.triggerPrice?.toFixed(2)})
+                          </div>
+                        )}
                       </td>
                       <td className="py-2.5 px-3 text-slate-400">${pos.fundingPaid.toFixed(2)}</td>
                       <td className="py-2.5 px-3 text-right">

@@ -17,6 +17,7 @@ export interface ClosedTradeRecord {
   botName: string;
   openedAt: number;
   closedAt: number;
+  isSynthetic?: boolean;
 }
 
 export interface WalletLedgerEntry {
@@ -28,6 +29,7 @@ export interface WalletLedgerEntry {
   symbol?: string;
   description: string;
   mode: 'SHADOW' | 'LIVE';
+  isSynthetic?: boolean;
 }
 
 export interface ActivePositionInput {
@@ -106,17 +108,22 @@ export function calculatePortfolioSummary(
   baseCapitalUsdt: number,
   activePositions: ActivePositionInput[],
   closedTrades: ClosedTradeRecord[],
-  authoritativeRealizedPnlUsdt?: number
+  authoritativeRealizedPnlUsdt?: number,
+  includeSynthetic: boolean = false
 ): PortfolioSummary {
+  const realTrades = includeSynthetic
+    ? closedTrades
+    : closedTrades.filter((t) => !t.isSynthetic && !String(t.id || '').startsWith('trd-seed-'));
+
   const summedFromHistory = Number(
-    closedTrades.reduce((acc, t) => acc + t.netPnlUsdt, 0).toFixed(2)
+    realTrades.reduce((acc, t) => acc + t.netPnlUsdt, 0).toFixed(2)
   );
   const totalRealizedPnlUsdt =
     typeof authoritativeRealizedPnlUsdt === 'number' && Number.isFinite(authoritativeRealizedPnlUsdt)
       ? Number(authoritativeRealizedPnlUsdt.toFixed(2))
       : summedFromHistory;
   const totalFeesPaidUsdt = Number(
-    closedTrades.reduce((acc, t) => acc + t.feeUsdt, 0).toFixed(2)
+    realTrades.reduce((acc, t) => acc + t.feeUsdt, 0).toFixed(2)
   );
 
   const walletBalanceUsdt = Number((baseCapitalUsdt + totalRealizedPnlUsdt).toFixed(2));
@@ -142,10 +149,10 @@ export function calculatePortfolioSummary(
       ? Number(Math.min(100, (usedMarginUsdt / totalEquityUsdt) * 100).toFixed(2))
       : 0;
 
-  const winningTrades = closedTrades.filter((t) => t.netPnlUsdt > 0);
-  const losingTrades = closedTrades.filter((t) => t.netPnlUsdt <= 0);
+  const winningTrades = realTrades.filter((t) => t.netPnlUsdt > 0);
+  const losingTrades = realTrades.filter((t) => t.netPnlUsdt <= 0);
 
-  const totalTradesCount = closedTrades.length;
+  const totalTradesCount = realTrades.length;
   const winningTradesCount = winningTrades.length;
   const losingTradesCount = losingTrades.length;
 
@@ -225,6 +232,7 @@ export function filterClosedTrades(
     symbolQuery?: string;
     timeWindow?: TimeWindowFilter;
     nowTs?: number;
+    includeSynthetic?: boolean;
   }
 ): ClosedTradeRecord[] {
   const {
@@ -234,6 +242,7 @@ export function filterClosedTrades(
     symbolQuery = '',
     timeWindow = 'ALL',
     nowTs = Date.now(),
+    includeSynthetic = false,
   } = filters;
   const q = symbolQuery.trim().toUpperCase();
 
@@ -245,6 +254,9 @@ export function filterClosedTrades(
       : 0;
 
   return trades.filter((t) => {
+    if (!includeSynthetic && (t.isSynthetic || String(t.id || '').startsWith('trd-seed-'))) {
+      return false;
+    }
     if (cutoffTs > 0 && t.closedAt < cutoffTs) return false;
     if (mode !== 'ALL' && t.mode !== mode) return false;
     if (botId !== 'ALL' && t.botId !== botId) return false;
@@ -264,6 +276,7 @@ export function buildEquityCurve(params: {
   botIdFilter?: string;
   timeWindow?: TimeWindowFilter;
   nowTs?: number;
+  includeSynthetic?: boolean;
 }): EquityCurveAnalytics {
   const {
     baseCapitalUsdt,
@@ -272,10 +285,12 @@ export function buildEquityCurve(params: {
     botIdFilter = 'ALL',
     timeWindow = 'ALL',
     nowTs = Date.now(),
+    includeSynthetic = false,
   } = params;
 
-  // Sort all trades chronologically ascending by closedAt
+  // Sort all real trades chronologically ascending by closedAt
   const allSorted = [...closedTrades]
+    .filter((t) => includeSynthetic || (!t.isSynthetic && !String(t.id || '').startsWith('trd-seed-')))
     .filter((t) => botIdFilter === 'ALL' || t.botId === botIdFilter)
     .sort((a, b) => a.closedAt - b.closedAt);
 

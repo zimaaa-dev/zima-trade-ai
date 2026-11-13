@@ -227,3 +227,59 @@ test('buildEquityCurve computes chronological points, High-Water Mark, and Drawd
   assert.equal(curve.periodNetChangeUsdt, 148);
 });
 
+test('calculatePortfolioSummary and filterClosedTrades exclude synthetic seed trades by default', () => {
+  const mixedTrades: ClosedTradeRecord[] = [
+    {
+      id: 'trd-seed-btcusdt-00',
+      symbol: 'BTCUSDT',
+      side: 'LONG',
+      qty: 0.01,
+      leverage: 10,
+      entryPrice: 70000,
+      exitPrice: 71000,
+      grossPnlUsdt: 10,
+      feeUsdt: 0.5,
+      fundingUsdt: 0,
+      netPnlUsdt: 9.5,
+      roePct: 13.5,
+      mode: 'SHADOW',
+      exitReason: 'TP_HIT',
+      botId: 'agent-onnx-ppo-v2',
+      botName: 'Delta-L2',
+      openedAt: 1000,
+      closedAt: 2000,
+      isSynthetic: true,
+    },
+    {
+      id: 'trd-real-solusdt-01',
+      symbol: 'SOLUSDT',
+      side: 'LONG',
+      qty: 1,
+      leverage: 10,
+      entryPrice: 100,
+      exitPrice: 102,
+      grossPnlUsdt: 2.0,
+      feeUsdt: 0.11,
+      fundingUsdt: 0,
+      netPnlUsdt: 1.89,
+      roePct: 18.9,
+      mode: 'LIVE',
+      exitReason: 'TP_HIT',
+      botId: 'agent-onnx-ppo-v2',
+      botName: 'Delta-L2',
+      openedAt: 3000,
+      closedAt: 4000,
+    },
+  ];
+
+  const summary = calculatePortfolioSummary(10, [], mixedTrades);
+  assert.equal(summary.totalTradesCount, 1);
+  assert.equal(summary.totalRealizedPnlUsdt, 1.89);
+  assert.equal(summary.walletBalanceUsdt, 11.89);
+
+  const filtered = filterClosedTrades(mixedTrades, { mode: 'ALL' });
+  assert.equal(filtered.length, 1);
+  assert.equal(filtered[0].id, 'trd-real-solusdt-01');
+});
+
+

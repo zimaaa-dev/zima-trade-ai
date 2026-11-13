@@ -14,12 +14,13 @@ const rawSeedTrades: ClosedTradeRecord[] = [
     "fundingUsdt": -0.15,
     "netPnlUsdt": 83.83,
     "roePct": 9.06,
-    "mode": "LIVE",
+    "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-onnx-ppo-v2",
     "botName": "Delta-L2 · Стакан и Объемы",
     "openedAt": 1793536950519,
-    "closedAt": 1793539000872
+    "closedAt": 1793539000872,
+    "isSynthetic": true
   },
   {
     "id": "trd-seed-ethusdt-01",
@@ -34,12 +35,13 @@ const rawSeedTrades: ClosedTradeRecord[] = [
     "fundingUsdt": -0.26,
     "netPnlUsdt": 29.03,
     "roePct": 7.12,
-    "mode": "LIVE",
+    "mode": "SHADOW",
     "exitReason": "TP_HIT",
     "botId": "agent-lgbm-nightly",
     "botName": "Momentum · Импульсный Скальпер",
     "openedAt": 1793534924868,
-    "closedAt": 1793535747549
+    "closedAt": 1793535747549,
+    "isSynthetic": true
   },
   {
     "id": "trd-seed-solusdt-02",
@@ -54,12 +56,13 @@ const rawSeedTrades: ClosedTradeRecord[] = [
     "fundingUsdt": -0.12,
     "netPnlUsdt": -21.25,
     "roePct": -8.86,
-    "mode": "LIVE",
+    "mode": "SHADOW",
     "exitReason": "SL_HIT",
     "botId": "agent-tg-crypto-alpha",
     "botName": "Alpha-Signal · Индекс Каналов",
     "openedAt": 1793530633839,
-    "closedAt": 1793532503745
+    "closedAt": 1793532503745,
+    "isSynthetic": true
   },
   {
     "id": "trd-seed-dogeusdt-03",
@@ -505,7 +508,7 @@ const rawSeedTrades: ClosedTradeRecord[] = [
 
 const MICRO_SCALE = 1 / 500;
 
-export const initialClosedTrades: ClosedTradeRecord[] = rawSeedTrades.map((t) => {
+export const demoSeedClosedTrades: ClosedTradeRecord[] = rawSeedTrades.map((t) => {
   const scaledQty = Number((t.qty * MICRO_SCALE).toFixed(5));
   const grossPnlUsdt = Number((t.grossPnlUsdt * MICRO_SCALE).toFixed(2));
   const feeUsdt = Number(Math.max(0.01, t.feeUsdt * MICRO_SCALE).toFixed(2));
@@ -513,6 +516,8 @@ export const initialClosedTrades: ClosedTradeRecord[] = rawSeedTrades.map((t) =>
   const netPnlUsdt = Number((grossPnlUsdt - feeUsdt + fundingUsdt).toFixed(2));
   return {
     ...t,
+    mode: 'SHADOW',
+    isSynthetic: true,
     qty: scaledQty,
     grossPnlUsdt,
     feeUsdt,
@@ -521,18 +526,35 @@ export const initialClosedTrades: ClosedTradeRecord[] = rawSeedTrades.map((t) =>
   };
 });
 
+const isDemoSeedEnabled =
+  typeof process !== 'undefined' && process.env && process.env.DEMO_SEED === 'true';
+
+export const initialClosedTrades: ClosedTradeRecord[] = isDemoSeedEnabled
+  ? demoSeedClosedTrades
+  : [];
+
 export const initialWalletLedger: WalletLedgerEntry[] = (() => {
-  const chronological = [...initialClosedTrades].sort((a, b) => a.closedAt - b.closedAt);
+  const baseDepositEntry: WalletLedgerEntry = {
+    id: 'led-init-10',
+    timestamp: Date.now() - 3600000,
+    type: 'DEPOSIT_RESET',
+    amountUsdt: 10.0,
+    balanceAfterUsdt: 10.0,
+    description: 'Стартовый депозит торгового счета: $10.00 USDT',
+    mode: 'SHADOW',
+    isSynthetic: false,
+  };
+
+  if (!isDemoSeedEnabled) {
+    return [baseDepositEntry];
+  }
+
+  const chronological = [...demoSeedClosedTrades].sort((a, b) => a.closedAt - b.closedAt);
   let runningBalance = 10.0;
   const entries: WalletLedgerEntry[] = [
     {
-      id: 'led-seed-init-10',
+      ...baseDepositEntry,
       timestamp: (chronological[0]?.openedAt || Date.now()) - 3600000,
-      type: 'DEPOSIT_RESET',
-      amountUsdt: 10.0,
-      balanceAfterUsdt: 10.0,
-      description: 'Стартовый депозит торгового счета: $10.00 USDT',
-      mode: 'SHADOW',
     },
   ];
 
@@ -551,11 +573,13 @@ export const initialWalletLedger: WalletLedgerEntry[] = (() => {
       amountUsdt: t.netPnlUsdt,
       balanceAfterUsdt: runningBalance,
       symbol: t.symbol,
-      description: `${exitLabel} ${t.side} ${t.symbol} ($${t.exitPrice}) • ${t.botName} (комиссия -$${t.feeUsdt.toFixed(2)})`,
-      mode: t.mode,
+      description: `[DEMO SEED] ${exitLabel} ${t.side} ${t.symbol} ($${t.exitPrice}) • ${t.botName} (комиссия -$${t.feeUsdt.toFixed(2)})`,
+      mode: 'SHADOW',
+      isSynthetic: true,
     });
   }
 
   return entries;
 })();
+
 

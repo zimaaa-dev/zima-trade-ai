@@ -131,7 +131,7 @@ echo "🎉 [ZIMA-TRADE-AI] Развертывание узла web-app-prod ус
 echo "======================================================================"
 echo "📍 Публичный веб-терминал: http://194.113.34.230:3000"
 echo "🔒 Внутренний IP (VPC):   http://10.0.0.5:3000"
-echo "🩺 Health Check:          http://194.113.34.230:3000/api/health"
+echo "🩺 Health Check:          http://194.113.34.230:3000/api/system/health"
 echo "🌍 Зона Cloud.ru:         ru.AZ-1"
 echo "📊 Мониторинг логов:      pm2 logs zima-core"
 echo "📈 Статус процессов:      pm2 status"

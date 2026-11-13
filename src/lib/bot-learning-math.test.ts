@@ -18,6 +18,9 @@ import {
   evaluateFreqtradeShouldExit,
   evaluateLowProfitPairsProtection,
   applyFreqtradePairlistPipeline,
+  buildTrendGridPlan,
+  evaluateTrendGridSafetyOrderFill,
+  TREND_GRID_CORE_SYMBOLS,
   type SymbolCooldownEntry,
   type KlineBar,
 } from './bot-learning-math.ts';
@@ -364,6 +367,87 @@ test('[Freqtrade Port] evaluateLowProfitPairsProtection, applyFreqtradePairlistP
   });
   assert.equal(outlierDi.doPredict, false);
 });
+
+test('createDefaultBotBrain starts with zero fake experience and browser-safe SHA-256 matches FIPS 180-4', async () => {
+  const cryptoNode = await import('node:crypto');
+  const { sha256HexBrowserSafe } = await import('./bot-learning-math.ts');
+
+  const brain = createDefaultBotBrain('ONNX_RL', 'agent-onnx-ppo-v2');
+  assert.equal(brain.epochsTrained, 0);
+  assert.equal(brain.onlineUpdatesCount, 0);
+  assert.equal(brain.cumulativeReward, 0);
+  assert.equal(brain.rewardHistory.length, 0);
+
+  const samplePayload = 'agent-onnx-ppo-v2:0.4200:0.2800:0.1800:0.1200:step-1';
+  const expectedNodeHex = cryptoNode.createHash('sha256').update(samplePayload).digest('hex');
+  const actualBrowserSafeHex = sha256HexBrowserSafe(samplePayload);
+  assert.equal(actualBrowserSafeHex, expectedNodeHex);
+});
+
+test('[Variant 3 · Trend-Grid @ne_investor] buildTrendGridPlan and evaluateTrendGridSafetyOrderFill buy pullbacks and improve entryVwap & TP', () => {
+  assert.ok(TREND_GRID_CORE_SYMBOLS.includes('SOLUSDT'));
+  assert.ok(TREND_GRID_CORE_SYMBOLS.includes('XRPUSDT'));
+  assert.ok(TREND_GRID_CORE_SYMBOLS.includes('BTCUSDT'));
+
+  // 1. Build a LONG Trend-Grid plan on SOLUSDT at $100.00 with totalPlannedQty = 1.0 SOL (qtyStep = 0.1, minQty = 0.1)
+  const plan = buildTrendGridPlan({
+    side: 'LONG',
+    entryPrice: 100.0,
+    totalPlannedQty: 1.0,
+    atrPct: 1.4,
+    qtyStep: 0.1,
+    minQty: 0.1,
+    priceDecimals: 2,
+  });
+
+  assert.equal(plan.recommendedLeverage, 4);
+  assert.equal(plan.baseOrderQty, 0.4);
+  assert.equal(plan.safetyOrders.length, 2);
+  assert.equal(plan.safetyOrders[0].qty, 0.3);
+  assert.equal(plan.safetyOrders[1].qty, 0.3);
+  assert.ok(plan.safetyOrders[0].triggerPrice < 99.0);
+  assert.ok(plan.safetyOrders[1].triggerPrice < plan.safetyOrders[0].triggerPrice);
+  assert.ok(plan.catastrophicSlPrice < plan.safetyOrders[1].triggerPrice);
+  assert.ok(plan.initialTpPrice >= 101.7);
+
+  // 2. Simulate a -1.4% market-maker wick to $98.60 (which used to stop out 10x positions, but now triggers Safety Order #1!)
+  const fill1 = evaluateTrendGridSafetyOrderFill({
+    side: 'LONG',
+    currentPrice: 98.6,
+    currentQty: plan.baseOrderQty,
+    currentEntryVwap: 100.0,
+    safetyOrders: plan.safetyOrders,
+    priceDecimals: 2,
+    qtyDecimals: 1,
+    tpTargetPct: plan.tpTargetPct,
+  });
+
+  assert.equal(fill1.triggered, true);
+  assert.equal(fill1.filledStepIndex, 1);
+  assert.equal(fill1.newQty, 0.7);
+  // New VWAP must be improved below $100.00 ((0.4*100 + 0.3*98.6)/0.7 = $99.40)
+  assert.equal(fill1.newEntryVwap, 99.4);
+  // New TP price must automatically shift lower than initialTpPrice so the bounce unloads earlier in profit!
+  assert.ok(fill1.newTpPrice < plan.initialTpPrice);
+
+  // 3. Verify evaluateBotSignal triggers TREND_GRID_PULLBACK on a SOL dip when @ne_investor channel is bullish
+  const brain = createDefaultBotBrain('TG_CHANNEL', 'agent-tg-crypto-alpha');
+  const pullbackSignal = evaluateBotSignal(brain, {
+    obi: -0.03, // Slight sell pressure on the dip
+    spreadBps: 1.0,
+    rsi14: 44.5, // Healthy dip RSI
+    emaTrendBps: -2.0,
+    momentumSignal: -0.05,
+    vwapDeviationPct: -0.22, // Pulled back below VWAP
+    vwapSignal: 0.25,
+    atrPct: 1.4,
+    sentimentSignal: 0.75, // Strong @ne_investor LONG signal
+  });
+  assert.equal(pullbackSignal.action, 'LONG');
+  assert.match(pullbackSignal.reasonSummary, /TREND_GRID_PULLBACK/);
+});
+
+
 
 
 

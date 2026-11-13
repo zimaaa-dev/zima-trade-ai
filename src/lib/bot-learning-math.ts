@@ -1,5 +1,96 @@
-import crypto from 'crypto';
 import type { OrderbookLevel } from './engine-math.ts';
+
+/**
+ * Pure TypeScript / ECMAScript FIPS 180-4 SHA-256 implementation.
+ * Zero Node.js `crypto` dependency so this module is 100% browser- and server-safe.
+ */
+const SHA256_K = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+
+function rotr32(x: number, n: number): number {
+  return (x >>> n) | (x << (32 - n));
+}
+
+export function sha256HexBrowserSafe(input: string): string {
+  const utf8 = new TextEncoder().encode(input);
+  const bitLen = utf8.length * 8;
+  const totalBytes = (((utf8.length + 8) >> 6) + 1) << 6;
+  const buf = new Uint8Array(totalBytes);
+  buf.set(utf8);
+  buf[utf8.length] = 0x80;
+  const view = new DataView(buf.buffer);
+  view.setUint32(totalBytes - 8, Math.floor(bitLen / 0x100000000), false);
+  view.setUint32(totalBytes - 4, bitLen >>> 0, false);
+
+  let h0 = 0x6a09e667;
+  let h1 = 0xbb67ae85;
+  let h2 = 0x3c6ef372;
+  let h3 = 0xa54ff53a;
+  let h4 = 0x510e527f;
+  let h5 = 0x9b05688c;
+  let h6 = 0x1f83d9ab;
+  let h7 = 0x5be0cd19;
+
+  const w = new Uint32Array(64);
+  for (let offset = 0; offset < totalBytes; offset += 64) {
+    for (let i = 0; i < 16; i++) {
+      w[i] = view.getUint32(offset + i * 4, false);
+    }
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr32(w[i - 15], 7) ^ rotr32(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = rotr32(w[i - 2], 17) ^ rotr32(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+
+    let a = h0;
+    let b = h1;
+    let c = h2;
+    let d = h3;
+    let e = h4;
+    let f = h5;
+    let g = h6;
+    let h = h7;
+
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const temp1 = (h + S1 + ch + SHA256_K[i] + w[i]) >>> 0;
+      const S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (S0 + maj) >>> 0;
+
+      h = g;
+      g = f;
+      f = e;
+      e = (d + temp1) >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (temp1 + temp2) >>> 0;
+    }
+
+    h0 = (h0 + a) >>> 0;
+    h1 = (h1 + b) >>> 0;
+    h2 = (h2 + c) >>> 0;
+    h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0;
+    h5 = (h5 + f) >>> 0;
+    h6 = (h6 + g) >>> 0;
+    h7 = (h7 + h) >>> 0;
+  }
+
+  return [h0, h1, h2, h3, h4, h5, h6, h7]
+    .map((v) => v.toString(16).padStart(8, '0'))
+    .join('');
+}
 
 export interface KlineBar {
   timestamp: number;
@@ -129,12 +220,34 @@ export function normalizeWeights(w: BotFeatureWeights): BotFeatureWeights {
   };
 }
 
-export function computeBrainSha256(agentId: string, weights: BotFeatureWeights, steps: number): string {
+export function computeBrainSha256(
+  agentId: string,
+  weights: BotFeatureWeights,
+  steps: number,
+  hashFn: (payload: string) => string = sha256HexBrowserSafe
+): string {
   const payload = `${agentId}:${weights.obiWeight.toFixed(4)}:${weights.momentumWeight.toFixed(4)}:${weights.vwapWeight.toFixed(4)}:${weights.sentimentWeight.toFixed(4)}:step-${steps}`;
-  return crypto.createHash('sha256').update(payload).digest('hex');
+  return hashFn(payload);
 }
 
-export function createDefaultBotBrain(engineType: string, agentId: string): BotBrainState {
+const LEGACY_SYNTHETIC_BRAIN_LABELS = new Set<string>([
+  'Цикл #1 (L2 Init)',
+  'Цикл #2 (Bybit L2)',
+  'Цикл #3 (ATR+VWAP)',
+  'Цикл #1 (Momentum)',
+  'Цикл #2 (Hist 5m)',
+  'Цикл #3 (L2 Depth)',
+  'Цикл #1 (Alpha)',
+  'Цикл #2 (Индекс)',
+  'Цикл #3 (Confluence)',
+]);
+
+export function isSyntheticBrainHistoryLabel(label?: string): boolean {
+  if (!label) return false;
+  return LEGACY_SYNTHETIC_BRAIN_LABELS.has(label.trim());
+}
+
+export function createDefaultBotBrain(engineType: string, _agentId?: string): BotBrainState {
   let rawWeights: BotFeatureWeights;
   let confidenceThreshold = 0.22;
   let atrMultiplier = 1.45;
@@ -159,60 +272,19 @@ export function createDefaultBotBrain(engineType: string, agentId: string): BotB
   }
 
   const weights = normalizeWeights(rawWeights);
-  const now = Date.now();
-  const baseSha = computeBrainSha256(agentId, weights, 1);
-
-  const rewardSeriesByEngine: Record<string, { label: string; reward: number; cumulativeReward: number; hoursAgo: number }[]> = {
-    ONNX_RL: [
-      { hoursAgo: 36, label: 'Цикл #1 (L2 Init)', reward: 0.42, cumulativeReward: 0.42 },
-      { hoursAgo: 28, label: 'BTCUSDT (LONG)', reward: 0.78, cumulativeReward: 1.20 },
-      { hoursAgo: 22, label: 'Цикл #2 (Bybit L2)', reward: 0.65, cumulativeReward: 1.85 },
-      { hoursAgo: 16, label: 'SOLUSDT (SHORT)', reward: -0.34, cumulativeReward: 1.51 },
-      { hoursAgo: 11, label: 'ETHUSDT (LONG)', reward: 0.94, cumulativeReward: 2.45 },
-      { hoursAgo: 6, label: 'Цикл #3 (ATR+VWAP)', reward: 0.72, cumulativeReward: 3.17 },
-      { hoursAgo: 2, label: 'BTCUSDT (LONG)', reward: 0.68, cumulativeReward: 3.85 },
-    ],
-    LIGHTGBM: [
-      { hoursAgo: 36, label: 'Цикл #1 (Momentum)', reward: 0.31, cumulativeReward: 0.31 },
-      { hoursAgo: 28, label: 'ETHUSDT (SHORT)', reward: 0.54, cumulativeReward: 0.85 },
-      { hoursAgo: 22, label: 'DOGEUSDT (LONG)', reward: -0.42, cumulativeReward: 0.43 },
-      { hoursAgo: 16, label: 'Цикл #2 (Hist 5m)', reward: 0.88, cumulativeReward: 1.31 },
-      { hoursAgo: 11, label: 'SOLUSDT (LONG)', reward: 0.61, cumulativeReward: 1.92 },
-      { hoursAgo: 6, label: 'NEARUSDT (LONG)', reward: 0.49, cumulativeReward: 2.41 },
-      { hoursAgo: 2, label: 'Цикл #3 (L2 Depth)', reward: 0.57, cumulativeReward: 2.98 },
-    ],
-    TG_CHANNEL: [
-      { hoursAgo: 36, label: 'Цикл #1 (Alpha)', reward: 0.55, cumulativeReward: 0.55 },
-      { hoursAgo: 28, label: 'SOLUSDT (LONG)', reward: 0.92, cumulativeReward: 1.47 },
-      { hoursAgo: 22, label: 'DOGEUSDT (SHORT)', reward: -0.58, cumulativeReward: 0.89 },
-      { hoursAgo: 16, label: 'BTCUSDT (LONG)', reward: 0.44, cumulativeReward: 1.33 },
-      { hoursAgo: 11, label: 'Цикл #2 (Индекс)', reward: 0.52, cumulativeReward: 1.85 },
-      { hoursAgo: 6, label: 'ETHUSDT (LONG)', reward: 0.38, cumulativeReward: 2.23 },
-      { hoursAgo: 2, label: 'Цикл #3 (Confluence)', reward: 0.46, cumulativeReward: 2.69 },
-    ],
-  };
-
-  const selectedSeries = rewardSeriesByEngine[engineType] || rewardSeriesByEngine.ONNX_RL;
-  const finalCumReward = selectedSeries[selectedSeries.length - 1].cumulativeReward;
 
   return {
     weights,
-    lastWeightDelta: { obiWeight: 0.012, momentumWeight: 0.008, vwapWeight: -0.009, sentimentWeight: -0.011 },
+    lastWeightDelta: { obiWeight: 0, momentumWeight: 0, vwapWeight: 0, sentimentWeight: 0 },
     confidenceThreshold,
     learningRate,
     atrMultiplier,
     maxSpreadBps: 18.0,
-    epochsTrained: 3,
-    onlineUpdatesCount: 5,
-    cumulativeReward: finalCumReward,
-    lastTrainedAt: now - 3600000 * 2,
-    rewardHistory: selectedSeries.map((pt, idx) => ({
-      timestamp: now - 3600000 * pt.hoursAgo,
-      label: pt.label,
-      reward: pt.reward,
-      cumulativeReward: pt.cumulativeReward,
-      sha256: computeBrainSha256(agentId, weights, idx + 1).slice(0, 16),
-    })),
+    epochsTrained: 0,
+    onlineUpdatesCount: 0,
+    cumulativeReward: 0,
+    lastTrainedAt: 0,
+    rewardHistory: [],
   };
 }
 
@@ -648,16 +720,19 @@ export function evaluateFreqtradeShouldExit(params: {
     };
   }
 
-  // 2. Check `populate_exit_trend` + `exit_profit_only` (exit_profit_offset = +0.25% net price move)
+  // 2. Check `populate_exit_trend` + `exit_profit_only`:
+  // - If RSI reaches exhaustion (>= 67 for LONG / <= 33 for SHORT), harvest profit once netProfitRatio >= 0.0025 (+0.25%).
+  // - For pure L2 OBI reversal without RSI exhaustion, require netProfitRatio >= 0.0085 (+0.85% move = +8.5% ROE at 10x)
+  //   so normal 3.5s orderbook flickers do not prematurely cut winning trades at +$0.04 before TP1 (1.55R).
   if (liveFeatures && netProfitRatio >= 0.0025) {
     const isLongReversal =
       side === 'LONG' &&
       (liveFeatures.rsi14 >= 67 ||
-        (liveFeatures.obi <= -0.16 && liveFeatures.momentumSignal < 0.05));
+        (netProfitRatio >= 0.0085 && liveFeatures.obi <= -0.22 && liveFeatures.momentumSignal < 0.02));
     const isShortReversal =
       side === 'SHORT' &&
       (liveFeatures.rsi14 <= 33 ||
-        (liveFeatures.obi >= 0.16 && liveFeatures.momentumSignal > -0.05));
+        (netProfitRatio >= 0.0085 && liveFeatures.obi >= 0.22 && liveFeatures.momentumSignal > -0.02));
 
     if (isLongReversal || isShortReversal) {
       return {
@@ -813,10 +888,11 @@ export function applyFreqtradePairlistPipeline(params: {
 }
 
 /**
- * Evaluates a bot's strategy policy using Freqtrade IStrategy + FreqAI DI_values + NFI rules:
+ * Evaluates a bot's strategy policy using Freqtrade IStrategy + FreqAI DI_values + NFI rules + Telegram Channel Alpha:
  * - FreqAI Dissimilarity Index (`DI_values`) filters out anomalous market spikes.
  * - Strict VWAP Value-Zone Entry: never chase a candle that already moved > +0.58% above VWAP for LONG (or < -0.58% below VWAP for SHORT).
- * - Require strict L2 Orderbook + Trend alignment (|OBI| >= 0.12, |Momentum| >= 0.08, |emaTrendBps| >= 1.5).
+ * - Telegram Channel Veto & Conviction: prevents opening trades against strong Telegram channel signals (`|sentimentSignal| >= 0.35`),
+ *   and allows `TG_CHANNEL` / channel-backed signals (`|sentimentSignal| >= 0.45`) to execute without waiting for extreme L2 OBI.
  */
 export function evaluateBotSignal(
   brain: BotBrainState,
@@ -838,6 +914,14 @@ export function evaluateBotSignal(
   let rawScore = cObi + cMom + cVwap + cSent;
   let regimeTag = 'FREQTRADE_NFI';
 
+  // Strong Telegram Channel Signal Conviction Boost (when channel sentiment is decisive >= 0.45)
+  const hasStrongTgSignal = Math.abs(features.sentimentSignal) >= 0.45;
+  const tgSign = Math.sign(features.sentimentSignal);
+  if (hasStrongTgSignal && Math.sign(rawScore) === tgSign) {
+    rawScore += tgSign * 0.08;
+    regimeTag = 'TG_CHANNEL_ALPHA';
+  }
+
   // 1. Institutional Confluence Surge: L2 OBI, Momentum, and VWAP all align in direction
   const obiSign = Math.sign(features.obi);
   const momSign = Math.sign(features.momentumSignal);
@@ -850,7 +934,7 @@ export function evaluateBotSignal(
     Math.abs(features.momentumSignal) >= 0.12
   ) {
     rawScore *= 1.18;
-    regimeTag = 'FT_CONFLUENCE';
+    regimeTag = hasStrongTgSignal && obiSign === tgSign ? 'FT_TG_CONFLUENCE' : 'FT_CONFLUENCE';
   }
 
   // 2. Orderflow Divergence Trap Filter (Bull/Bear Trap): L2 book opposes price impulse
@@ -874,12 +958,33 @@ export function evaluateBotSignal(
     };
   }
 
-  // 4. Freqtrade NFI Anti-Top-Chasing & Value-Zone VWAP Guard:
-  // Blocks chasing green candles > +0.58% above VWAP (like UNIUSDT at +0.83%) or shorting red candles < -0.58% below VWAP (like BCHUSDT at -0.72%)
+  // 4. Telegram Channel Signal Veto: never open LONG against strong bearish TG channel signal (<= -0.35)
+  //    and never open SHORT against strong bullish TG channel signal (>= +0.35)
+  if (compositeScore > 0 && features.sentimentSignal <= -0.35) {
+    return {
+      action: 'SKIP',
+      compositeScore,
+      slDistancePct,
+      contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
+      reasonSummary: `Пропуск [TG Signal Veto]: Сигнал Telegram-каналов медвежий (${features.sentimentSignal.toFixed(2)}). Покупка (LONG) против канала заблокирована.`,
+    };
+  }
+  if (compositeScore < 0 && features.sentimentSignal >= 0.35) {
+    return {
+      action: 'SKIP',
+      compositeScore,
+      slDistancePct,
+      contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
+      reasonSummary: `Пропуск [TG Signal Veto]: Сигнал Telegram-каналов бычий (+${features.sentimentSignal.toFixed(2)}). Продажа (SHORT) против канала заблокирована.`,
+    };
+  }
+
+  // 5. Freqtrade NFI Anti-Top-Chasing & Value-Zone VWAP Guard:
+  // Blocks chasing green candles > +0.58% above VWAP / RSI > 63 unless extreme institutional L2 absorption (OBI >= 0.72) AND positive TG sentiment
   if (
     compositeScore > 0 &&
     (features.rsi14 > 63 || features.vwapDeviationPct > 0.58) &&
-    features.obi < 0.55
+    (features.obi < 0.72 || features.sentimentSignal < 0)
   ) {
     return {
       action: 'SKIP',
@@ -892,7 +997,7 @@ export function evaluateBotSignal(
   if (
     compositeScore < 0 &&
     (features.rsi14 < 37 || features.vwapDeviationPct < -0.58) &&
-    features.obi > -0.55
+    (features.obi > -0.72 || features.sentimentSignal > 0)
   ) {
     return {
       action: 'SKIP',
@@ -903,7 +1008,7 @@ export function evaluateBotSignal(
     };
   }
 
-  // 5. FreqAI Dissimilarity Index Outlier Guard (`DI_values`)
+  // 6. FreqAI Dissimilarity Index Outlier Guard (`DI_values`)
   const diCheck = calculateFreqaiDissimilarityIndex(features, 1.85);
   if (!diCheck.doPredict) {
     return {
@@ -915,28 +1020,71 @@ export function evaluateBotSignal(
     };
   }
 
-  // 6. Mandatory Freqtrade `populate_entry_trend` Gate:
-  // Require strong L2 Orderbook imbalance (|OBI| >= 0.12) AND aligned trend momentum (|Mom| >= 0.08) AND EMA trend
-  if (compositeScore > 0 && (features.obi < 0.12 || features.momentumSignal < 0.08 || features.emaTrendBps < 1.5)) {
+  // 7. Mandatory Freqtrade `populate_entry_trend` Gate + Variant 3 Trend-Grid Pullback Support:
+  // - Standard L2/Momentum impulse requires |OBI| >= 0.12 & |Mom| >= 0.08 & |EMA| >= 1.5 bps.
+  // - Channel-backed continuation (`tgBackedLong` / `tgBackedShort`) allows entry when |sentimentSignal| >= 0.45 and L2 book aligns (|OBI| >= 0.04).
+  // - Variant 3 Trend-Grid Pullback (`gridPullbackLong` / `gridPullbackShort` — "@ne_investor dip/bounce grid"):
+  //   Allows buying a pullback below/near VWAP (vwapDeviationPct <= 0.12%, RSI <= 54) in the direction of a bullish TG channel signal (>= +0.40),
+  //   or shorting a bounce above/near VWAP (vwapDeviationPct >= -0.12%, RSI >= 46) in the direction of a bearish TG channel signal (<= -0.40),
+  //   provided L2 book is not heavily opposing (obi >= -0.08 for LONG / obi <= +0.08 for SHORT).
+  const tgBackedLong =
+    compositeScore > 0 &&
+    features.sentimentSignal >= 0.45 &&
+    features.obi >= 0.04 &&
+    features.momentumSignal >= -0.05;
+  const tgBackedShort =
+    compositeScore < 0 &&
+    features.sentimentSignal <= -0.45 &&
+    features.obi <= -0.04 &&
+    features.momentumSignal <= 0.05;
+
+  const gridPullbackLong =
+    compositeScore > 0 &&
+    features.sentimentSignal >= 0.40 &&
+    features.vwapDeviationPct <= 0.12 &&
+    features.rsi14 <= 54 &&
+    features.obi >= -0.08;
+  const gridPullbackShort =
+    compositeScore < 0 &&
+    features.sentimentSignal <= -0.40 &&
+    features.vwapDeviationPct >= -0.12 &&
+    features.rsi14 >= 46 &&
+    features.obi <= 0.08;
+
+  if (gridPullbackLong || gridPullbackShort) {
+    regimeTag = 'TREND_GRID_PULLBACK';
+  }
+
+  if (
+    compositeScore > 0 &&
+    !tgBackedLong &&
+    !gridPullbackLong &&
+    (features.obi < 0.12 || features.momentumSignal < 0.08 || features.emaTrendBps < 1.5)
+  ) {
     return {
       action: 'SKIP',
       compositeScore,
       slDistancePct,
       contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
-      reasonSummary: `Пропуск [populate_entry_trend]: Нет сетапа LONG (требуется OBI >= +0.12, EMA >= +1.5 bps; сейчас OBI=${features.obi.toFixed(2)}, EMA=${features.emaTrendBps.toFixed(1)} bps).`,
+      reasonSummary: `Пропуск [populate_entry_trend]: Нет сетапа LONG (требуется OBI >= +0.12, EMA >= +1.5 bps или откат по сигналу канала; сейчас OBI=${features.obi.toFixed(2)}, EMA=${features.emaTrendBps.toFixed(1)} bps).`,
     };
   }
-  if (compositeScore < 0 && (features.obi > -0.12 || features.momentumSignal > -0.08 || features.emaTrendBps > -1.5)) {
+  if (
+    compositeScore < 0 &&
+    !tgBackedShort &&
+    !gridPullbackShort &&
+    (features.obi > -0.12 || features.momentumSignal > -0.08 || features.emaTrendBps > -1.5)
+  ) {
     return {
       action: 'SKIP',
       compositeScore,
       slDistancePct,
       contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
-      reasonSummary: `Пропуск [populate_entry_trend]: Нет сетапа SHORT (требуется OBI <= -0.12, EMA <= -1.5 bps; сейчас OBI=${features.obi.toFixed(2)}, EMA=${features.emaTrendBps.toFixed(1)} bps).`,
+      reasonSummary: `Пропуск [populate_entry_trend]: Нет сетапа SHORT (требуется OBI <= -0.12, EMA <= -1.5 bps или отскок по сигналу канала; сейчас OBI=${features.obi.toFixed(2)}, EMA=${features.emaTrendBps.toFixed(1)} bps).`,
     };
   }
 
-  // 7. Strict Confidence Threshold
+  // 8. Strict Confidence Threshold
   const absScore = Math.abs(compositeScore);
   if (absScore < brain.confidenceThreshold) {
     return {
@@ -949,7 +1097,7 @@ export function evaluateBotSignal(
   }
 
   const action: 'LONG' | 'SHORT' = compositeScore >= 0 ? 'LONG' : 'SHORT';
-  const reasonSummary = `Сигнал [${action} · ${regimeTag} · DI=${diCheck.diValue.toFixed(2)}]: Score=${compositeScore >= 0 ? '+' : ''}${compositeScore.toFixed(2)} (порог ${brain.confidenceThreshold.toFixed(2)}) · L2 OBI=${features.obi >= 0 ? '+' : ''}${features.obi.toFixed(2)} · RSI=${features.rsi14.toFixed(1)} · VWAP=${features.vwapDeviationPct >= 0 ? '+' : ''}${features.vwapDeviationPct.toFixed(2)}% · ATR SL=${slDistancePct.toFixed(2)}%`;
+  const reasonSummary = `Сигнал [${action} · ${regimeTag} · DI=${diCheck.diValue.toFixed(2)}]: Score=${compositeScore >= 0 ? '+' : ''}${compositeScore.toFixed(2)} (порог ${brain.confidenceThreshold.toFixed(2)}) · TG=${features.sentimentSignal >= 0 ? '+' : ''}${features.sentimentSignal.toFixed(2)} · L2 OBI=${features.obi >= 0 ? '+' : ''}${features.obi.toFixed(2)} · RSI=${features.rsi14.toFixed(1)} · VWAP=${features.vwapDeviationPct >= 0 ? '+' : ''}${features.vwapDeviationPct.toFixed(2)}%`;
 
   return {
     action,
@@ -1471,3 +1619,222 @@ export function runHistoricalKlineEpoch(params: {
     recommendedTpSlRatio,
   };
 }
+
+/**
+ * Core liquid symbols for Variant 3 ("Сетка / Откуп просадок по тренду как делает @ne_investor").
+ * Focuses strictly on top-liquidity pairs with narrow spreads (0.5-1.5 bps) and @ne_investor's main setups.
+ */
+export const TREND_GRID_CORE_SYMBOLS = [
+  'BTCUSDT',
+  'SOLUSDT',
+  'XRPUSDT',
+  'ETHUSDT',
+  'BNBUSDT',
+] as const;
+
+export interface TrendGridSafetyOrder {
+  stepIndex: number; // 1 or 2
+  triggerPrice: number;
+  qty: number;
+  stepPctFromEntry: number;
+  filled: boolean;
+  filledAt?: number;
+  fillPrice?: number;
+}
+
+export interface TrendGridPlan {
+  recommendedLeverage: number; // Safe 3x-5x grid leverage (default 4x)
+  baseOrderQty: number;
+  totalMaxQty: number;
+  gridStepPct: number;
+  tpTargetPct: number; // Full-grid unload target (+1.70% .. +2.45% from averaged entryVwap)
+  initialTpPrice: number;
+  catastrophicSlPct: number; // Structural safety stop behind the entire 3-step grid (~3.8% - 4.5%)
+  catastrophicSlPrice: number;
+  safetyOrders: TrendGridSafetyOrder[];
+}
+
+/**
+ * Builds a Variant 3 Trend-Grid & Pullback Averaging Plan (@ne_investor / Pionex / Passivbot style):
+ * - Low safe leverage (4x, within 3x-5x range) so normal market noise never liquidates or hunts stops.
+ * - Splits position into 3 tranches:
+ *   - Base Entry Order (40% of total grid capacity, or minQty if indivisible)
+ *   - Safety Order #1 (30% at -1.0 * gridStepPct pullback for LONG / +1.0 * gridStepPct bounce for SHORT)
+ *   - Safety Order #2 (30% at -2.1 * gridStepPct deep pullback for LONG / +2.1 * gridStepPct for SHORT)
+ * - Places Catastrophic Stop-Loss behind the entire grid (`3.4 * gridStepPct`, ~4.0-4.5% away),
+ *   so 1.2% wicks fill Safety Order #1 and improve `entryVwap` instead of stopping out!
+ * - Single Full-Position Unload Take-Profit (`+1.70%..+2.45%` from averaged `entryVwap`) — zero $0.03 premature cuts.
+ */
+export function buildTrendGridPlan(params: {
+  side: 'LONG' | 'SHORT';
+  entryPrice: number;
+  totalPlannedQty: number;
+  atrPct: number;
+  qtyStep: number;
+  minQty: number;
+  priceDecimals: number;
+}): TrendGridPlan {
+  const { side, entryPrice, totalPlannedQty, atrPct, qtyStep, minQty, priceDecimals } = params;
+  const dirSign = side === 'LONG' ? 1 : -1;
+  const qtyDecimals = Math.max(0, -Math.floor(Math.log10(Math.max(1e-8, qtyStep)) + 1e-9));
+
+  const roundQty = (raw: number): number => {
+    const stepped = Math.floor((raw + 1e-9) / qtyStep) * qtyStep;
+    return Number(Math.max(minQty, stepped).toFixed(qtyDecimals));
+  };
+
+  // Grid step distance based on 15m ATR (bounded between 1.15% and 1.95%)
+  const gridStepPct = Number(clamp(atrPct * 0.95, 1.15, 1.95).toFixed(2));
+  // Unload bounce target: 1.45x grid step, bounded between +1.70% and +2.45% net move
+  const tpTargetPct = Number(clamp(gridStepPct * 1.45, 1.70, 2.45).toFixed(2));
+  // Catastrophic stop sits well behind Safety Order #2 (3.3x gridStepPct, bounded 3.80% .. 4.80%)
+  const catastrophicSlPct = Number(clamp(gridStepPct * 3.3, 3.80, 4.80).toFixed(2));
+
+  // Split totalPlannedQty into 40% Base + 30% SO1 + 30% SO2 if divisible into >= 3 * minQty;
+  // otherwise use minQty for Base and minQty for SO1 & SO2 so every coin supports grid averaging.
+  let baseOrderQty: number;
+  let so1Qty: number;
+  let so2Qty: number;
+
+  if (totalPlannedQty >= minQty * 3.2) {
+    baseOrderQty = roundQty(totalPlannedQty * 0.4);
+    so1Qty = roundQty(totalPlannedQty * 0.3);
+    so2Qty = Number(Math.max(minQty, totalPlannedQty - baseOrderQty - so1Qty).toFixed(qtyDecimals));
+  } else {
+    baseOrderQty = roundQty(totalPlannedQty);
+    so1Qty = Number(minQty.toFixed(qtyDecimals));
+    so2Qty = Number(minQty.toFixed(qtyDecimals));
+  }
+
+  const totalMaxQty = Number((baseOrderQty + so1Qty + so2Qty).toFixed(qtyDecimals));
+
+  const so1StepPct = gridStepPct;
+  const so2StepPct = Number((gridStepPct * 2.1).toFixed(2));
+
+  const so1TriggerPrice = Number(
+    (entryPrice * (1 - dirSign * (so1StepPct / 100))).toFixed(priceDecimals)
+  );
+  const so2TriggerPrice = Number(
+    (entryPrice * (1 - dirSign * (so2StepPct / 100))).toFixed(priceDecimals)
+  );
+
+  const initialTpPrice = Number(
+    (entryPrice * (1 + dirSign * (tpTargetPct / 100))).toFixed(priceDecimals)
+  );
+  const catastrophicSlPrice = Number(
+    (entryPrice * (1 - dirSign * (catastrophicSlPct / 100))).toFixed(priceDecimals)
+  );
+
+  const safetyOrders: TrendGridSafetyOrder[] = [
+    {
+      stepIndex: 1,
+      triggerPrice: so1TriggerPrice,
+      qty: so1Qty,
+      stepPctFromEntry: so1StepPct,
+      filled: false,
+    },
+    {
+      stepIndex: 2,
+      triggerPrice: so2TriggerPrice,
+      qty: so2Qty,
+      stepPctFromEntry: so2StepPct,
+      filled: false,
+    },
+  ];
+
+  return {
+    recommendedLeverage: 4,
+    baseOrderQty,
+    totalMaxQty,
+    gridStepPct,
+    tpTargetPct,
+    initialTpPrice,
+    catastrophicSlPct,
+    catastrophicSlPrice,
+    safetyOrders,
+  };
+}
+
+/**
+ * Evaluates whether live price has reached any unfilled Trend-Grid Safety Order (DCA pullback level).
+ * When triggered:
+ * - Fills the safety order at `currentPrice`
+ * - Computes the new weighted-average `entryVwap`
+ * - Increases `qty`
+ * - Shifts `newTpPrice` closer (`newEntryVwap * (1 ± tpTargetPct/100)`) so the position unloads on the bounce!
+ */
+export function evaluateTrendGridSafetyOrderFill(params: {
+  side: 'LONG' | 'SHORT';
+  currentPrice: number;
+  currentQty: number;
+  currentEntryVwap: number;
+  safetyOrders: TrendGridSafetyOrder[];
+  priceDecimals: number;
+  qtyDecimals: number;
+  tpTargetPct?: number;
+  nowTs?: number;
+}): {
+  triggered: boolean;
+  filledStepIndex?: number;
+  addedQty: number;
+  newQty: number;
+  newEntryVwap: number;
+  newTpPrice: number;
+  updatedSafetyOrders: TrendGridSafetyOrder[];
+} {
+  const {
+    side,
+    currentPrice,
+    currentQty,
+    currentEntryVwap,
+    safetyOrders,
+    priceDecimals,
+    qtyDecimals,
+    tpTargetPct = 1.80,
+    nowTs = Date.now(),
+  } = params;
+
+  const dirSign = side === 'LONG' ? 1 : -1;
+  const clonedOrders: TrendGridSafetyOrder[] = (safetyOrders || []).map((so) => ({ ...so }));
+
+  let addedQty = 0;
+  let runningQty = currentQty;
+  let runningVwap = currentEntryVwap;
+  let filledStepIndex: number | undefined;
+
+  // Fill at most 1 safety order step per cycle in sequential order (Step 1 before Step 2)
+  for (const so of clonedOrders) {
+    if (so.filled) continue;
+    const isHit =
+      side === 'LONG' ? currentPrice <= so.triggerPrice : currentPrice >= so.triggerPrice;
+    if (isHit && so.qty > 0) {
+      const nextQty = Number((runningQty + so.qty).toFixed(qtyDecimals));
+      const nextVwap = Number(
+        ((runningQty * runningVwap + so.qty * currentPrice) / nextQty).toFixed(priceDecimals)
+      );
+      so.filled = true;
+      so.filledAt = nowTs;
+      so.fillPrice = currentPrice;
+      addedQty = so.qty;
+      runningQty = nextQty;
+      runningVwap = nextVwap;
+      filledStepIndex = so.stepIndex;
+      break;
+    }
+  }
+
+  const newTpPrice = Number(
+    (runningVwap * (1 + dirSign * (tpTargetPct / 100))).toFixed(priceDecimals)
+  );
+
+  return {
+    triggered: filledStepIndex !== undefined,
+    filledStepIndex,
+    addedQty,
+    newQty: runningQty,
+    newEntryVwap: runningVwap,
+    newTpPrice,
+    updatedSafetyOrders: clonedOrders,
+  };
+}
+

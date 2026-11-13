@@ -1,13 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy, useCallback } from 'react';
 import { Header } from './components/Header.tsx';
 import { L2Terminal } from './components/L2Terminal.tsx';
-import { RiskFirewallView } from './components/RiskFirewallView.tsx';
-import { IntelligenceView } from './components/IntelligenceView.tsx';
-import { AiArenaView } from './components/AiArenaView.tsx';
-import { TopologyView } from './components/TopologyView.tsx';
-import { SettingsConfigView } from './components/SettingsConfigView.tsx';
-import { UpdatesManagerView } from './components/UpdatesManagerView.tsx';
-import { WalletPortfolioView } from './components/WalletPortfolioView.tsx';
 import { NotificationCenter } from './components/NotificationCenter.tsx';
 import {
   AuthLoginScreen,
@@ -16,6 +9,28 @@ import {
 } from './components/AuthLoginModal.tsx';
 import type { SystemHealth, ExecutionMode, ExchangeId } from './types.ts';
 import { DEFAULT_SYSTEM_HEALTH } from './types.ts';
+
+const RiskFirewallView = lazy(() =>
+  import('./components/RiskFirewallView.tsx').then((m) => ({ default: m.RiskFirewallView }))
+);
+const IntelligenceView = lazy(() =>
+  import('./components/IntelligenceView.tsx').then((m) => ({ default: m.IntelligenceView }))
+);
+const AiArenaView = lazy(() =>
+  import('./components/AiArenaView.tsx').then((m) => ({ default: m.AiArenaView }))
+);
+const TopologyView = lazy(() =>
+  import('./components/TopologyView.tsx').then((m) => ({ default: m.TopologyView }))
+);
+const SettingsConfigView = lazy(() =>
+  import('./components/SettingsConfigView.tsx').then((m) => ({ default: m.SettingsConfigView }))
+);
+const UpdatesManagerView = lazy(() =>
+  import('./components/UpdatesManagerView.tsx').then((m) => ({ default: m.UpdatesManagerView }))
+);
+const WalletPortfolioView = lazy(() =>
+  import('./components/WalletPortfolioView.tsx').then((m) => ({ default: m.WalletPortfolioView }))
+);
 
 const AUTH_STORAGE_KEY = 'zima_auth_token';
 
@@ -66,36 +81,18 @@ export default function App() {
     }
   };
 
-  const fetchHealth = async () => {
+  const fetchHealth = useCallback(async () => {
     try {
-      let res: Response | null = null;
-      try {
-        res = await fetch('/api/system/health', {
-          headers: { Accept: 'application/json' },
-        });
-      } catch {
-        res = null;
-      }
+      const res = await fetch('/api/system/health', {
+        headers: { Accept: 'application/json' },
+      }).catch(() => null);
 
       if (!res || !res.ok) {
-        try {
-          const altRes = await fetch('/api/health', {
-            headers: { Accept: 'application/json' },
-          });
-          if (altRes && altRes.ok) {
-            res = altRes;
-          }
-        } catch {
-          // ignore network failure
-        }
-      }
-
-      if (!res) {
         return;
       }
 
       const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
+      if (contentType.includes('application/json')) {
         const data = await res.json();
         if (data && typeof data === 'object') {
           setHealth((prev) => ({
@@ -112,14 +109,14 @@ export default function App() {
     } catch {
       // Graceful degradation
     }
-  };
+  }, []);
 
   useEffect(() => {
     checkAuthStatus();
     fetchHealth();
-    const timer = setInterval(fetchHealth, 3000);
+    const timer = setInterval(fetchHealth, 4000);
     return () => clearInterval(timer);
-  }, []);
+  }, [fetchHealth]);
 
   const handleLoginSuccess = (token: string, op: OperatorProfile) => {
     try {
@@ -129,6 +126,7 @@ export default function App() {
     }
     setSessionToken(token);
     setOperator(op);
+    setHasCustomPassword(true);
     setIsAuthenticated(true);
     fetchHealth();
   };
@@ -250,27 +248,35 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'wallet' && (
-          <WalletPortfolioView onRefreshHealth={fetchHealth} />
-        )}
+        <Suspense
+          fallback={
+            <div className="max-w-[1600px] mx-auto px-4 py-12 flex items-center justify-center text-xs font-mono text-slate-400">
+              Загрузка модуля терминала...
+            </div>
+          }
+        >
+          {activeTab === 'wallet' && (
+            <WalletPortfolioView onRefreshHealth={fetchHealth} />
+          )}
 
-        {activeTab === 'firewall' && (
-          <RiskFirewallView
-            health={health}
-            onKillSwitchTrigger={handleKillSwitchTrigger}
-            onKillSwitchReset={handleKillSwitchReset}
-          />
-        )}
+          {activeTab === 'firewall' && (
+            <RiskFirewallView
+              health={health}
+              onKillSwitchTrigger={handleKillSwitchTrigger}
+              onKillSwitchReset={handleKillSwitchReset}
+            />
+          )}
 
-        {activeTab === 'intelligence' && <IntelligenceView />}
+          {activeTab === 'intelligence' && <IntelligenceView />}
 
-        {activeTab === 'arena' && <AiArenaView />}
+          {activeTab === 'arena' && <AiArenaView />}
 
-        {activeTab === 'topology' && <TopologyView health={health} />}
+          {activeTab === 'topology' && <TopologyView health={health} />}
 
-        {activeTab === 'settings' && <SettingsConfigView />}
+          {activeTab === 'settings' && <SettingsConfigView />}
 
-        {activeTab === 'updates' && <UpdatesManagerView />}
+          {activeTab === 'updates' && <UpdatesManagerView />}
+        </Suspense>
       </main>
 
       {/* Global Notification Center & Floating Toasts */}

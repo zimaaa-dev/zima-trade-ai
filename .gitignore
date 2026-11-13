@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+bun.lock
 .venv/
 venv/
 __pycache__/
