@@ -4152,21 +4152,25 @@ async function runBotEngineCycle() {
           continue;
         }
 
-        // 2e. Telegram Channel Signal Conflict / Reversal Exit:
-        // If an open position was opened against strong Telegram channel sentiment (or a new strong opposing LIVE_TELEGRAM_WEB signal arrived)
-        // and the position has been held >= 8 minutes, exit cleanly to free the slot for aligned Telegram signals.
+        // 2e. Fresh Direct Signal-Channel Reversal Exit:
+        // Only rotate out if a genuinely NEW opposing signal from a dedicated signal channel (never news feeds like @WatcherGuru)
+        // arrives AFTER the position opened, specifically on the exact same symbol, after >= 60m hold.
+        const posOpenedAt = Number(pos.openedAt || 0);
+        const NEWS_ONLY_HANDLES = new Set(['@WatcherGuru', '@WuBlockchain', '@Cointelegraph', 'announcements.bybit.com']);
         const latestTgForPos = systemState.parsedNewsFeed.find(
           (f) =>
             f.dataSource === 'LIVE_TELEGRAM_WEB' &&
-            (f.symbol === pos.symbol || f.symbol === 'BTCUSDT') &&
-            Math.abs(Number(f.sentimentScore) || 0) >= 0.68
+            f.symbol === pos.symbol &&
+            Number(f.timestamp || 0) > posOpenedAt + 60_000 &&
+            !NEWS_ONLY_HANDLES.has(String(f.sourceHandle || '')) &&
+            Math.abs(Number(f.sentimentScore) || 0) >= 0.78
         );
         const posDir = pos.side === 'LONG' ? 1 : -1;
-        const entrySent = Number(pos.entryFeatures?.sentiment || 0);
         const liveTgSent = Number(latestTgForPos?.sentimentScore || 0);
         const isCounterTgSignal =
-          ftExitCheck.holdDurationMinutes >= 8 &&
-          ((entrySent * posDir <= -0.35) || (liveTgSent * posDir <= -0.72));
+          Boolean(latestTgForPos) &&
+          ftExitCheck.holdDurationMinutes >= 60 &&
+          liveTgSent * posDir <= -0.78;
 
         if (isCounterTgSignal) {
           systemState.activePositions.splice(i, 1);
@@ -4180,7 +4184,7 @@ async function runBotEngineCycle() {
             side: pos.side,
             price: pos.currentPrice,
             pnl: tradeRecord.netPnlUsdt,
-            message: `Ротация позиции по сигналу Telegram (${latestTgForPos?.sourceHandle || '@ne_investor'}): закрыт встречный ${pos.side} ${pos.symbol} (${tradeRecord.netPnlUsdt >= 0 ? '+' : ''}$${tradeRecord.netPnlUsdt.toFixed(2)} USDT) для освобождения слота под актуальный сигнал канала.`,
+            message: `Ротация позиции по свежему встречному сигналу канала (${latestTgForPos?.sourceHandle || '@ne_investor'}): закрыт ${pos.side} ${pos.symbol} (${tradeRecord.netPnlUsdt >= 0 ? '+' : ''}$${tradeRecord.netPnlUsdt.toFixed(2)} USDT).`,
             rttMs: systemState.pings.bybit,
           });
           continue;
@@ -5786,7 +5790,7 @@ app.post('/api/wallet/snapshot', (_req: Request, res: Response) => {
   });
 });
 
-function executeSystemFactoryReset(): {
+function executeSystemFactoryReset(initialBalanceUsdt = 10.0): {
   success: boolean;
   capitalUsdt: number;
   walletBalance: number;
@@ -5795,7 +5799,13 @@ function executeSystemFactoryReset(): {
   closedTradesCount: number;
   activePositionsCount: number;
 } {
-  systemState.capitalUsdt = 10.0;
+  const cleanBalance =
+    typeof initialBalanceUsdt === 'number' && !isNaN(initialBalanceUsdt) && initialBalanceUsdt >= 1 && initialBalanceUsdt <= 1000000
+      ? Number(initialBalanceUsdt.toFixed(2))
+      : 10.0;
+  const formattedBalance = cleanBalance.toFixed(2);
+
+  systemState.capitalUsdt = cleanBalance;
   systemState.rolling24hPnlUsdt = 0.0;
   systemState.totalRealizedPnlUsdt = 0.0;
   systemState.activePositions = [];
@@ -5811,11 +5821,11 @@ function executeSystemFactoryReset(): {
     delete symbolCooldowns[k];
   }
 
-  // Reset all agents to fresh default brains and 0 trades
+  // Reset all agents to fresh default brains and 0 trades while preserving active Strategy 3 configuration
   systemState.agents = systemState.agents.map((agent) => ({
     ...agent,
     tradesCount: 0,
-    virtualBalance: 10.0,
+    virtualBalance: cleanBalance,
     profitFactor: 1.5,
     sharpeRatio: 1.6,
     maxDrawdownPct: 0.0,
@@ -5828,9 +5838,9 @@ function executeSystemFactoryReset(): {
       id: `led-init-${now}`,
       timestamp: now,
       type: 'DEPOSIT_RESET',
-      amountUsdt: 10.0,
-      balanceAfterUsdt: 10.0,
-      description: 'Чистый старт торговой системы ZimaTrade: базовый баланс $10.00 USDT',
+      amountUsdt: cleanBalance,
+      balanceAfterUsdt: cleanBalance,
+      description: `Чистый старт торговой системы ZimaTrade: базовый баланс $${formattedBalance} USDT`,
       mode: systemState.mode,
     },
   ];
@@ -5840,7 +5850,7 @@ function executeSystemFactoryReset(): {
     botName: 'Ядро управления',
     action: 'SCAN_PASS',
     symbol: 'SYSTEM',
-    message: 'Выполнен полный сброс торговой статистики к $10.00 USDT. Все сделки обнулены, Kill-Switch снят, система запущена с чистого листа.',
+    message: `Выполнен полный сброс торговой статистики к $${formattedBalance} USDT. Все сделки обнулены, Kill-Switch снят, система запущена с чистого листа.`,
     rttMs: systemState.pings.bybit,
   });
 
@@ -5848,7 +5858,7 @@ function executeSystemFactoryReset(): {
     category: 'SYSTEM_UPDATE',
     severity: 'WARNING',
     title: '🔄 Полный сброс системы и статистики',
-    message: 'Баланс сброшен к $10.00 USDT. Все сделки обнулены, Kill-Switch снят, система перезапущена с чистого листа.',
+    message: `Баланс сброшен к $${formattedBalance} USDT. Все сделки обнулены, Kill-Switch снят, система перезапущена с чистого листа.`,
     isUrgent: true,
   });
 
@@ -5857,7 +5867,7 @@ function executeSystemFactoryReset(): {
   return {
     success: true,
     capitalUsdt: systemState.capitalUsdt,
-    walletBalance: 10.0,
+    walletBalance: cleanBalance,
     totalRealizedPnlUsdt: 0.0,
     rolling24hPnlUsdt: 0.0,
     closedTradesCount: 0,
@@ -5865,8 +5875,11 @@ function executeSystemFactoryReset(): {
   };
 }
 
-app.post(['/api/system/factory-reset', '/api/system/reset-all', '/api/wallet/factory-reset'], (_req: Request, res: Response) => {
-  const result = executeSystemFactoryReset();
+app.post(['/api/system/factory-reset', '/api/system/reset-all', '/api/wallet/factory-reset'], (req: Request, res: Response) => {
+  const requestedBalance = parseFloat(req.body?.initialBalanceUsdt);
+  const result = executeSystemFactoryReset(
+    !isNaN(requestedBalance) && requestedBalance >= 1 && requestedBalance <= 1000000 ? requestedBalance : 10.0
+  );
   const summary = calculatePortfolioSummary(
     systemState.capitalUsdt,
     systemState.activePositions,
