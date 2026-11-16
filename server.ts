@@ -534,11 +534,11 @@ const systemState: AppSystemState = {
       virtualBalance: 10.0,
       liveAllocation: 10.0,
       isEnabled: true,
-      riskPerTradePct: 1.5,
+      riskPerTradePct: 2.0,
       leverage: 4,
       allowedSymbols: [...TREND_GRID_CORE_SYMBOLS],
       dynamicScreenerScan: false,
-      tpSlRatio: 2.2,
+      tpSlRatio: 2.5,
       maxConcurrentPositions: 2,
       brain: createDefaultBotBrain('ONNX_RL', 'agent-onnx-ppo-v2'),
     },
@@ -576,11 +576,11 @@ const systemState: AppSystemState = {
       virtualBalance: 10.0,
       liveAllocation: 10.0,
       isEnabled: true,
-      riskPerTradePct: 1.5,
+      riskPerTradePct: 2.0,
       leverage: 4,
       allowedSymbols: [...TREND_GRID_CORE_SYMBOLS],
       dynamicScreenerScan: false,
-      tpSlRatio: 2.2,
+      tpSlRatio: 2.5,
       maxConcurrentPositions: 2,
       brain: createDefaultBotBrain('TG_CHANNEL', 'agent-tg-crypto-alpha'),
     },
@@ -4048,7 +4048,7 @@ async function runBotEngineCycle() {
         const diff = (pos.currentPrice - pos.entryVwap) * dirSign;
         pos.unrealizedPnl = Number((diff * pos.qty).toFixed(2));
 
-        // 2a. Trailing Stop Protection (activates ONLY after a full +1.55% bounce from averaged entryVwap, locking 75% of gain)
+        // 2a. Early Breakeven & Trailing Stop Protection (activates at +1.05% from averaged entryVwap, locks >= +0.25% above fees and trails 70% of wave)
         const trailUpdate = computeTrailingStopPrice({
           side: pos.side,
           entryPrice: pos.entryVwap,
@@ -4056,9 +4056,9 @@ async function runBotEngineCycle() {
           currentSlPrice: pos.slPrice,
           previousPeakPrice: pos.peakPrice,
           priceDecimals,
-          activationPct: 1.55,
-          feeBufferPct: 0.35,
-          lockFraction: 0.75,
+          activationPct: 1.05,
+          feeBufferPct: 0.25,
+          lockFraction: 0.70,
         });
         pos.peakPrice = trailUpdate.newPeakPrice;
         if (trailUpdate.updated) {
@@ -4118,7 +4118,7 @@ async function runBotEngineCycle() {
           }
         }
 
-        // 2d. Trend-Grid Minimum Harvest Check (never exits below +1.35% net profit after fees)
+        // 2d. Trend-Grid Minimum Harvest Check (raised to +1.65%..+2.20% so trailing stop at +1.05% can capture trend extensions)
         const ftExitCheck = evaluateFreqtradeShouldExit({
           side: pos.side,
           entryPrice: pos.entryVwap,
@@ -4128,9 +4128,9 @@ async function runBotEngineCycle() {
           isBreakEven: pos.isBreakEven,
           openedAt: pos.openedAt || Date.now(),
           roiTable: {
-            0: 0.0195,
-            60: 0.0165,
-            180: 0.0135,
+            0: 0.0220,
+            60: 0.0185,
+            180: 0.0165,
           },
         });
 
@@ -4264,9 +4264,14 @@ async function runBotEngineCycle() {
       );
 
       if (activeBots.length > 0 && systemState.activePositions.length < maxAllowedOpenPositions) {
-        // Prioritize Alpha-Signal (agent-tg-crypto-alpha) when live Telegram channel signals exist and it has a free slot
+        // Prioritize Alpha-Signal (agent-tg-crypto-alpha) ONLY on real trading signal channels (exclude news feeds like @WatcherGuru)
+        const NEWS_ONLY_HANDLES = new Set(['@WatcherGuru', '@WuBlockchain', '@Cointelegraph', 'announcements.bybit.com']);
+        const isTradingSignalFeedItem = (f: any) => !NEWS_ONLY_HANDLES.has(String(f?.sourceHandle || ''));
         const hasLiveTgSignals = systemState.parsedNewsFeed.some(
-          (f) => f.dataSource === 'LIVE_TELEGRAM_WEB' && Math.abs(Number(f.sentimentScore) || 0) >= 0.6
+          (f) =>
+            f.dataSource === 'LIVE_TELEGRAM_WEB' &&
+            isTradingSignalFeedItem(f) &&
+            Math.abs(Number(f.sentimentScore) || 0) >= 0.6
         );
         const tgBotAvailable = activeBots.find((a) => a.agentId === 'agent-tg-crypto-alpha');
 
@@ -4330,7 +4335,12 @@ async function runBotEngineCycle() {
         // First, inject symbols with active Telegram signals (e.g. SOLUSDT, XRPUSDT, BTCUSDT from @ne_investor)
         const batchSet = new Set<string>();
         const tgSignalSymbols = systemState.parsedNewsFeed
-          .filter((f) => f.dataSource === 'LIVE_TELEGRAM_WEB' && Math.abs(Number(f.sentimentScore) || 0) >= 0.58)
+          .filter(
+            (f) =>
+              f.dataSource === 'LIVE_TELEGRAM_WEB' &&
+              isTradingSignalFeedItem(f) &&
+              Math.abs(Number(f.sentimentScore) || 0) >= 0.58
+          )
           .map((f) => String(f.symbol || ''))
           .filter((s) => availableCandidates.includes(s));
 
@@ -4360,12 +4370,16 @@ async function runBotEngineCycle() {
             const cBestBid = cBook.bids[0]?.price || priceMap[sym] || 100;
             const cBestAsk = cBook.asks[0]?.price || priceMap[sym] || 100;
 
-            // Prioritize exact symbol Telegram signals first; fallback to macro BTCUSDT signals only if no direct symbol signal exists
-            const exactSymbolFeed = systemState.parsedNewsFeed.filter((item) => item.symbol === sym);
+            // Prioritize exact symbol signals from real trading channels (@ne_investor); ignore generic news headlines (@WatcherGuru, etc.)
+            const exactSymbolFeed = systemState.parsedNewsFeed.filter(
+              (item) => item.symbol === sym && isTradingSignalFeedItem(item)
+            );
             const recentSymbolFeed =
               exactSymbolFeed.length > 0
                 ? exactSymbolFeed
-                : systemState.parsedNewsFeed.filter((item) => item.symbol === 'BTCUSDT');
+                : systemState.parsedNewsFeed.filter(
+                    (item) => item.symbol === 'BTCUSDT' && isTradingSignalFeedItem(item)
+                  );
 
             const feedBias =
               recentSymbolFeed.length > 0
@@ -4375,7 +4389,7 @@ async function runBotEngineCycle() {
                   Math.min(4, recentSymbolFeed.length)
                 : 0;
 
-            // Relative strength vs BTC + 24h momentum, giving dominant weight (75%) to direct Telegram channel signals when present
+            // Relative strength vs BTC + 24h momentum, giving dominant weight (80%) to direct @ne_investor channel signals when present
             const symMeta = systemState.screenerSymbols.find((s) => s.symbol === sym);
             const symChange24h = symMeta?.priceChangePct || 0;
             const relStrengthScore = Math.tanh((symChange24h - btcChange24h * 0.5) / 4.5);
@@ -6346,6 +6360,13 @@ async function scanActiveNewsChannelOnce(notifyTelegram: boolean = true, preferr
       pickedChannel.lastSignalText = scrapedSignals[0].rawText;
       pickedChannel.lastParsedAt = Date.now();
 
+      const isNewsOnlyChannel = new Set([
+        '@WatcherGuru',
+        '@WuBlockchain',
+        '@Cointelegraph',
+        'announcements.bybit.com',
+      ]).has(String(pickedChannel.username || ''));
+
       const newFeedItem = {
         id: `news-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
         postId: sig.postId,
@@ -6358,15 +6379,17 @@ async function scanActiveNewsChannelOnce(notifyTelegram: boolean = true, preferr
         symbol: sym,
         sentiment: sig.sentiment,
         sentimentScore: sig.sentimentScore,
-        impactWeight: pickedChannel.influenceWeight ?? 0.85,
+        impactWeight: isNewsOnlyChannel ? 0 : (pickedChannel.influenceWeight ?? 0.85),
         dataSource: sig.dataSource,
         sourceUrl: sig.sourceUrl,
-        extractedSetup: {
-          side,
-          entryPrice,
-          stopLoss,
-          tp1,
-        },
+        extractedSetup: isNewsOnlyChannel
+          ? undefined
+          : {
+              side,
+              entryPrice,
+              stopLoss,
+              tp1,
+            },
       };
 
       systemState.parsedNewsFeed.unshift(newFeedItem);
@@ -6378,16 +6401,18 @@ async function scanActiveNewsChannelOnce(notifyTelegram: boolean = true, preferr
           ? 'LIVE Bybit API'
           : 'LIVE RSS XML';
 
-      addBotLog({
-        botId: 'agent-tg-crypto-alpha',
-        botName: 'Alpha-Signal · Индекс Каналов',
-        action: 'SCAN_PASS',
-        symbol: sym,
-        side,
-        price: entryPrice,
-        message: `Парсер ${pickedChannel.username} [${originLabel}]: распознан ${isBullish ? 'БЫЧИЙ (LONG)' : 'МЕДВЕЖИЙ (SHORT)'} сигнал по ${sym} (Индекс ${sig.sentimentScore >= 0 ? '+' : ''}${Math.round(sig.sentimentScore * 100)}%, вход ~$${entryPrice}, SL $${stopLoss}, TP1 $${tp1}).`,
-        rttMs: systemState.pings.bybit,
-      });
+      if (!isNewsOnlyChannel) {
+        addBotLog({
+          botId: 'agent-tg-crypto-alpha',
+          botName: 'Alpha-Signal · Индекс Каналов',
+          action: 'SCAN_PASS',
+          symbol: sym,
+          side,
+          price: entryPrice,
+          message: `Парсер ${pickedChannel.username} [${originLabel}]: распознан ${isBullish ? 'БЫЧИЙ (LONG)' : 'МЕДВЕЖИЙ (SHORT)'} сигнал по ${sym} (Индекс ${sig.sentimentScore >= 0 ? '+' : ''}${Math.round(sig.sentimentScore * 100)}%, вход ~$${entryPrice}, SL $${stopLoss}, TP1 $${tp1}).`,
+          rttMs: systemState.pings.bybit,
+        });
+      }
 
       latestCreatedItem = newFeedItem;
     }
