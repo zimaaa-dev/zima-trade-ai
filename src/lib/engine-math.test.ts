@@ -252,3 +252,22 @@ test('High-Water-Mark Trailing Stop: ratchets monotonically and preserves peak o
   assert.equal(step2.newSlPrice, 100.6);
 });
 
+test('High-Water-Mark Trailing Stop: never fires instant SL when DCA averaging shifts entryVwap while price is in drawdown', () => {
+  // Simulates ETHUSDT SHORT: SO2 filled at $1845.50 shifting entryVwap to $1815.96 while stale peakPrice was $1775
+  const dcaTick = computeTrailingStopPrice({
+    side: 'SHORT',
+    entryPrice: 1815.96,
+    currentPrice: 1845.50,
+    currentSlPrice: 1862.10,
+    previousPeakPrice: 1775.0,
+    priceDecimals: 2,
+    activationPct: 1.05,
+    feeBufferPct: 0.25,
+    lockFraction: 0.70,
+  });
+  assert.equal(dcaTick.updated, false);
+  assert.equal(dcaTick.newSlPrice, 1862.10);
+  assert.equal(dcaTick.isTrailing, false);
+});
+
+

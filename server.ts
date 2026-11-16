@@ -4031,6 +4031,9 @@ async function runBotEngineCycle() {
           pos.entryVwap = dcaFill.newEntryVwap;
           pos.safetyOrders = dcaFill.updatedSafetyOrders;
           pos.tpGrid = [{ price: dcaFill.newTpPrice, qty: dcaFill.newQty }];
+          pos.peakPrice = pos.currentPrice;
+          pos.isBreakEven = false;
+          pos.isTrailing = false;
 
           addBotLog({
             botId: pos.botId || 'agent-tg-crypto-alpha',

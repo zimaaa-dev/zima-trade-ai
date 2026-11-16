@@ -535,6 +535,7 @@ export function computeTrailingStopPrice(params: {
       : Math.min(prevPeak, currentPrice);
 
   const peakExcursionPct = ((newPeakPrice - entryPrice) / Math.max(1e-9, entryPrice)) * dirSign * 100;
+  const currentExcursionPct = ((currentPrice - entryPrice) / Math.max(1e-9, entryPrice)) * dirSign * 100;
 
   if (peakExcursionPct < activationPct) {
     return {
@@ -557,8 +558,13 @@ export function computeTrailingStopPrice(params: {
   const roundedSl = Number(candidateSl.toFixed(priceDecimals));
   const isBetterSl =
     side === 'LONG' ? roundedSl > currentSlPrice : roundedSl < currentSlPrice;
+  const slNotAlreadyBreached =
+    side === 'LONG' ? roundedSl < currentPrice : roundedSl > currentPrice;
+  const alreadyLockedProfit =
+    side === 'LONG' ? currentSlPrice > entryPrice : currentSlPrice < entryPrice;
+  const isCurrentlyInSafeProfit = alreadyLockedProfit || currentExcursionPct >= Math.max(feeBufferPct + 0.1, activationPct * 0.5);
 
-  if (isBetterSl) {
+  if (isBetterSl && slNotAlreadyBreached && isCurrentlyInSafeProfit) {
     return {
       newSlPrice: roundedSl,
       newPeakPrice,
@@ -572,8 +578,8 @@ export function computeTrailingStopPrice(params: {
     newSlPrice: currentSlPrice,
     newPeakPrice,
     updated: false,
-    isBreakEven: side === 'LONG' ? currentSlPrice > entryPrice : currentSlPrice < entryPrice,
-    isTrailing: true,
+    isBreakEven: alreadyLockedProfit,
+    isTrailing: alreadyLockedProfit,
   };
 }
 
