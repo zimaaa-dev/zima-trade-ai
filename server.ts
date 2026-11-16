@@ -1193,6 +1193,16 @@ export function isProductionNode(): boolean {
   return false;
 }
 
+export function getServerNodeLabel(): string {
+  if (process.env.SERVER_LABEL && process.env.SERVER_LABEL.trim()) {
+    return process.env.SERVER_LABEL.trim();
+  }
+  if (isProductionNode()) {
+    return 'VPS 194.113.34.230';
+  }
+  return `DEV ${os.hostname().slice(0, 16)}`;
+}
+
 const TELEGRAM_API_BASES = [
   process.env.TELEGRAM_API_BASE?.replace(/\/$/, ''),
   'https://zima-trade-watchdog.zimaaa-lab.workers.dev/telegram',
@@ -1585,8 +1595,8 @@ export async function dispatchTelegramNotification(params: {
     return { deliveredCount: 0, status: 'QUEUED_NO_CHAT_ID' };
   }
 
-  // Prevent companion/preview node from spamming production Telegram with background simulated trades
-  if (!isProductionNode() && !params.isManualOrUrgent && params.category !== 'TEST' && params.category !== 'COMMAND_REPLY') {
+  // Prevent any dev/sandbox/companion node from sending trading or SL/Kill-Switch alerts to production Telegram
+  if (!isProductionNode() && process.env.ENABLE_DEV_TELEGRAM !== 'true' && params.category !== 'TEST') {
     return { deliveredCount: 0, status: 'QUEUED_NO_CHAT_ID' };
   }
 
@@ -1633,7 +1643,8 @@ export async function dispatchTelegramNotification(params: {
   const cleanHtmlBody = sanitizeCleanText(params.htmlBody);
   const cleanPlainPreview = sanitizeCleanText(params.plainPreview);
 
-  const fullHtml = `<b>${cleanTitle}</b>\n\n${cleanHtmlBody}\n\n<code>ZimaTrade · ${tg.botUsername}</code>`;
+  const nodeLabel = getServerNodeLabel();
+  const fullHtml = `<b>${cleanTitle}</b>\n\n${cleanHtmlBody}\n\n<code>ZimaTrade [${nodeLabel}] · ${tg.botUsername}</code>`;
 
   if (tg.subscribers.length > 0) {
     for (const sub of tg.subscribers) {
