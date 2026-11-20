@@ -370,6 +370,7 @@ interface AppSystemState {
   activeExchange: 'BYBIT' | 'OKX';
   okxDemoTrading: boolean;
   okxPosMode: OkxPositionMode;
+  okxAccountLevel?: string;
   okxAccountEquityUsdt?: number;
   okxAvailableBalanceUsdt?: number;
   okxLastSyncedAt?: number;
@@ -699,9 +700,11 @@ let isPersistingToDisk = false;
 function buildPersistPayload() {
   return {
     savedAt: Date.now(),
+    mode: systemState.mode,
     activeExchange: systemState.activeExchange,
     okxDemoTrading: systemState.okxDemoTrading,
     okxPosMode: systemState.okxPosMode,
+    okxAccountLevel: systemState.okxAccountLevel,
     migratedToOkxDefault: true,
     capitalUsdt: systemState.capitalUsdt,
     rolling24hPnlUsdt: systemState.rolling24hPnlUsdt,
@@ -879,7 +882,21 @@ function loadPersistedState(): void {
       if (parsed.okxPosMode === 'net_mode' || parsed.okxPosMode === 'long_short_mode') {
         systemState.okxPosMode = parsed.okxPosMode;
       }
-      const isLegacy10k = typeof parsed.capitalUsdt === 'number' && parsed.capitalUsdt >= 1000;
+      if (typeof parsed.okxAccountLevel === 'string') {
+        systemState.okxAccountLevel = parsed.okxAccountLevel;
+      }
+      if (parsed.mode === 'LIVE' || parsed.mode === 'SHADOW') {
+        const hasKeys =
+          systemState.activeExchange === 'OKX'
+            ? areOkxKeysConfigured()
+            : isKeyValid(process.env.BYBIT_API_KEY) && isKeyValid(process.env.BYBIT_API_SECRET);
+        systemState.mode = parsed.mode === 'LIVE' && hasKeys ? 'LIVE' : 'SHADOW';
+      }
+      const isLegacy10k =
+        !parsed.migratedToOkxDefault &&
+        hasLegacySeeds &&
+        typeof parsed.capitalUsdt === 'number' &&
+        parsed.capitalUsdt >= 9500;
       if (typeof parsed.capitalUsdt === 'number' && !isLegacy10k) {
         systemState.capitalUsdt = parsed.capitalUsdt;
       } else {
@@ -3111,6 +3128,7 @@ async function syncOkxAccountState(): Promise<{
   equityUsdt?: number;
   availUsdt?: number;
   posMode?: OkxPositionMode;
+  acctLv?: string;
   positionsCount?: number;
   retMsg: string;
   rttMs?: number;
@@ -3136,9 +3154,14 @@ async function syncOkxAccountState(): Promise<{
   const equityUsdt = parseFloat(usdtDetail?.eq || balRoot?.totalEq || '0');
   const availUsdt = parseFloat(usdtDetail?.availEq || usdtDetail?.cashBal || '0');
 
-  if (cfgRes.ok && Array.isArray(cfgRes.data) && cfgRes.data[0]?.posMode) {
-    const pm = String(cfgRes.data[0].posMode);
-    systemState.okxPosMode = pm === 'long_short_mode' ? 'long_short_mode' : 'net_mode';
+  if (cfgRes.ok && Array.isArray(cfgRes.data) && cfgRes.data[0]) {
+    if (cfgRes.data[0]?.posMode) {
+      const pm = String(cfgRes.data[0].posMode);
+      systemState.okxPosMode = pm === 'long_short_mode' ? 'long_short_mode' : 'net_mode';
+    }
+    if (cfgRes.data[0]?.acctLv) {
+      systemState.okxAccountLevel = String(cfgRes.data[0].acctLv);
+    }
   }
 
   const okxOpenPositions = Array.isArray(posRes.data)
@@ -3149,7 +3172,7 @@ async function syncOkxAccountState(): Promise<{
   systemState.okxAvailableBalanceUsdt = Number(availUsdt.toFixed(2));
   systemState.okxLastSyncedAt = Date.now();
 
-  if (systemState.mode === 'LIVE' && systemState.activeExchange === 'OKX' && equityUsdt > 0) {
+  if (systemState.mode === 'LIVE' && systemState.activeExchange === 'OKX' && equityUsdt > 0 && systemState.okxAccountLevel !== '1') {
     systemState.capitalUsdt = Number(equityUsdt.toFixed(2));
   }
 
@@ -3158,6 +3181,7 @@ async function syncOkxAccountState(): Promise<{
     equityUsdt: systemState.okxAccountEquityUsdt,
     availUsdt: systemState.okxAvailableBalanceUsdt,
     posMode: systemState.okxPosMode,
+    acctLv: systemState.okxAccountLevel,
     positionsCount: okxOpenPositions.length,
     retMsg: 'OK',
     rttMs: balRes.rttMs,
@@ -3663,6 +3687,7 @@ function buildFullSystemHealthPayload() {
     okxDemoTrading: systemState.okxDemoTrading !== false,
     okxKeysConfigured: areOkxKeysConfigured(),
     okxPosMode: systemState.okxPosMode || 'net_mode',
+    okxAccountLevel: systemState.okxAccountLevel || null,
     okxAccountEquityUsdt: systemState.okxAccountEquityUsdt,
     okxAvailableBalanceUsdt: systemState.okxAvailableBalanceUsdt,
     isKillSwitchActive: systemState.isKillSwitchActive,
@@ -3899,6 +3924,12 @@ app.post('/api/system/mode', async (req: Request, res: Response) => {
         });
         return;
       }
+      if (okxSync.acctLv === '1') {
+        res.status(400).json({
+          error: 'Аккаунт OKX сейчас в «Простом режиме (Spot-only, acctLv=1)»! Чтобы торговать фьючерсами USDT-SWAP, в OKX Demo откройте фьючерсы (⚙️) → Режим аккаунта → «Единая валюта (Single-currency margin)».',
+        });
+        return;
+      }
     } else if (activeEx === 'BYBIT' && !bybitKeysConfigured) {
       res.status(400).json({
         error: 'Для LIVE-торговли на Bybit сначала укажите BYBIT_API_KEY и BYBIT_API_SECRET во вкладке «ТГ-Бот & API».',
@@ -3908,7 +3939,7 @@ app.post('/api/system/mode', async (req: Request, res: Response) => {
   }
 
   systemState.mode = mode;
-  savePersistedState();
+  savePersistedState(true);
   res.json({
     success: true,
     mode: systemState.mode,
@@ -8064,16 +8095,30 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
     }
     const sync = await syncOkxAccountState();
     const envName = systemState.okxDemoTrading !== false ? 'OKX Demo Trading (x-simulated-trading: 1)' : 'OKX Live Real Account';
-    if (sync.ok) {
-      savePersistedState();
+    if (sync.ok && sync.acctLv === '1') {
+      savePersistedState(true);
+      res.json({
+        success: false,
+        latencyMs: sync.rttMs || systemState.pings.okx,
+        equityUsdt: sync.equityUsdt,
+        availUsdt: sync.availUsdt,
+        posMode: sync.posMode,
+        acctLv: sync.acctLv,
+        positionsCount: sync.positionsCount,
+        error: 'Режим аккаунта OKX — «Простой (Spot-only, acctLv=1)». Переключите на «Единая валюта (Single-currency margin)» в настройках фьючерсов OKX.',
+        statusText: `⚠️ ${envName} подключен ($${(sync.equityUsdt || 0).toFixed(2)} USDT), НО включён «Простой режим (Spot-only)»! В настройках фьючерсов OKX переключите режим аккаунта на «Единая валюта (Single-currency margin)» для торговли USDT-SWAP.`,
+      });
+    } else if (sync.ok) {
+      savePersistedState(true);
       res.json({
         success: true,
         latencyMs: sync.rttMs || systemState.pings.okx,
         equityUsdt: sync.equityUsdt,
         availUsdt: sync.availUsdt,
         posMode: sync.posMode,
+        acctLv: sync.acctLv,
         positionsCount: sync.positionsCount,
-        statusText: `${envName} подключен (${sync.rttMs || 35}мс)! Эквити: $${(sync.equityUsdt || 0).toFixed(2)} USDT (свободно $${(sync.availUsdt || 0).toFixed(2)}), режим позиций: ${sync.posMode}, открытых SWAP: ${sync.positionsCount || 0}.`,
+        statusText: `${envName} подключен (${sync.rttMs || 35}мс)! Эквити: $${(sync.equityUsdt || 0).toFixed(2)} USDT (свободно $${(sync.availUsdt || 0).toFixed(2)}), режим: ${sync.posMode} (acctLv=${sync.acctLv || '?'}), открытых SWAP: ${sync.positionsCount || 0}.`,
       });
     } else {
       res.json({
@@ -8757,8 +8802,8 @@ app.post('/api/updates/github/pull', async (req: Request, res: Response) => {
   const cwd = process.cwd();
   const { restartPm2 } = req.body || {};
 
-  // 1. Create Pre-Update Checkpoint Backup
-  savePersistedState();
+  // 1. Create Pre-Update Checkpoint Backup synchronously before git reset & restart
+  savePersistedState(true);
   const diskKb = fs.existsSync(PERSIST_FILE) ? Math.max(120, Math.round(fs.statSync(PERSIST_FILE).size / 1024)) : 2860;
   const backupId = `backup-git-pre-${Date.now().toString().slice(-6)}`;
   backupsList.unshift({
@@ -8789,7 +8834,7 @@ app.post('/api/updates/github/pull', async (req: Request, res: Response) => {
       isUrgent: true,
     });
 
-    savePersistedState();
+    savePersistedState(true);
 
     res.json({
       success: true,
