@@ -231,12 +231,30 @@ export const Header: React.FC<HeaderProps> = ({
               <button
                 type="button"
                 onClick={() => onSelectTab('wallet')}
+                title={
+                  health?.mode === 'LIVE' &&
+                  health?.tradingCapitalCapUsdt &&
+                  health?.okxAccountEquityUsdt &&
+                  health.okxAccountEquityUsdt > health.capitalUsdt
+                    ? `Рабочий лимит: $${health.capitalUsdt.toFixed(2)} USDT (на счёте OKX: $${health.okxAccountEquityUsdt.toFixed(2)} USDT)`
+                    : 'Открыть баланс и кривую капитала'
+                }
                 className="flex items-center gap-1.5 text-slate-300 hover:text-white transition"
               >
-                <span className="text-slate-500 font-sans">Баланс:</span>
+                <span className="text-slate-500 font-sans">
+                  {health?.mode === 'LIVE' && health?.tradingCapitalCapUsdt ? 'Лимит:' : 'Баланс:'}
+                </span>
                 <span className="font-semibold text-white">
                   ${walletBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
+                {health?.mode === 'LIVE' &&
+                  health?.tradingCapitalCapUsdt &&
+                  typeof health?.okxAccountEquityUsdt === 'number' &&
+                  health.okxAccountEquityUsdt > health.capitalUsdt && (
+                    <span className="text-[10px] text-amber-300/85 hidden xl:inline">
+                      / ${health.okxAccountEquityUsdt.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                    </span>
+                  )}
               </button>
 
               <span className="text-slate-700" aria-hidden="true">·</span>

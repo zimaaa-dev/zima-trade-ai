@@ -22,6 +22,8 @@ interface ConfigStatus {
   okxPosMode?: string;
   okxAccountEquityUsdt?: number;
   okxAvailableBalanceUsdt?: number;
+  workingCapitalUsdt?: number;
+  tradingCapitalCapUsdt?: number | null;
   dataSources: {
     marketData: {
       provider: string;
@@ -93,6 +95,9 @@ export const SettingsConfigView: React.FC = () => {
   const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [togglingOkxDemo, setTogglingOkxDemo] = useState<boolean>(false);
+  const [capInput, setCapInput] = useState<string>('100');
+  const [capDirty, setCapDirty] = useState<boolean>(false);
+  const [savingCap, setSavingCap] = useState<boolean>(false);
 
   // Telegram Bot (@zimatradeai_bot) State
   const [tgStatus, setTgStatus] = useState<TelegramBotStatus | null>(null);
@@ -121,6 +126,13 @@ export const SettingsConfigView: React.FC = () => {
 
       if (cfgData) {
         setConfig(cfgData);
+        if (!capDirty) {
+          setCapInput(
+            typeof cfgData.tradingCapitalCapUsdt === 'number' && cfgData.tradingCapitalCapUsdt > 0
+              ? String(cfgData.tradingCapitalCapUsdt)
+              : ''
+          );
+        }
       }
       if (tgData) {
         setTgStatus(tgData);
@@ -281,6 +293,40 @@ export const SettingsConfigView: React.FC = () => {
       setSaveStatus({ type: 'error', message: err.message || 'Ошибка переключения среды OKX' });
     } finally {
       setTogglingOkxDemo(false);
+    }
+  };
+
+  const handleSaveCapitalCap = async (nextCapValue: number | null) => {
+    setSavingCap(true);
+    setSaveStatus(null);
+    try {
+      const res = await fetch('/api/config/capital-cap', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ capitalCapUsdt: nextCapValue }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setCapDirty(false);
+        setCapInput(
+          typeof data.tradingCapitalCapUsdt === 'number' && data.tradingCapitalCapUsdt > 0
+            ? String(data.tradingCapitalCapUsdt)
+            : ''
+        );
+        await fetchStatus();
+        setSaveStatus({
+          type: 'success',
+          message: data.tradingCapitalCapUsdt
+            ? `Лимит рабочего капитала установлен: $${data.tradingCapitalCapUsdt} USDT (расчетный депозит: $${Number(data.capitalUsdt || 0).toFixed(2)} USDT).`
+            : `Лимит рабочего капитала отключен — используется весь баланс биржи ($${Number(data.capitalUsdt || 0).toFixed(2)} USDT).`,
+        });
+      } else {
+        setSaveStatus({ type: 'error', message: data.error || 'Не удалось обновить лимит рабочего капитала' });
+      }
+    } catch (err: any) {
+      setSaveStatus({ type: 'error', message: err.message || 'Ошибка сети при сохранении лимита капитала' });
+    } finally {
+      setSavingCap(false);
     }
   };
 
@@ -934,6 +980,106 @@ export const SettingsConfigView: React.FC = () => {
             </button>
           </div>
         </form>
+
+        {/* Working Capital Cap for Risk Sizing & Portfolio % Metrics */}
+        <div className="mt-5 pt-5 border-t border-slate-800/90 space-y-3 font-mono text-xs">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <div>
+              <h4 className="text-sm font-bold font-sans text-white">
+                Лимит рабочего капитала для сделок (USDT)
+              </h4>
+              <p className="text-[11px] font-sans text-slate-400 mt-0.5 leading-relaxed">
+                Ограничивает расчётный депозит для риск-менеджмента (2% риска на сетку DCA и дневной Kill-Switch -5%) и % доходности в Telegram, даже если на виртуальном демо-счёте OKX лежит $5,000.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 shrink-0 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2">
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase">Баланс биржи OKX</div>
+                <div className="text-slate-200 font-bold tabular-nums">
+                  ${(config?.okxAccountEquityUsdt ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                </div>
+              </div>
+              <div className="h-6 w-px bg-slate-800" aria-hidden="true" />
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase">Рабочий капитал ботов</div>
+                <div className="text-emerald-400 font-bold tabular-nums">
+                  ${(config?.workingCapitalUsdt ?? 10).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {[100, 250, 500].map((preset) => {
+                const isActive = config?.tradingCapitalCapUsdt === preset;
+                return (
+                  <button
+                    key={preset}
+                    type="button"
+                    disabled={savingCap}
+                    onClick={() => handleSaveCapitalCap(preset)}
+                    className={`px-3 py-1.5 rounded-lg border text-[11px] font-bold transition disabled:opacity-50 ${
+                      isActive
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/50'
+                        : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-600 hover:text-white'
+                    }`}
+                  >
+                    Лимит ${preset}
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                disabled={savingCap}
+                onClick={() => handleSaveCapitalCap(null)}
+                className={`px-3 py-1.5 rounded-lg border text-[11px] font-bold transition disabled:opacity-50 ${
+                  config?.tradingCapitalCapUsdt === null || config?.tradingCapitalCapUsdt === undefined
+                    ? 'bg-cyan-500/20 text-cyan-300 border-cyan-400/50'
+                    : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-600 hover:text-white'
+                }`}
+              >
+                Весь баланс
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <label htmlFor="capital-cap-input" className="text-[11px] text-slate-400 whitespace-nowrap">
+                Свой лимит ($):
+              </label>
+              <input
+                id="capital-cap-input"
+                type="number"
+                min={10}
+                max={1000000}
+                step={10}
+                value={capInput}
+                onChange={(e) => {
+                  setCapDirty(true);
+                  setCapInput(e.target.value);
+                }}
+                placeholder="Напр. 100"
+                className="w-28 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
+              />
+              <button
+                type="button"
+                disabled={savingCap}
+                onClick={() => {
+                  const trimmed = capInput.trim();
+                  if (!trimmed) {
+                    handleSaveCapitalCap(null);
+                  } else {
+                    const num = Number(trimmed);
+                    handleSaveCapitalCap(Number.isFinite(num) ? num : 100);
+                  }
+                }}
+                className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 font-bold transition disabled:opacity-50"
+              >
+                {savingCap ? 'Применение...' : 'Применить'}
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

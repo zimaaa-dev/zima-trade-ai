@@ -14,6 +14,7 @@ export interface SystemHealth {
   isKillSwitchActive: boolean;
   killSwitchTriggerReason: string | null;
   capitalUsdt: number;
+  tradingCapitalCapUsdt?: number | null;
   rolling24hPnlUsdt: number;
   drawdownPct: number;
   totalRealizedPnlUsdt: number;

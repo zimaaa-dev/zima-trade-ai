@@ -553,3 +553,35 @@ export function shouldSendDailyTelegramDigest(params: {
     mskHour: bounds.mskHour,
   };
 }
+
+export function computeWorkingCapitalUsdt(params: {
+  mode: 'SHADOW' | 'LIVE';
+  activeExchange?: 'BYBIT' | 'OKX';
+  exchangeEquityUsdt?: number;
+  fallbackCapitalUsdt: number;
+  capitalCapUsdt?: number | null;
+}): number {
+  const { mode, exchangeEquityUsdt, fallbackCapitalUsdt, capitalCapUsdt } = params;
+  const safeFallback =
+    typeof fallbackCapitalUsdt === 'number' && Number.isFinite(fallbackCapitalUsdt) && fallbackCapitalUsdt > 0
+      ? Number(fallbackCapitalUsdt.toFixed(2))
+      : 10.0;
+
+  if (mode !== 'LIVE') {
+    return safeFallback;
+  }
+
+  const hasExchangeEq =
+    typeof exchangeEquityUsdt === 'number' && Number.isFinite(exchangeEquityUsdt) && exchangeEquityUsdt > 0;
+  const effectiveExchangeEq = hasExchangeEq ? Number(exchangeEquityUsdt.toFixed(2)) : safeFallback;
+
+  const hasValidCap =
+    typeof capitalCapUsdt === 'number' && Number.isFinite(capitalCapUsdt) && capitalCapUsdt > 0;
+
+  if (hasValidCap) {
+    return Number(Math.min(effectiveExchangeEq, capitalCapUsdt).toFixed(2));
+  }
+
+  return effectiveExchangeEq;
+}
+

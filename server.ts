@@ -185,6 +185,7 @@ import {
   formatSignedUsdt,
   formatSignedPct,
   shouldSendDailyTelegramDigest,
+  computeWorkingCapitalUsdt,
   type ClosedTradeRecord,
   type WalletLedgerEntry,
 } from './src/lib/wallet-math.ts';
@@ -378,6 +379,7 @@ interface AppSystemState {
   killSwitchTriggerReason: string | null;
   lastUnblockedAt?: number;
   capitalUsdt: number;
+  tradingCapitalCapUsdt: number | null;
   rolling24hPnlUsdt: number;
   totalRealizedPnlUsdt: number;
   activePositions: any[];
@@ -435,6 +437,7 @@ const systemState: AppSystemState = {
   killSwitchTriggerReason: null,
   lastUnblockedAt: 0,
   capitalUsdt: 10.0,
+  tradingCapitalCapUsdt: process.env.OKX_DEMO_TRADING !== 'false' ? 100.0 : null,
   rolling24hPnlUsdt: 0.0,
   totalRealizedPnlUsdt: 0.0,
   pings: { bybit: 24, okx: 32, mexc: 31 },
@@ -705,8 +708,11 @@ function buildPersistPayload() {
     okxDemoTrading: systemState.okxDemoTrading,
     okxPosMode: systemState.okxPosMode,
     okxAccountLevel: systemState.okxAccountLevel,
+    okxAccountEquityUsdt: systemState.okxAccountEquityUsdt,
+    okxAvailableBalanceUsdt: systemState.okxAvailableBalanceUsdt,
     migratedToOkxDefault: true,
     capitalUsdt: systemState.capitalUsdt,
+    tradingCapitalCapUsdt: systemState.tradingCapitalCapUsdt,
     rolling24hPnlUsdt: systemState.rolling24hPnlUsdt,
     totalRealizedPnlUsdt: systemState.totalRealizedPnlUsdt,
     isKillSwitchActive: systemState.isKillSwitchActive,
@@ -885,6 +891,23 @@ function loadPersistedState(): void {
       if (typeof parsed.okxAccountLevel === 'string') {
         systemState.okxAccountLevel = parsed.okxAccountLevel;
       }
+      if (typeof parsed.okxAccountEquityUsdt === 'number' && Number.isFinite(parsed.okxAccountEquityUsdt)) {
+        systemState.okxAccountEquityUsdt = parsed.okxAccountEquityUsdt;
+      }
+      if (typeof parsed.okxAvailableBalanceUsdt === 'number' && Number.isFinite(parsed.okxAvailableBalanceUsdt)) {
+        systemState.okxAvailableBalanceUsdt = parsed.okxAvailableBalanceUsdt;
+      }
+      if (parsed.tradingCapitalCapUsdt === null) {
+        systemState.tradingCapitalCapUsdt = null;
+      } else if (
+        typeof parsed.tradingCapitalCapUsdt === 'number' &&
+        Number.isFinite(parsed.tradingCapitalCapUsdt) &&
+        parsed.tradingCapitalCapUsdt >= 10
+      ) {
+        systemState.tradingCapitalCapUsdt = Number(parsed.tradingCapitalCapUsdt.toFixed(2));
+      } else {
+        systemState.tradingCapitalCapUsdt = systemState.okxDemoTrading !== false ? 100.0 : null;
+      }
       if (parsed.mode === 'LIVE' || parsed.mode === 'SHADOW') {
         const hasKeys =
           systemState.activeExchange === 'OKX'
@@ -901,6 +924,23 @@ function loadPersistedState(): void {
         systemState.capitalUsdt = parsed.capitalUsdt;
       } else {
         systemState.capitalUsdt = 10.0;
+      }
+      if (systemState.mode === 'LIVE' && systemState.activeExchange === 'OKX') {
+        if (
+          typeof systemState.okxAccountEquityUsdt !== 'number' &&
+          typeof parsed.capitalUsdt === 'number' &&
+          parsed.capitalUsdt >= 1000 &&
+          !isLegacy10k
+        ) {
+          systemState.okxAccountEquityUsdt = Number(parsed.capitalUsdt.toFixed(2));
+        }
+        systemState.capitalUsdt = computeWorkingCapitalUsdt({
+          mode: systemState.mode,
+          activeExchange: systemState.activeExchange,
+          exchangeEquityUsdt: systemState.okxAccountEquityUsdt,
+          fallbackCapitalUsdt: systemState.capitalUsdt,
+          capitalCapUsdt: systemState.tradingCapitalCapUsdt,
+        });
       }
       if (typeof parsed.botTradingEnabled === 'boolean') systemState.botTradingEnabled = parsed.botTradingEnabled;
       if (typeof parsed.autoMarketAdaptationEnabled === 'boolean') systemState.autoMarketAdaptationEnabled = parsed.autoMarketAdaptationEnabled;
@@ -1962,8 +2002,16 @@ function buildTelegramCommandReply(
           : 'OKX Live'
         : 'Bybit';
     const modeLabel = systemState.mode === 'LIVE' ? `LIVE (${exBadge})` : `SHADOW (${exBadge})`;
+    const capNote =
+      systemState.mode === 'LIVE' &&
+      systemState.activeExchange === 'OKX' &&
+      typeof systemState.okxAccountEquityUsdt === 'number' &&
+      systemState.tradingCapitalCapUsdt &&
+      systemState.okxAccountEquityUsdt > systemState.capitalUsdt
+        ? ` (лимит $${systemState.tradingCapitalCapUsdt.toFixed(0)} из $${systemState.okxAccountEquityUsdt.toFixed(2)} на OKX)`
+        : '';
     return {
-      html: `📊 <b>Отчет ZimaTrade · ${breakdown.mskTimeLabel}</b>\n\n• Режим: <b>${modeLabel}</b>\n• Баланс (закрытый): <b>$${equity} USDT</b> (Эквити: <b>$${totalEquity}</b>)\n• Плавающий PnL: <b>${formatSignedUsdt(floatingPnl)} USDT</b>\n• Общий PnL (всё время): <b>${formatSignedUsdt(systemState.totalRealizedPnlUsdt)} USDT</b>\n\n${formatTelegramPeriodSummaryHtml(breakdown)}\n\n• Открытых сделок: <b>${systemState.activePositions.length}</b>\n• Стоп-Кран: <b>${systemState.isKillSwitchActive ? '🚨 АКТИВЕН' : '🟢 НОРМА'}</b>\n• Пинг Bybit / OKX: <b>${systemState.pings.bybit} мс / ${systemState.pings.okx} мс</b>\n• Режим тишины (DND): ${dndStatusLine}`,
+      html: `📊 <b>Отчет ZimaTrade · ${breakdown.mskTimeLabel}</b>\n\n• Режим: <b>${modeLabel}</b>\n• Рабочий капитал: <b>$${equity} USDT</b> (Эквити: <b>$${totalEquity}</b>)${capNote}\n• Плавающий PnL: <b>${formatSignedUsdt(floatingPnl)} USDT</b>\n• Общий PnL (всё время): <b>${formatSignedUsdt(systemState.totalRealizedPnlUsdt)} USDT</b>\n\n${formatTelegramPeriodSummaryHtml(breakdown)}\n\n• Открытых сделок: <b>${systemState.activePositions.length}</b>\n• Стоп-Кран: <b>${systemState.isKillSwitchActive ? '🚨 АКТИВЕН' : '🟢 НОРМА'}</b>\n• Пинг Bybit / OKX: <b>${systemState.pings.bybit} мс / ${systemState.pings.okx} мс</b>\n• Режим тишины (DND): ${dndStatusLine}`,
       replyMarkup: getTelegramReplyKeyboard(),
     };
   }
@@ -3173,7 +3221,13 @@ async function syncOkxAccountState(): Promise<{
   systemState.okxLastSyncedAt = Date.now();
 
   if (systemState.mode === 'LIVE' && systemState.activeExchange === 'OKX' && equityUsdt > 0 && systemState.okxAccountLevel !== '1') {
-    systemState.capitalUsdt = Number(equityUsdt.toFixed(2));
+    systemState.capitalUsdt = computeWorkingCapitalUsdt({
+      mode: systemState.mode,
+      activeExchange: systemState.activeExchange,
+      exchangeEquityUsdt: equityUsdt,
+      fallbackCapitalUsdt: systemState.capitalUsdt,
+      capitalCapUsdt: systemState.tradingCapitalCapUsdt,
+    });
   }
 
   return {
@@ -3693,6 +3747,7 @@ function buildFullSystemHealthPayload() {
     isKillSwitchActive: systemState.isKillSwitchActive,
     killSwitchTriggerReason: systemState.killSwitchTriggerReason,
     capitalUsdt: systemState.capitalUsdt,
+    tradingCapitalCapUsdt: systemState.tradingCapitalCapUsdt,
     rolling24hPnlUsdt: systemState.rolling24hPnlUsdt,
     drawdownPct: systemState.capitalUsdt > 0 ? (systemState.rolling24hPnlUsdt / systemState.capitalUsdt) * 100 : 0,
     totalRealizedPnlUsdt: systemState.totalRealizedPnlUsdt,
@@ -3939,6 +3994,15 @@ app.post('/api/system/mode', async (req: Request, res: Response) => {
   }
 
   systemState.mode = mode;
+  if (mode === 'LIVE' && activeEx === 'OKX') {
+    systemState.capitalUsdt = computeWorkingCapitalUsdt({
+      mode: systemState.mode,
+      activeExchange: systemState.activeExchange,
+      exchangeEquityUsdt: systemState.okxAccountEquityUsdt,
+      fallbackCapitalUsdt: systemState.capitalUsdt,
+      capitalCapUsdt: systemState.tradingCapitalCapUsdt,
+    });
+  }
   savePersistedState(true);
   res.json({
     success: true,
@@ -7855,9 +7919,18 @@ async function dispatchDailyTelegramDigestReport(manual = false): Promise<{
       : 'Bybit';
   const modeLabel = systemState.mode === 'LIVE' ? `LIVE (${exBadge})` : `SHADOW (${exBadge})`;
 
+  const capNote =
+    systemState.mode === 'LIVE' &&
+    systemState.activeExchange === 'OKX' &&
+    typeof systemState.okxAccountEquityUsdt === 'number' &&
+    systemState.tradingCapitalCapUsdt &&
+    systemState.okxAccountEquityUsdt > systemState.capitalUsdt
+      ? ` (лимит $${systemState.tradingCapitalCapUsdt.toFixed(0)} из $${systemState.okxAccountEquityUsdt.toFixed(2)} на OKX)`
+      : '';
+
   const htmlBody = [
     `• <b>Режим:</b> ${modeLabel}`,
-    `• <b>Баланс (закрытый):</b> $${closedBal} USDT (Эквити: $${totalEq})`,
+    `• <b>Рабочий капитал:</b> $${closedBal} USDT (Эквити: $${totalEq})${capNote}`,
     `• <b>Плавающий PnL:</b> ${formatSignedUsdt(floatingPnl)} USDT (поз.: ${systemState.activePositions.length})`,
     `• <b>Винрейт за сегодня:</b> ${todayWr} (${breakdown.today.winsCount}/${breakdown.today.tradesCount})`,
     '',
@@ -7981,6 +8054,8 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
     okxPosMode: systemState.okxPosMode || 'net_mode',
     okxAccountEquityUsdt: systemState.okxAccountEquityUsdt,
     okxAvailableBalanceUsdt: systemState.okxAvailableBalanceUsdt,
+    workingCapitalUsdt: systemState.capitalUsdt,
+    tradingCapitalCapUsdt: systemState.tradingCapitalCapUsdt,
     dataSources: {
       marketData: {
         provider: 'OKX V5 & Bybit V5 Multi-Exchange Gateway',
@@ -8043,6 +8118,59 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
     },
     ollamaPool: ollamaCloud.getPoolStatus(),
     availableOllamaModels: OLLAMA_CLOUD_MODELS,
+  });
+});
+
+// Update Working Capital Cap (limits risk sizing & % PnL independently from exchange Demo equity)
+app.post('/api/config/capital-cap', async (req: Request, res: Response) => {
+  const raw = req.body?.capitalCapUsdt;
+  let nextCap: number | null = null;
+  if (raw === null || raw === undefined || raw === '' || Number(raw) <= 0) {
+    nextCap = null;
+  } else {
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed < 10 || parsed > 1000000) {
+      res.status(400).json({
+        error: 'Укажите лимит капитала от $10 до $1,000,000 USDT (или 0 / null для использования всего баланса биржи).',
+      });
+      return;
+    }
+    nextCap = Number(parsed.toFixed(2));
+  }
+
+  systemState.tradingCapitalCapUsdt = nextCap;
+
+  if (systemState.mode === 'LIVE' && systemState.activeExchange === 'OKX' && areOkxKeysConfigured()) {
+    if (!systemState.okxAccountEquityUsdt) {
+      await syncOkxAccountState().catch(() => null);
+    }
+    systemState.capitalUsdt = computeWorkingCapitalUsdt({
+      mode: systemState.mode,
+      activeExchange: systemState.activeExchange,
+      exchangeEquityUsdt: systemState.okxAccountEquityUsdt,
+      fallbackCapitalUsdt: systemState.capitalUsdt,
+      capitalCapUsdt: systemState.tradingCapitalCapUsdt,
+    });
+  }
+
+  addBotLog({
+    botId: 'system',
+    botName: 'Риск-Контроль',
+    action: 'SCAN_PASS',
+    symbol: 'CAPITAL',
+    message: nextCap
+      ? `Установлен лимит рабочего капитала: $${nextCap.toFixed(2)} USDT (расчетный депозит: $${systemState.capitalUsdt.toFixed(2)} USDT${systemState.okxAccountEquityUsdt ? `, на счете биржи: $${systemState.okxAccountEquityUsdt.toFixed(2)}` : ''}).`
+      : `Лимит рабочего капитала отключен — используется полный баланс биржи ($${systemState.capitalUsdt.toFixed(2)} USDT).`,
+    rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
+  });
+
+  savePersistedState(true);
+  res.json({
+    success: true,
+    tradingCapitalCapUsdt: systemState.tradingCapitalCapUsdt,
+    capitalUsdt: systemState.capitalUsdt,
+    okxAccountEquityUsdt: systemState.okxAccountEquityUsdt,
+    health: buildFullSystemHealthPayload(),
   });
 });
 

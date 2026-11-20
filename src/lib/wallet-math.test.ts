@@ -9,6 +9,7 @@ import {
   calculateMskPeriodBreakdown,
   formatTelegramPeriodSummaryHtml,
   shouldSendDailyTelegramDigest,
+  computeWorkingCapitalUsdt,
   type ClosedTradeRecord,
 } from './wallet-math';
 
@@ -391,4 +392,65 @@ test('shouldSendDailyTelegramDigest fires once per calendar MSK day at target ho
     false
   );
 });
+
+test('computeWorkingCapitalUsdt enforces cap on $5000 OKX Demo, supports uncapped, smaller balance, and SHADOW mode', () => {
+  // OKX Demo $5000 capped at $100 -> $100
+  assert.equal(
+    computeWorkingCapitalUsdt({
+      mode: 'LIVE',
+      activeExchange: 'OKX',
+      exchangeEquityUsdt: 4999.99,
+      fallbackCapitalUsdt: 10,
+      capitalCapUsdt: 100,
+    }),
+    100
+  );
+
+  // Uncapped (null or 0) -> full exchange equity
+  assert.equal(
+    computeWorkingCapitalUsdt({
+      mode: 'LIVE',
+      activeExchange: 'OKX',
+      exchangeEquityUsdt: 4999.99,
+      fallbackCapitalUsdt: 100,
+      capitalCapUsdt: null,
+    }),
+    4999.99
+  );
+  assert.equal(
+    computeWorkingCapitalUsdt({
+      mode: 'LIVE',
+      activeExchange: 'OKX',
+      exchangeEquityUsdt: 4999.99,
+      fallbackCapitalUsdt: 100,
+      capitalCapUsdt: 0,
+    }),
+    4999.99
+  );
+
+  // Exchange equity smaller than cap ($45 < $100) -> never over-allocate beyond exchange equity
+  assert.equal(
+    computeWorkingCapitalUsdt({
+      mode: 'LIVE',
+      activeExchange: 'OKX',
+      exchangeEquityUsdt: 45.25,
+      fallbackCapitalUsdt: 100,
+      capitalCapUsdt: 100,
+    }),
+    45.25
+  );
+
+  // SHADOW mode ignores LIVE exchange balance / cap
+  assert.equal(
+    computeWorkingCapitalUsdt({
+      mode: 'SHADOW',
+      activeExchange: 'OKX',
+      exchangeEquityUsdt: 5000,
+      fallbackCapitalUsdt: 10,
+      capitalCapUsdt: 100,
+    }),
+    10
+  );
+});
+
 
