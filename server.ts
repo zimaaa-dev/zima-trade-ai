@@ -165,6 +165,7 @@ import {
   dynamicTPCollapse,
   validateSignalFreshness,
   computeTrailingStopPrice,
+  getMskSessionRiskProfile,
   type OrderbookL2,
   type InstrumentRules,
 } from './src/lib/engine-math.ts';
@@ -390,6 +391,7 @@ interface AppSystemState {
   parsedNewsFeed: any[];
   agents: any[];
   botTradingEnabled: boolean;
+  nightModeEnabled: boolean;
   autoMarketAdaptationEnabled?: boolean;
   lastAutoAdaptedAt?: number;
   currentMarketRegime?: string;
@@ -442,6 +444,7 @@ const systemState: AppSystemState = {
   totalRealizedPnlUsdt: 0.0,
   pings: { bybit: 24, okx: 32, mexc: 31 },
   botTradingEnabled: true,
+  nightModeEnabled: true,
   autoMarketAdaptationEnabled: true,
   lastAutoAdaptedAt: Date.now(),
   currentMarketRegime: '🔄 Боковой диапазон (Range / Choppy)',
@@ -719,6 +722,7 @@ function buildPersistPayload() {
     killSwitchTriggerReason: systemState.killSwitchTriggerReason,
     lastUnblockedAt: systemState.lastUnblockedAt || 0,
     botTradingEnabled: systemState.botTradingEnabled,
+    nightModeEnabled: systemState.nightModeEnabled !== false,
     autoMarketAdaptationEnabled: systemState.autoMarketAdaptationEnabled !== false,
     lastAutoAdaptedAt: systemState.lastAutoAdaptedAt || Date.now(),
     currentMarketRegime: systemState.currentMarketRegime,
@@ -943,6 +947,7 @@ function loadPersistedState(): void {
         });
       }
       if (typeof parsed.botTradingEnabled === 'boolean') systemState.botTradingEnabled = parsed.botTradingEnabled;
+      if (typeof parsed.nightModeEnabled === 'boolean') systemState.nightModeEnabled = parsed.nightModeEnabled;
       if (typeof parsed.autoMarketAdaptationEnabled === 'boolean') systemState.autoMarketAdaptationEnabled = parsed.autoMarketAdaptationEnabled;
       if (typeof parsed.lastAutoAdaptedAt === 'number') systemState.lastAutoAdaptedAt = parsed.lastAutoAdaptedAt;
       if (typeof parsed.currentMarketRegime === 'string') systemState.currentMarketRegime = parsed.currentMarketRegime;
@@ -3759,6 +3764,12 @@ function buildFullSystemHealthPayload() {
     agentsOnline: systemState.agents.filter(a => a.status === 'RUNNING').length,
     totalAgents: systemState.agents.length,
     botTradingEnabled: systemState.botTradingEnabled,
+    nightModeEnabled: systemState.nightModeEnabled !== false,
+    sessionProfile: getMskSessionRiskProfile({
+      nowTs: Date.now(),
+      nightModeEnabled: systemState.nightModeEnabled !== false,
+      baseMaxSpreadBps: 8.0,
+    }),
     pings: systemState.pings,
     nodes: {
       nodeA: {
@@ -5154,8 +5165,17 @@ async function runBotEngineCycle() {
 
     // 4. Autonomous Freqtrade IStrategy + Pairlist Pipeline + ProtectionManager Scanner
     const effectiveCap = Math.max(1, systemState.capitalUsdt + systemState.totalRealizedPnlUsdt);
-    // On micro-balances (<= $50 USDT), strictly limit to 2 concurrent positions to prevent margin fragmentation
-    const maxAllowedOpenPositions = effectiveCap <= 50 ? 2 : effectiveCap <= 200 ? 3 : 5;
+    const sessionRisk = getMskSessionRiskProfile({
+      nowTs: Date.now(),
+      nightModeEnabled: systemState.nightModeEnabled !== false,
+      baseMaxSpreadBps: 8.0,
+    });
+    // On micro-balances (<= $50 USDT), strictly limit to 2 concurrent positions; Night Mode also caps at 2
+    const baseMaxAllowedOpen = effectiveCap <= 50 ? 2 : effectiveCap <= 200 ? 3 : 5;
+    const maxAllowedOpenPositions =
+      sessionRisk.maxConcurrentPositionsCap !== null
+        ? Math.min(baseMaxAllowedOpen, sessionRisk.maxConcurrentPositionsCap)
+        : baseMaxAllowedOpen;
 
     if (systemState.activePositions.length < maxAllowedOpenPositions) {
       const activeBots = systemState.agents.filter(
@@ -5187,6 +5207,12 @@ async function runBotEngineCycle() {
           actingBot.brain = createDefaultBotBrain(actingBot.engineType, actingBot.agentId);
         }
 
+        const effectiveBotSession = getMskSessionRiskProfile({
+          nowTs: Date.now(),
+          nightModeEnabled: systemState.nightModeEnabled !== false,
+          baseMaxSpreadBps: Math.min(8.0, actingBot.brain?.maxSpreadBps || 10.0),
+        });
+
         // Base configured symbols for the bot, strictly intersected with the Top-20 Whitelist
         const rawAllowed = Array.isArray(actingBot.allowedSymbols)
           ? actingBot.allowedSymbols.filter((s: string) => INSTITUTIONAL_WHITELIST_SET.has(s))
@@ -5208,7 +5234,7 @@ async function runBotEngineCycle() {
           candidates: rawUniverse,
           screenerMeta: systemState.screenerSymbols,
           closedTrades: systemState.closedTrades,
-          maxSpreadBps: Math.min(8.0, actingBot.brain?.maxSpreadBps || 10.0),
+          maxSpreadBps: effectiveBotSession.maxSpreadBpsLimit,
           minVolatilityPct: 0.35,
           maxVolatilityPct: 6.5,
         });
@@ -5449,7 +5475,7 @@ async function runBotEngineCycle() {
           minutesToNextFunding,
           projectedFundingRate,
           side,
-          maxSpreadPct: (actingBot.brain.maxSpreadBps || 12.0) / 10000,
+          maxSpreadPct: effectiveBotSession.maxSpreadBpsLimit / 10000,
         });
 
         if (!guards.passed) {
@@ -5468,7 +5494,10 @@ async function runBotEngineCycle() {
 
         // Variant 3 Trend-Grid Safe Leverage: strictly bounded to 3x - 5x (default 4x)
         const botLeverage = Math.max(3, Math.min(5, Number(actingBot.leverage) || 4));
-        const botRiskPct = Math.max(0.5, Math.min(2.5, Number(actingBot.riskPerTradePct) || 1.5));
+        const baseBotRiskPct = Math.max(0.5, Math.min(2.5, Number(actingBot.riskPerTradePct) || 1.5));
+        const botRiskPct = Number(
+          Math.max(0.5, baseBotRiskPct * effectiveBotSession.riskMultiplier).toFixed(2)
+        );
 
         const topBookPrice = side === 'LONG' ? bestAsk : bestBid;
         if (activeEx === 'OKX') {
@@ -6086,30 +6115,23 @@ export async function analyzeMarketTrendsAndRetrainingNeeds(
   const hoursSinceLastTrain = Number(((now - lastTrainedAt) / (1000 * 3600)).toFixed(1));
 
   let isRetrainingRecommended = false;
-  let retrainingReason = 'Авто-адаптация активна: параметры и веса ботов синхронизированы с текущим рынком.';
+  let retrainingReason =
+    'Онлайн-радар режима рынка активен в фоне: направление сделок и волатильность отслеживаются без уведомлений (веса Trend-Grid зафиксированы).';
 
   if (!isAutoAdaptEnabled) {
     if (hoursSinceLastTrain >= 16) {
       isRetrainingRecommended = true;
-      retrainingReason = `Авто-адаптация отключена. Прошло ${hoursSinceLastTrain}ч с последней калибровки на исторических свечах.`;
+      retrainingReason = `Онлайн-радар режима переключён в ручной режим. Прошло ${hoursSinceLastTrain}ч с последней проверки.`;
     }
   }
 
   const serverUrl = 'http://194.113.34.230:3000';
   const recommendedCommand = `python3 scripts/train_pc.py --server ${serverUrl} --epochs 15 --dynamic-trends`;
 
-  // Informative regime shift notification in Telegram (only when regime changes, not repetitive nagging)
-  if (notifyTelegram && regimeTitle !== lastNotifiedRegimeTitle && now - lastRetrainingAlertTs > 3 * 3600 * 1000) {
+  // Silent online Market Regime Radar: update regime metadata without spamming Telegram pushes
+  if (regimeTitle !== lastNotifiedRegimeTitle) {
     lastRetrainingAlertTs = now;
     lastNotifiedRegimeTitle = regimeTitle;
-
-    dispatchTelegramNotification({
-      category: 'AI_TRAIN',
-      title: `⚡ АВТО-АДАПТАЦИЯ К РЫНКУ · ${regimeTitle}`,
-      htmlBody: `• <b>Рыночный режим:</b> <b>${regimeTitle}</b>\n• <b>Охват рынка:</b> <b>${totalPairsScanned} пар</b> (Растут: ${advancersCount} · Падают: ${declinersCount} · Ширина: ${marketBreadthPct}%)\n• <b>Средний ATR рынка:</b> <b>${avgAtr}%</b>\n• <b>Статус ботов:</b> ✅ <i>Параметры и фильтры входов автоматически синхронизированы (ручная калибровка не требуется).</i>`,
-      plainPreview: `Авто-адаптация к рынку: ${regimeTitle} (ATR ${avgAtr}%, ширина ${marketBreadthPct}%). Боты адаптированы без задержек.`,
-      isManualOrUrgent: false,
-    }).catch(() => {});
   }
 
   const auditResult: MarketTrendAuditResult = {
@@ -8056,6 +8078,12 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
     okxAvailableBalanceUsdt: systemState.okxAvailableBalanceUsdt,
     workingCapitalUsdt: systemState.capitalUsdt,
     tradingCapitalCapUsdt: systemState.tradingCapitalCapUsdt,
+    nightModeEnabled: systemState.nightModeEnabled !== false,
+    sessionProfile: getMskSessionRiskProfile({
+      nowTs: Date.now(),
+      nightModeEnabled: systemState.nightModeEnabled !== false,
+      baseMaxSpreadBps: 8.0,
+    }),
     dataSources: {
       marketData: {
         provider: 'OKX V5 & Bybit V5 Multi-Exchange Gateway',
@@ -8170,6 +8198,36 @@ app.post('/api/config/capital-cap', async (req: Request, res: Response) => {
     tradingCapitalCapUsdt: systemState.tradingCapitalCapUsdt,
     capitalUsdt: systemState.capitalUsdt,
     okxAccountEquityUsdt: systemState.okxAccountEquityUsdt,
+    health: buildFullSystemHealthPayload(),
+  });
+});
+
+// Toggle Night Mode (MSK Asian Session & 00:00 UTC Rollover Protection)
+app.post('/api/config/night-mode', (req: Request, res: Response) => {
+  const enabled = Boolean(req.body?.enabled);
+  systemState.nightModeEnabled = enabled;
+  const sessionProfile = getMskSessionRiskProfile({
+    nowTs: Date.now(),
+    nightModeEnabled: enabled,
+    baseMaxSpreadBps: 8.0,
+  });
+
+  addBotLog({
+    botId: 'system',
+    botName: 'Риск-Контроль',
+    action: 'SCAN_PASS',
+    symbol: 'SESSION',
+    message: enabled
+      ? `Ночной режим (00:00–09:00 МСК) ВКЛЮЧЕН: ночью макс. спред 6.0 bps (4.5 bps в 02:50–03:15 МСК), риск ×0.75 (×0.50 в ролловер), до 2 позиций.`
+      : 'Ночной режим отключен — круглые сутки действуют стандартные дневные лимиты риска и спреда.',
+    rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
+  });
+
+  savePersistedState(true);
+  res.json({
+    success: true,
+    nightModeEnabled: systemState.nightModeEnabled,
+    sessionProfile,
     health: buildFullSystemHealthPayload(),
   });
 });

@@ -267,6 +267,16 @@ export const Header: React.FC<HeaderProps> = ({
                   </strong>
                 </span>
               </MetricTooltip>
+              {health?.nightModeEnabled !== false && health?.sessionProfile?.isNightSession && (
+                <button
+                  type="button"
+                  onClick={() => onSelectTab('settings')}
+                  title={`${health.sessionProfile.sessionLabel} · Риск ×${health.sessionProfile.riskMultiplier.toFixed(2)} · Спред ≤ ${health.sessionProfile.maxSpreadBpsLimit.toFixed(1)} bps`}
+                  className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-400/30 hover:bg-indigo-500/25 transition"
+                >
+                  🌙 ×{health.sessionProfile.riskMultiplier}
+                </button>
+              )}
             </div>
 
             {/* Notification Center Bell */}

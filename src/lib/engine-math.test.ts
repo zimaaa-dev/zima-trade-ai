@@ -9,6 +9,7 @@ import {
   dynamicTPCollapse,
   validateSignalFreshness,
   computeTrailingStopPrice,
+  getMskSessionRiskProfile,
   type OrderbookL2,
   type InstrumentRules,
 } from './engine-math.ts';
@@ -269,5 +270,57 @@ test('High-Water-Mark Trailing Stop: never fires instant SL when DCA averaging s
   assert.equal(dcaTick.newSlPrice, 1862.10);
   assert.equal(dcaTick.isTrailing, false);
 });
+
+test('MSK Night Mode: applies stricter spread, 0.75x risk in Asia night, 0.5x around 03:00 MSK rollover, and 1.0x in daytime or when disabled', () => {
+  // Daytime 14:30 MSK = 11:30 UTC
+  const day = getMskSessionRiskProfile({
+    nowTs: Date.UTC(2026, 10, 20, 11, 30, 0),
+    nightModeEnabled: true,
+    baseMaxSpreadBps: 8.0,
+  });
+  assert.equal(day.mskHour, 14);
+  assert.equal(day.isNightSession, false);
+  assert.equal(day.riskMultiplier, 1.0);
+  assert.equal(day.maxSpreadBpsLimit, 8.0);
+  assert.equal(day.maxConcurrentPositionsCap, null);
+
+  // Asian Night 05:30 MSK = 02:30 UTC
+  const night = getMskSessionRiskProfile({
+    nowTs: Date.UTC(2026, 10, 20, 2, 30, 0),
+    nightModeEnabled: true,
+    baseMaxSpreadBps: 8.0,
+  });
+  assert.equal(night.mskHour, 5);
+  assert.equal(night.isNightSession, true);
+  assert.equal(night.isRolloverWindow, false);
+  assert.equal(night.sessionKey, 'NIGHT_ASIA');
+  assert.equal(night.riskMultiplier, 0.75);
+  assert.equal(night.maxSpreadBpsLimit, 6.0);
+  assert.equal(night.maxConcurrentPositionsCap, 2);
+
+  // UTC Daily Rollover 03:02 MSK = 00:02 UTC
+  const rollover = getMskSessionRiskProfile({
+    nowTs: Date.UTC(2026, 10, 20, 0, 2, 0),
+    nightModeEnabled: true,
+    baseMaxSpreadBps: 8.0,
+  });
+  assert.equal(rollover.mskHour, 3);
+  assert.equal(rollover.isRolloverWindow, true);
+  assert.equal(rollover.sessionKey, 'UTC_ROLLOVER_WINDOW');
+  assert.equal(rollover.riskMultiplier, 0.5);
+  assert.equal(rollover.maxSpreadBpsLimit, 4.5);
+  assert.equal(rollover.maxConcurrentPositionsCap, 2);
+
+  // Night Mode explicitly disabled -> full daytime parameters even at 05:30 MSK
+  const disabled = getMskSessionRiskProfile({
+    nowTs: Date.UTC(2026, 10, 20, 2, 30, 0),
+    nightModeEnabled: false,
+    baseMaxSpreadBps: 8.0,
+  });
+  assert.equal(disabled.riskMultiplier, 1.0);
+  assert.equal(disabled.maxSpreadBpsLimit, 8.0);
+  assert.equal(disabled.maxConcurrentPositionsCap, null);
+});
+
 
 

@@ -24,6 +24,20 @@ interface ConfigStatus {
   okxAvailableBalanceUsdt?: number;
   workingCapitalUsdt?: number;
   tradingCapitalCapUsdt?: number | null;
+  nightModeEnabled?: boolean;
+  sessionProfile?: {
+    mskHour: number;
+    mskMinute: number;
+    mskTimeLabel: string;
+    sessionKey: 'UTC_ROLLOVER_WINDOW' | 'NIGHT_ASIA' | 'DAY_EU_US';
+    sessionLabel: string;
+    isNightSession: boolean;
+    isRolloverWindow: boolean;
+    nightModeEnabled: boolean;
+    maxSpreadBpsLimit: number;
+    riskMultiplier: number;
+    maxConcurrentPositionsCap: number | null;
+  };
   dataSources: {
     marketData: {
       provider: string;
@@ -98,6 +112,7 @@ export const SettingsConfigView: React.FC = () => {
   const [capInput, setCapInput] = useState<string>('100');
   const [capDirty, setCapDirty] = useState<boolean>(false);
   const [savingCap, setSavingCap] = useState<boolean>(false);
+  const [savingNightMode, setSavingNightMode] = useState<boolean>(false);
 
   // Telegram Bot (@zimatradeai_bot) State
   const [tgStatus, setTgStatus] = useState<TelegramBotStatus | null>(null);
@@ -327,6 +342,34 @@ export const SettingsConfigView: React.FC = () => {
       setSaveStatus({ type: 'error', message: err.message || 'Ошибка сети при сохранении лимита капитала' });
     } finally {
       setSavingCap(false);
+    }
+  };
+
+  const handleToggleNightMode = async (enabled: boolean) => {
+    setSavingNightMode(true);
+    setSaveStatus(null);
+    try {
+      const res = await fetch('/api/config/night-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        await fetchStatus();
+        setSaveStatus({
+          type: 'success',
+          message: enabled
+            ? 'Ночной режим (00:00–09:00 МСК) включен: ночью автоматически зажимаются спред (≤ 6.0 bps) и риск (×0.75).'
+            : 'Ночной режим отключен — круглые сутки применяются стандартные дневные лимиты.',
+        });
+      } else {
+        setSaveStatus({ type: 'error', message: data.error || 'Не удалось переключить Ночной режим' });
+      }
+    } catch (err: any) {
+      setSaveStatus({ type: 'error', message: err.message || 'Ошибка сети при переключении Ночного режима' });
+    } finally {
+      setSavingNightMode(false);
     }
   };
 
@@ -1079,6 +1122,73 @@ export const SettingsConfigView: React.FC = () => {
               </button>
             </div>
           </div>
+        </div>
+
+        {/* MSK Session Night Mode Protection (00:00-09:00 МСК) */}
+        <div className="mt-5 pt-5 border-t border-slate-800/90 space-y-3 font-mono text-xs">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <Moon className="w-4 h-4 text-indigo-400" />
+                <h4 className="text-sm font-bold font-sans text-white">
+                  Ночной режим защиты (00:00–09:00 МСК и свеча 00:00 UTC)
+                </h4>
+              </div>
+              <p className="text-[11px] font-sans text-slate-400 leading-relaxed">
+                В ночную азиатскую сессию (00:00–09:00 МСК) стакан альткоинов тоньше — спред сужается до ≤ 6.0 bps, риск снижается до ×0.75, максимум 2 сделки. В окно ролловера 02:50–03:15 МСК — риск ×0.50 и спред ≤ 4.5 bps.
+              </p>
+            </div>
+
+            <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 gap-1 shrink-0">
+              <button
+                type="button"
+                disabled={savingNightMode}
+                onClick={() => handleToggleNightMode(true)}
+                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition ${
+                  config?.nightModeEnabled !== false
+                    ? 'bg-indigo-500/25 text-indigo-300 border border-indigo-400/50'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Ночной режим ВКЛ
+              </button>
+              <button
+                type="button"
+                disabled={savingNightMode}
+                onClick={() => handleToggleNightMode(false)}
+                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition ${
+                  config?.nightModeEnabled === false
+                    ? 'bg-slate-800 text-slate-200 border border-slate-600'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Отключен (24/7 день)
+              </button>
+            </div>
+          </div>
+
+          {config?.sessionProfile && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 bg-slate-950/90 border border-slate-800 rounded-xl p-3 text-[11px]">
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase">Текущая сессия ({config.sessionProfile.mskTimeLabel})</div>
+                <div className={`font-bold font-sans mt-0.5 ${config.sessionProfile.isNightSession ? 'text-indigo-300' : 'text-emerald-300'}`}>
+                  {config.sessionProfile.sessionLabel}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase">Активный лимит спреда</div>
+                <div className="text-slate-200 font-bold tabular-nums mt-0.5">
+                  ≤ {config.sessionProfile.maxSpreadBpsLimit.toFixed(1)} bps
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase">Множитель риска / Позиции</div>
+                <div className="text-slate-200 font-bold tabular-nums mt-0.5">
+                  ×{config.sessionProfile.riskMultiplier.toFixed(2)} риска · {config.sessionProfile.maxConcurrentPositionsCap ? `до ${config.sessionProfile.maxConcurrentPositionsCap} поз.` : 'до 3 поз.'}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

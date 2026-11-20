@@ -259,8 +259,8 @@ export const AiArenaView: React.FC = () => {
         setPromotionStatus({
           type: 'success',
           text: nextVal
-            ? 'Авто-адаптация к рынку включена: боты будут непрерывно синхронизировать веса и пороги без задержек!'
-            : 'Авто-адаптация к рынку отключена.',
+            ? 'Онлайн-радар режима рынка включен (работает тихо в фоне, без уведомлений в Telegram).'
+            : 'Онлайн-радар режима переключён в ручной режим.',
         });
       }
     } catch (err: any) {
@@ -1073,8 +1073,8 @@ export const AiArenaView: React.FC = () => {
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-xs font-bold text-white tracking-wide">
                       {autoAdaptEnabled
-                        ? 'АВТОМАТИЧЕСКАЯ АДАПТАЦИЯ К РЫНКУ (Zero-Lag Adaptive Engine)'
-                        : 'АВТО-АДАПТАЦИЯ ОТКЛЮЧЕНА (Ручной режим)'}
+                        ? 'ОНЛАЙН-РАДАР РЕЖИМА РЫНКА (Тихий фон без пушей)'
+                        : 'ОНЛАЙН-РАДАР В РУЧНОМ РЕЖИМЕ'}
                     </span>
                     <span
                       className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase font-mono tracking-wider border ${
@@ -1090,14 +1090,14 @@ export const AiArenaView: React.FC = () => {
                       {trendAudit.regimeTitle || trendAudit.marketRegime || trendAudit.regime || 'RANGE_CHOP'}
                     </span>
                     <span className="text-[10px] font-mono text-slate-400">
-                      (калибровка: {trendAudit.hoursSinceLastTrain}ч назад)
+                      (срез: {trendAudit.hoursSinceLastTrain}ч назад)
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-300 mt-1 leading-relaxed">
                     {autoAdaptEnabled
                       ? trendAudit.regimeSummary ||
                         trendAudit.regimeDescription ||
-                        'Веса факторов, пороги входа и ATR-мультипликатор плавно балансируются под текущую фазу рынка без задержек и перезагрузок.'
+                        'Определяет фазу рынка в реальном времени (флэт / рост / обвал) для защиты от контртрендовых входов, без спама в Telegram. Веса Trend-Grid зафиксированы.'
                       : trendAudit.retrainingReason}
                   </p>
                 </div>
@@ -1105,7 +1105,7 @@ export const AiArenaView: React.FC = () => {
 
               {/* Action Controls */}
               <div className="flex flex-wrap items-center gap-2 shrink-0">
-                {/* Auto-Adapt Toggle */}
+                {/* Radar Toggle */}
                 <button
                   type="button"
                   onClick={handleToggleAutoAdapt}
@@ -1114,10 +1114,10 @@ export const AiArenaView: React.FC = () => {
                       ? 'bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-500/50 text-emerald-300'
                       : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-300'
                   }`}
-                  title="Включить / отключить автоматическую адаптацию параметров ботов к рынку"
+                  title="Включить / отключить фоновый онлайн-радар режима рынка"
                 >
                   <Zap className={`w-3.5 h-3.5 ${autoAdaptEnabled ? 'text-emerald-400' : 'text-slate-400'}`} />
-                  <span>{autoAdaptEnabled ? 'Авто-адаптация ВКЛ' : 'Включить авто'}</span>
+                  <span>{autoAdaptEnabled ? 'Радар ВКЛ' : 'Включить радар'}</span>
                 </button>
 
                 {/* Instant Sync Button */}
@@ -1126,10 +1126,10 @@ export const AiArenaView: React.FC = () => {
                   onClick={handleInstantAutoAdaptSync}
                   disabled={isSyncingAdapt}
                   className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-semibold rounded-lg text-xs transition flex items-center gap-1.5 shadow-sm"
-                  title="Немедленно обновить профили и веса всех ботов под текущий режим"
+                  title="Обновить текущий срез рынка без отправки уведомления"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isSyncingAdapt ? 'animate-spin' : ''}`} />
-                  <span>{isSyncingAdapt ? 'Синхронизация...' : 'Синхронизировать'}</span>
+                  <span>{isSyncingAdapt ? 'Обновление...' : 'Обновить срез'}</span>
                 </button>
 
                 {/* Copy Terminal Command for offline deep historical backtesting */}
@@ -1150,12 +1150,12 @@ export const AiArenaView: React.FC = () => {
               </div>
             </div>
 
-            {/* Offline warning if auto-adaptation is intentionally turned off */}
+            {/* Offline warning if radar is intentionally turned off */}
             {!autoAdaptEnabled && trendAudit.isRetrainingRecommended && (
               <div className="px-3 py-2 rounded-lg bg-amber-950/40 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 shrink-0" />
                 <span>
-                  Авто-адаптация отключена: рекомендуется запустить калибровку на ПК или включить автоматическую адаптацию.
+                  Онлайн-радар режима отключен: рекомендуется включить радар или обновить калибровку.
                 </span>
               </div>
             )}

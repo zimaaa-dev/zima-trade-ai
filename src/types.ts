@@ -15,6 +15,20 @@ export interface SystemHealth {
   killSwitchTriggerReason: string | null;
   capitalUsdt: number;
   tradingCapitalCapUsdt?: number | null;
+  nightModeEnabled?: boolean;
+  sessionProfile?: {
+    mskHour: number;
+    mskMinute: number;
+    mskTimeLabel: string;
+    sessionKey: 'UTC_ROLLOVER_WINDOW' | 'NIGHT_ASIA' | 'DAY_EU_US';
+    sessionLabel: string;
+    isNightSession: boolean;
+    isRolloverWindow: boolean;
+    nightModeEnabled: boolean;
+    maxSpreadBpsLimit: number;
+    riskMultiplier: number;
+    maxConcurrentPositionsCap: number | null;
+  };
   rolling24hPnlUsdt: number;
   drawdownPct: number;
   totalRealizedPnlUsdt: number;

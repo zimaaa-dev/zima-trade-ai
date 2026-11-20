@@ -583,3 +583,104 @@ export function computeTrailingStopPrice(params: {
   };
 }
 
+export interface MskSessionRiskProfile {
+  mskHour: number;
+  mskMinute: number;
+  mskTimeLabel: string;
+  sessionKey: 'UTC_ROLLOVER_WINDOW' | 'NIGHT_ASIA' | 'DAY_EU_US';
+  sessionLabel: string;
+  isNightSession: boolean;
+  isRolloverWindow: boolean;
+  nightModeEnabled: boolean;
+  maxSpreadBpsLimit: number;
+  riskMultiplier: number;
+  maxConcurrentPositionsCap: number | null;
+}
+
+/**
+ * 7. MSK Session-Aware Night Mode Profile (UTC+3)
+ * - 02:50..03:15 MSK (00:00 UTC daily candle close + 8h funding): tightest spread/risk (0.5x risk, <=4.5 bps)
+ * - 00:00..08:59 MSK (Asian night session): thinner altcoin orderbooks -> 0.75x risk, <=6.0 bps spread, max 2 concurrent
+ * - 09:00..23:59 MSK (EU/US liquid session): full profile (1.0x risk, baseMaxSpreadBps)
+ */
+export function getMskSessionRiskProfile(params?: {
+  nowTs?: number;
+  nightModeEnabled?: boolean;
+  baseMaxSpreadBps?: number;
+}): MskSessionRiskProfile {
+  const {
+    nowTs = Date.now(),
+    nightModeEnabled = true,
+    baseMaxSpreadBps = 8.0,
+  } = params || {};
+
+  const MSK_OFFSET_MS = 3 * 3600 * 1000;
+  const mskDate = new Date(nowTs + MSK_OFFSET_MS);
+  const mskHour = mskDate.getUTCHours();
+  const mskMinute = mskDate.getUTCMinutes();
+  const pad2 = (n: number) => String(n).padStart(2, '0');
+  const mskTimeLabel = `${pad2(mskHour)}:${pad2(mskMinute)} МСК`;
+
+  const totalMskMinutes = mskHour * 60 + mskMinute;
+  const isRolloverWindow = totalMskMinutes >= 170 && totalMskMinutes <= 195; // 02:50..03:15 МСК (00:00 UTC)
+  const isNightSession = mskHour >= 0 && mskHour < 9; // 00:00..08:59 МСК
+
+  let sessionKey: MskSessionRiskProfile['sessionKey'] = 'DAY_EU_US';
+  let sessionLabel = 'День · Европа / США (ликвидная сессия)';
+  if (isRolloverWindow) {
+    sessionKey = 'UTC_ROLLOVER_WINDOW';
+    sessionLabel = 'Свеча 00:00 UTC / Фандинг (02:50–03:15 МСК)';
+  } else if (isNightSession) {
+    sessionKey = 'NIGHT_ASIA';
+    sessionLabel = 'Ночь · Азия (пониженная ликвидность 00:00–09:00 МСК)';
+  }
+
+  const safeBaseSpread = Math.max(2.0, Number(baseMaxSpreadBps) || 8.0);
+  if (!nightModeEnabled || !isNightSession) {
+    return {
+      mskHour,
+      mskMinute,
+      mskTimeLabel,
+      sessionKey,
+      sessionLabel,
+      isNightSession,
+      isRolloverWindow,
+      nightModeEnabled,
+      maxSpreadBpsLimit: Number(safeBaseSpread.toFixed(1)),
+      riskMultiplier: 1.0,
+      maxConcurrentPositionsCap: null,
+    };
+  }
+
+  if (isRolloverWindow) {
+    return {
+      mskHour,
+      mskMinute,
+      mskTimeLabel,
+      sessionKey,
+      sessionLabel,
+      isNightSession: true,
+      isRolloverWindow: true,
+      nightModeEnabled: true,
+      maxSpreadBpsLimit: Number(Math.min(safeBaseSpread, 4.5).toFixed(1)),
+      riskMultiplier: 0.5,
+      maxConcurrentPositionsCap: 2,
+    };
+  }
+
+  return {
+    mskHour,
+    mskMinute,
+    mskTimeLabel,
+    sessionKey,
+    sessionLabel,
+    isNightSession: true,
+    isRolloverWindow: false,
+    nightModeEnabled: true,
+    maxSpreadBpsLimit: Number(Math.min(safeBaseSpread, 6.0).toFixed(1)),
+    riskMultiplier: 0.75,
+    maxConcurrentPositionsCap: 2,
+  };
+}
+
+
