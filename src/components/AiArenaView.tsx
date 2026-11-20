@@ -48,6 +48,7 @@ const AVAILABLE_SYMBOLS = [
   'BTCUSDT',
   'ETHUSDT',
   'SOLUSDT',
+  'XAUUSDT',
   'HYPEUSDT',
   'NEARUSDT',
   'SUIUSDT',

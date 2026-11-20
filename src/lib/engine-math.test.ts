@@ -10,6 +10,8 @@ import {
   validateSignalFreshness,
   computeTrailingStopPrice,
   getMskSessionRiskProfile,
+  evaluateMacroNewsWindow,
+  evaluateCrowdLongShortGuard,
   type OrderbookL2,
   type InstrumentRules,
 } from './engine-math.ts';
@@ -321,6 +323,76 @@ test('MSK Night Mode: applies stricter spread, 0.75x risk in Asia night, 0.5x ar
   assert.equal(disabled.maxSpreadBpsLimit, 8.0);
   assert.equal(disabled.maxConcurrentPositionsCap, null);
 });
+
+test('Macro News Window Guard: blocks NFP first Friday, FOMC decision, CPI & live macro flash headlines', () => {
+  // Normal Friday (2026-11-20 is 3rd Friday, not 1st Friday) at 09:00 ET (14:00 UTC)
+  const normalDay = evaluateMacroNewsWindow({
+    nowTs: Date.UTC(2026, 10, 20, 14, 0, 0),
+    macroGuardEnabled: true,
+  });
+  assert.equal(normalDay.isBlocked, false);
+
+  // First Friday of Dec 2026 (2026-12-04, NFP 08:30 ET = 13:30 UTC; check 13:15 UTC = 08:15 ET)
+  const nfpWindow = evaluateMacroNewsWindow({
+    nowTs: Date.UTC(2026, 11, 4, 13, 15, 0),
+    macroGuardEnabled: true,
+  });
+  assert.equal(nfpWindow.isBlocked, true);
+  assert.match(nfpWindow.activeEventTitle || '', /NFP/i);
+
+  // FOMC Dec 16, 2026 at 14:00 ET = 19:00 UTC (EST); check 18:45 UTC = 13:45 ET
+  const fomcWindow = evaluateMacroNewsWindow({
+    nowTs: Date.UTC(2026, 11, 16, 18, 45, 0),
+    macroGuardEnabled: true,
+  });
+  assert.equal(fomcWindow.isBlocked, true);
+  assert.match(fomcWindow.activeEventTitle || '', /ФРС|FOMC/i);
+
+  // Live macro flash headline detected 5 minutes ago
+  const baseNow = Date.UTC(2026, 10, 20, 15, 0, 0);
+  const flashWindow = evaluateMacroNewsWindow({
+    nowTs: baseNow,
+    macroGuardEnabled: true,
+    recentMacroHeadlineTs: baseNow - 5 * 60 * 1000,
+    recentMacroHeadlineTitle: 'US CPI YoY 2.8%',
+  });
+  assert.equal(flashWindow.isBlocked, true);
+  assert.ok(flashWindow.minutesRemaining >= 9);
+
+  // Disabled guard bypasses blocks cleanly
+  const disabled = evaluateMacroNewsWindow({
+    nowTs: Date.UTC(2026, 11, 16, 18, 45, 0),
+    macroGuardEnabled: false,
+  });
+  assert.equal(disabled.isBlocked, false);
+});
+
+test('OKX Crowd Long/Short Guard: blocks crowded side >= 78%, permits counter-crowd or missing data', () => {
+  // BTC L/S = 3.05 -> 75.3% LONG -> below 78% threshold, both directions allowed
+  const btcLong = evaluateCrowdLongShortGuard({ side: 'LONG', longShortRatio: 3.05, maxCrowdSharePct: 78 });
+  assert.equal(btcLong.allowed, true);
+  assert.equal(btcLong.longSharePct, 75.3);
+
+  // DOGE L/S = 4.25 -> 81.0% LONG -> LONG blocked, SHORT allowed (counter-crowd)
+  const dogeLong = evaluateCrowdLongShortGuard({ side: 'LONG', longShortRatio: 4.25, maxCrowdSharePct: 78 });
+  assert.equal(dogeLong.allowed, false);
+  assert.equal(dogeLong.crowdedSide, 'LONG');
+  assert.match(dogeLong.reason || '', /81\.0%/);
+
+  const dogeShort = evaluateCrowdLongShortGuard({ side: 'SHORT', longShortRatio: 4.25, maxCrowdSharePct: 78 });
+  assert.equal(dogeShort.allowed, true);
+
+  // Extreme SHORT crowd L/S = 0.20 -> 83.3% SHORT -> SHORT blocked
+  const shortCrowd = evaluateCrowdLongShortGuard({ side: 'SHORT', longShortRatio: 0.20, maxCrowdSharePct: 78 });
+  assert.equal(shortCrowd.allowed, false);
+  assert.equal(shortCrowd.crowdedSide, 'SHORT');
+
+  // Missing ratio (e.g. XAU) passes cleanly
+  const xau = evaluateCrowdLongShortGuard({ side: 'LONG', longShortRatio: null, maxCrowdSharePct: 78 });
+  assert.equal(xau.allowed, true);
+  assert.equal(xau.crowdedSide, 'UNKNOWN');
+});
+
 
 
 

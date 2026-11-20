@@ -49,6 +49,7 @@ const WHITELISTED_SYMBOLS = new Set<string>([
   'UNIUSDT',
   'AAVEUSDT',
   'TONUSDT',
+  'XAUUSDT',
 ]);
 
 const SYMBOL_PATTERNS: Array<[RegExp, string]> = [
@@ -72,6 +73,7 @@ const SYMBOL_PATTERNS: Array<[RegExp, string]> = [
   [/(\$APT\b|#APT\b|\bAPTUSDT\b|\bAPTOS\b|\bAPT\b)/i, 'APTUSDT'],
   [/(\$ARB\b|#ARB\b|\bARBUSDT\b|\bARBITRUM\b|\bARB\b)/i, 'ARBUSDT'],
   [/(\$OP\b|#OP\b|\bOPUSDT\b|\bOPTIMISM\b)/i, 'OPUSDT'],
+  [/(\$XAU\b|#XAU\b|\bXAUUSDT\b|\bXAUTUSDT\b|\bXAUT\b|\bXAU\b|\bGOLD\b|ЗОЛОТ)/i, 'XAUUSDT'],
 ];
 
 /**

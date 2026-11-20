@@ -683,4 +683,298 @@ export function getMskSessionRiskProfile(params?: {
   };
 }
 
+export interface MacroNewsWindowStatus {
+  macroGuardEnabled: boolean;
+  isBlocked: boolean;
+  activeEventTitle: string | null;
+  activeWindowLabel: string | null;
+  minutesRemaining: number;
+  etTimeLabel: string;
+  mskTimeLabel: string;
+  nextScheduledLabel: string;
+}
+
+const FOMC_DATES_ET = new Set<string>([
+  // 2026
+  '2026-12-16',
+  // 2027
+  '2027-01-27',
+  '2027-03-17',
+  '2027-04-28',
+  '2027-06-16',
+  '2027-07-28',
+  '2027-09-15',
+  '2027-11-03',
+  '2027-12-15',
+]);
+
+const US_CPI_DATES_ET = new Set<string>([
+  // Late 2026 & 2027 typical BLS CPI release days (08:30 ET)
+  '2026-12-10',
+  '2027-01-13',
+  '2027-02-10',
+  '2027-03-10',
+  '2027-04-13',
+  '2027-05-12',
+  '2027-06-10',
+  '2027-07-14',
+  '2027-08-11',
+  '2027-09-14',
+  '2027-10-13',
+  '2027-11-10',
+  '2027-12-14',
+]);
+
+function getZonedDateTimeParts(ts: number, timeZone: string): {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  weekday: number; // 0 = Sun .. 6 = Sat
+  dateKey: string;
+} {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    weekday: 'short',
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(new Date(ts));
+  const map: Record<string, string> = {};
+  for (const p of parts) {
+    if (p.type !== 'literal') map[p.type] = p.value;
+  }
+  const weekdayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const year = Number(map.year || 2026);
+  const month = Number(map.month || 1);
+  const day = Number(map.day || 1);
+  const rawHour = Number(map.hour || 0);
+  const hour = rawHour === 24 ? 0 : rawHour;
+  const minute = Number(map.minute || 0);
+  const weekday = weekdayMap[map.weekday || 'Mon'] ?? 1;
+  const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  return { year, month, day, hour, minute, weekday, dateKey };
+}
+
+/**
+ * 8. US Macro News Blackout Window (@ne_investor volatile release protection)
+ * Pauses NEW bot entries around high-volatility US macroeconomic releases:
+ * - First Friday of every month at 08:30 ET (Non-Farm Payrolls / NFP): -30m .. +15m
+ * - US CPI release dates at 08:30 ET: -30m .. +15m
+ * - Federal Reserve FOMC Rate Decision days at 14:00 ET: -30m .. +20m
+ * - Live breaking FOMC / CPI / Fed macro headline detected within the last 15 minutes
+ */
+export function evaluateMacroNewsWindow(params?: {
+  nowTs?: number;
+  macroGuardEnabled?: boolean;
+  preWindowMinutes?: number;
+  postWindowMinutes?: number;
+  recentMacroHeadlineTs?: number | null;
+  recentMacroHeadlineTitle?: string | null;
+}): MacroNewsWindowStatus {
+  const {
+    nowTs = Date.now(),
+    macroGuardEnabled = true,
+    preWindowMinutes = 30,
+    postWindowMinutes = 15,
+    recentMacroHeadlineTs = null,
+    recentMacroHeadlineTitle = null,
+  } = params || {};
+
+  const et = getZonedDateTimeParts(nowTs, 'America/New_York');
+  const pad2 = (n: number) => String(n).padStart(2, '0');
+  const etTimeLabel = `${pad2(et.hour)}:${pad2(et.minute)} ET`;
+
+  const mskDate = new Date(nowTs + 3 * 3600 * 1000);
+  const mskTimeLabel = `${pad2(mskDate.getUTCHours())}:${pad2(mskDate.getUTCMinutes())} МСК`;
+
+  const totalEtMinutes = et.hour * 60 + et.minute;
+  const isFirstFridayOfMonth = et.weekday === 5 && et.day <= 7;
+  const isCpiDay = US_CPI_DATES_ET.has(et.dateKey);
+  const isFomcDay = FOMC_DATES_ET.has(et.dateKey);
+
+  // Upcoming NFP/CPI/FOMC label for UI display
+  const nextScheduledLabel = isFomcDay
+    ? 'Сегодня решение ФРС (FOMC 14:00 ET)'
+    : isCpiDay
+    ? 'Сегодня публикация инфляции США (CPI 08:30 ET)'
+    : isFirstFridayOfMonth
+    ? 'Сегодня рынок труда США (NFP 08:30 ET)'
+    : 'NFP (1-я пт 08:30 ET) · CPI (08:30 ET) · ФРС (14:00 ET)';
+
+  if (!macroGuardEnabled) {
+    return {
+      macroGuardEnabled: false,
+      isBlocked: false,
+      activeEventTitle: null,
+      activeWindowLabel: null,
+      minutesRemaining: 0,
+      etTimeLabel,
+      mskTimeLabel,
+      nextScheduledLabel,
+    };
+  }
+
+  // Check 08:30 ET window (510 min) for NFP / CPI
+  const release0830Min = 8 * 60 + 30;
+  if ((isFirstFridayOfMonth || isCpiDay) && totalEtMinutes >= release0830Min - preWindowMinutes && totalEtMinutes <= release0830Min + postWindowMinutes) {
+    const title = isCpiDay ? 'Публикация US CPI (08:30 ET)' : 'Отчет рынка труда США NFP (08:30 ET)';
+    const minsLeft = Math.max(1, release0830Min + postWindowMinutes - totalEtMinutes);
+    return {
+      macroGuardEnabled: true,
+      isBlocked: true,
+      activeEventTitle: title,
+      activeWindowLabel: `${title} · пауза входов еще ~${minsLeft} мин`,
+      minutesRemaining: minsLeft,
+      etTimeLabel,
+      mskTimeLabel,
+      nextScheduledLabel,
+    };
+  }
+
+  // Check 14:00 ET window (840 min) for FOMC
+  const fomcPostMinutes = Math.max(postWindowMinutes, 20);
+  const release1400Min = 14 * 60;
+  if (isFomcDay && totalEtMinutes >= release1400Min - preWindowMinutes && totalEtMinutes <= release1400Min + fomcPostMinutes) {
+    const title = 'Ставка ФРС США (FOMC 14:00 ET)';
+    const minsLeft = Math.max(1, release1400Min + fomcPostMinutes - totalEtMinutes);
+    return {
+      macroGuardEnabled: true,
+      isBlocked: true,
+      activeEventTitle: title,
+      activeWindowLabel: `${title} · пауза входов еще ~${minsLeft} мин`,
+      minutesRemaining: minsLeft,
+      etTimeLabel,
+      mskTimeLabel,
+      nextScheduledLabel,
+    };
+  }
+
+  // Live macro flash headline cooldown (15 min)
+  if (
+    typeof recentMacroHeadlineTs === 'number' &&
+    recentMacroHeadlineTs > 0 &&
+    nowTs >= recentMacroHeadlineTs &&
+    nowTs - recentMacroHeadlineTs <= 15 * 60 * 1000
+  ) {
+    const minsLeft = Math.max(1, Math.ceil((15 * 60 * 1000 - (nowTs - recentMacroHeadlineTs)) / 60000));
+    const title = recentMacroHeadlineTitle ? `Макро-новость: ${recentMacroHeadlineTitle}` : 'Экстренная макро-новость (CPI / ФРС)';
+    return {
+      macroGuardEnabled: true,
+      isBlocked: true,
+      activeEventTitle: title,
+      activeWindowLabel: `${title} · пауза еще ~${minsLeft} мин`,
+      minutesRemaining: minsLeft,
+      etTimeLabel,
+      mskTimeLabel,
+      nextScheduledLabel,
+    };
+  }
+
+  return {
+    macroGuardEnabled: true,
+    isBlocked: false,
+    activeEventTitle: null,
+    activeWindowLabel: null,
+    minutesRemaining: 0,
+    etTimeLabel,
+    mskTimeLabel,
+    nextScheduledLabel,
+  };
+}
+
+export interface CrowdLongShortGuardResult {
+  allowed: boolean;
+  longShortRatio: number | null;
+  longSharePct: number | null;
+  shortSharePct: number | null;
+  crowdedSide: 'LONG' | 'SHORT' | 'BALANCED' | 'UNKNOWN';
+  reason?: string;
+}
+
+/**
+ * 9. OKX Crowd Long/Short Ratio Anti-FOMO Guard
+ * Prevents opening new positions WITH an overcrowded retail side (default >= 78% accounts on one side).
+ * Counter-crowd entries (or when OKX L/S data is unavailable, e.g. XAU) are permitted.
+ */
+export function evaluateCrowdLongShortGuard(params: {
+  side: 'LONG' | 'SHORT';
+  longShortRatio: number | null | undefined;
+  maxCrowdSharePct?: number;
+  crowdGuardEnabled?: boolean;
+}): CrowdLongShortGuardResult {
+  const {
+    side,
+    longShortRatio,
+    maxCrowdSharePct = 78.0,
+    crowdGuardEnabled = true,
+  } = params;
+
+  if (typeof longShortRatio !== 'number' || !Number.isFinite(longShortRatio) || longShortRatio <= 0) {
+    return {
+      allowed: true,
+      longShortRatio: null,
+      longSharePct: null,
+      shortSharePct: null,
+      crowdedSide: 'UNKNOWN',
+    };
+  }
+
+  const longSharePct = Number(((longShortRatio / (1 + longShortRatio)) * 100).toFixed(1));
+  const shortSharePct = Number((100 - longSharePct).toFixed(1));
+  const threshold = Math.max(60, Math.min(95, Number(maxCrowdSharePct) || 78));
+
+  const crowdedSide: CrowdLongShortGuardResult['crowdedSide'] =
+    longSharePct >= threshold
+      ? 'LONG'
+      : shortSharePct >= threshold
+      ? 'SHORT'
+      : 'BALANCED';
+
+  if (!crowdGuardEnabled) {
+    return {
+      allowed: true,
+      longShortRatio: Number(longShortRatio.toFixed(2)),
+      longSharePct,
+      shortSharePct,
+      crowdedSide,
+    };
+  }
+
+  if (side === 'LONG' && longSharePct >= threshold) {
+    return {
+      allowed: false,
+      longShortRatio: Number(longShortRatio.toFixed(2)),
+      longSharePct,
+      shortSharePct,
+      crowdedSide: 'LONG',
+      reason: `Перекос толпы OKX: ${longSharePct.toFixed(1)}% счетов в LONG (L/S ${longShortRatio.toFixed(2)}, порог ${threshold}%) — вход по ходу толпы заблокирован`,
+    };
+  }
+
+  if (side === 'SHORT' && shortSharePct >= threshold) {
+    return {
+      allowed: false,
+      longShortRatio: Number(longShortRatio.toFixed(2)),
+      longSharePct,
+      shortSharePct,
+      crowdedSide: 'SHORT',
+      reason: `Перекос толпы OKX: ${shortSharePct.toFixed(1)}% счетов в SHORT (L/S ${longShortRatio.toFixed(2)}, порог ${threshold}%) — вход по ходу толпы заблокирован`,
+    };
+  }
+
+  return {
+    allowed: true,
+    longShortRatio: Number(longShortRatio.toFixed(2)),
+    longSharePct,
+    shortSharePct,
+    crowdedSide,
+  };
+}
+
 

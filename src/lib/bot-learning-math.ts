@@ -1633,6 +1633,7 @@ export const TREND_GRID_CORE_SYMBOLS = [
   'SUIUSDT',
   'NEARUSDT',
   'ADAUSDT',
+  'XAUUSDT',
 ] as const;
 
 export function computeEffectiveGridRiskStopPct(atrPct: number): {

@@ -490,6 +490,7 @@ test('computeEffectiveGridRiskStopPct caps full-grid SO1+SO2 worst-case SL loss 
     totalNetLoss <= 2.15,
     `Full-grid SL loss ($${totalNetLoss.toFixed(2)}) must stay bounded near $2.00 risk budget, never $4.20`
   );
+  assert.equal(TREND_GRID_CORE_SYMBOLS.includes('XAUUSDT'), true);
   assert.equal(TREND_GRID_CORE_SYMBOLS.includes('ETHUSDT' as any), false);
 });
 

@@ -103,3 +103,12 @@ test('extractSignalsFromTelegramWebHtml extracts only actionable signals in newe
   assert.equal(signals[1].side, 'SHORT');
   assert.deepEqual(detectAllSymbolsInText('Торгуем $SOL и #BTCUSDT'), ['SOLUSDT', 'BTCUSDT']);
 });
+
+test('parseTelegramSignalPost recognizes XAU / XAUt / Золото as XAUUSDT', () => {
+  const goldPost = 'По золоту XAU (XAUt) отличная точка входа, беру лонг сеткой на откат';
+  const parsed = parseTelegramSignalPost(goldPost, { postId: 'ne_investor/15400' });
+  assert.equal(parsed.isActionableSignal, true);
+  assert.equal(parsed.symbol, 'XAUUSDT');
+  assert.equal(parsed.side, 'LONG');
+});
+

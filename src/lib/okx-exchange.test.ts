@@ -131,3 +131,19 @@ test('OKX One-Way (net_mode) leverage, entry with attached Algo SL/TP, reduceOnl
   assert.equal(amend.newSlTriggerPx, '0.9580');
   assert.equal(amend.newTpTriggerPx, '0.9350');
 });
+
+test('OKX XAU-USDT-SWAP (Gold) specification converts cleanly to base XAU and contracts', () => {
+  const xauInst = DEFAULT_OKX_SWAP_INSTRUMENTS.XAUUSDT;
+  assert.ok(xauInst);
+  assert.equal(xauInst.instId, 'XAU-USDT-SWAP');
+  assert.equal(toOkxSwapInstId('XAUUSDT'), 'XAU-USDT-SWAP');
+  const rules = buildOkxInstrumentRules(xauInst, 3535.0);
+  assert.equal(rules.minQty, 0.001);
+  assert.equal(rules.qtyStep, 0.001);
+  assert.ok(rules.minNotional > 3 && rules.minNotional < 4);
+  const conv = convertBaseQtyToOkxContracts(0.0194, xauInst);
+  assert.equal(conv.ok, true);
+  assert.equal(conv.contractsSz, '19');
+  assert.equal(conv.actualBaseQty, 0.019);
+});
+

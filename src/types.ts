@@ -29,6 +29,27 @@ export interface SystemHealth {
     riskMultiplier: number;
     maxConcurrentPositionsCap: number | null;
   };
+  macroGuardEnabled?: boolean;
+  macroWindowStatus?: {
+    macroGuardEnabled: boolean;
+    isBlocked: boolean;
+    activeEventTitle: string | null;
+    activeWindowLabel: string | null;
+    minutesRemaining: number;
+    etTimeLabel: string;
+    mskTimeLabel: string;
+    nextScheduledLabel: string;
+  };
+  crowdGuardEnabled?: boolean;
+  maxCrowdSharePct?: number;
+  crowdRatioSnapshot?: Array<{
+    symbol: string;
+    ratio: number;
+    longSharePct: number;
+    shortSharePct: number;
+    crowdedSide: 'LONG' | 'SHORT' | 'BALANCED';
+  }>;
+  goldTradingEnabled?: boolean;
   rolling24hPnlUsdt: number;
   drawdownPct: number;
   totalRealizedPnlUsdt: number;

@@ -11,6 +11,11 @@ import {
   Bell,
   BellOff,
   Moon,
+  Clock,
+  Users,
+  Coins,
+  Lock,
+  AlertTriangle,
   ShieldCheck,
   MessageSquare,
 } from 'lucide-react';
@@ -38,6 +43,27 @@ interface ConfigStatus {
     riskMultiplier: number;
     maxConcurrentPositionsCap: number | null;
   };
+  macroGuardEnabled?: boolean;
+  macroWindowStatus?: {
+    macroGuardEnabled: boolean;
+    isBlocked: boolean;
+    activeEventTitle: string | null;
+    activeWindowLabel: string | null;
+    minutesRemaining: number;
+    etTimeLabel: string;
+    mskTimeLabel: string;
+    nextScheduledLabel: string;
+  };
+  crowdGuardEnabled?: boolean;
+  maxCrowdSharePct?: number;
+  crowdRatioSnapshot?: Array<{
+    symbol: string;
+    ratio: number;
+    longSharePct: number;
+    shortSharePct: number;
+    crowdedSide: 'LONG' | 'SHORT' | 'BALANCED';
+  }>;
+  goldTradingEnabled?: boolean;
   dataSources: {
     marketData: {
       provider: string;
@@ -113,6 +139,9 @@ export const SettingsConfigView: React.FC = () => {
   const [capDirty, setCapDirty] = useState<boolean>(false);
   const [savingCap, setSavingCap] = useState<boolean>(false);
   const [savingNightMode, setSavingNightMode] = useState<boolean>(false);
+  const [savingMacroGuard, setSavingMacroGuard] = useState<boolean>(false);
+  const [savingCrowdGuard, setSavingCrowdGuard] = useState<boolean>(false);
+  const [savingGoldMode, setSavingGoldMode] = useState<boolean>(false);
 
   // Telegram Bot (@zimatradeai_bot) State
   const [tgStatus, setTgStatus] = useState<TelegramBotStatus | null>(null);
@@ -370,6 +399,85 @@ export const SettingsConfigView: React.FC = () => {
       setSaveStatus({ type: 'error', message: err.message || 'Ошибка сети при переключении Ночного режима' });
     } finally {
       setSavingNightMode(false);
+    }
+  };
+
+  const handleToggleMacroGuard = async (enabled: boolean) => {
+    setSavingMacroGuard(true);
+    setSaveStatus(null);
+    try {
+      const res = await fetch('/api/config/macro-guard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        await fetchStatus();
+        setSaveStatus({
+          type: 'success',
+          message: enabled
+            ? 'Макро-фильтр (ФРС / CPI / NFP) включен: новые входы автоматически ставятся на паузу вокруг ключевых новостей США.'
+            : 'Макро-фильтр отключен.',
+        });
+      }
+    } catch (err: any) {
+      setSaveStatus({ type: 'error', message: err.message || 'Ошибка переключения Макро-фильтра' });
+    } finally {
+      setSavingMacroGuard(false);
+    }
+  };
+
+  const handleUpdateCrowdGuard = async (payload: { enabled?: boolean; maxCrowdSharePct?: number }) => {
+    setSavingCrowdGuard(true);
+    setSaveStatus(null);
+    try {
+      const res = await fetch('/api/config/crowd-guard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        await fetchStatus();
+        setSaveStatus({
+          type: 'success',
+          message:
+            data.crowdGuardEnabled !== false
+              ? `Фильтр перекоса толпы OKX (порог ${data.maxCrowdSharePct}%) активен.`
+              : 'Фильтр перекоса толпы OKX отключен.',
+        });
+      }
+    } catch (err: any) {
+      setSaveStatus({ type: 'error', message: err.message || 'Ошибка обновления фильтра толпы' });
+    } finally {
+      setSavingCrowdGuard(false);
+    }
+  };
+
+  const handleToggleGoldMode = async (enabled: boolean) => {
+    setSavingGoldMode(true);
+    setSaveStatus(null);
+    try {
+      const res = await fetch('/api/config/gold-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        await fetchStatus();
+        setSaveStatus({
+          type: 'success',
+          message: enabled
+            ? 'Золото XAUUSDT (OKX XAU-USDT-SWAP) подключено к торговому пулу стратегий.'
+            : 'Золото XAUUSDT исключено из торгового пула.',
+        });
+      }
+    } catch (err: any) {
+      setSaveStatus({ type: 'error', message: err.message || 'Ошибка переключения золота XAUUSDT' });
+    } finally {
+      setSavingGoldMode(false);
     }
   };
 
@@ -1190,7 +1298,261 @@ export const SettingsConfigView: React.FC = () => {
             </div>
           )}
         </div>
+
+        {/* Idea A: Macro News Blackout Window Guard (FOMC / CPI / NFP) */}
+        <div className="mt-5 pt-5 border-t border-slate-800/90 space-y-3 font-mono text-xs">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <Clock className="w-4 h-4 text-amber-400" />
+                <h4 className="text-sm font-bold font-sans text-white">
+                  Защита от макро-новостей (ФРС / CPI / NFP США)
+                </h4>
+                {config?.macroGuardEnabled !== false && config?.macroWindowStatus && (
+                  <span
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                      config.macroWindowStatus.isBlocked
+                        ? 'bg-amber-950/80 text-amber-300 border-amber-500/40'
+                        : 'bg-emerald-950/70 text-emerald-400 border-emerald-500/30'
+                    }`}
+                  >
+                    {config.macroWindowStatus.isBlocked
+                      ? `ПАУЗА ВХОДОВ (${config.macroWindowStatus.minutesRemaining}м)`
+                      : 'РЫНОК СПОКОЕН'}
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] font-sans text-slate-400 leading-relaxed">
+                Ставит открытие новых позиций на паузу за 30 мин до и 15 мин после выхода ставки ФРС, инфляции CPI и рынка труда NFP, а также на 15 мин при срочных новостях ФРС/CPI. Открытые позиции продолжают сопровождаться.
+              </p>
+              {config?.macroWindowStatus && (
+                <div className="text-[11px] text-slate-400">
+                  Время NY: <span className="text-slate-200">{config.macroWindowStatus.etTimeLabel}</span> · График: <span className="text-cyan-300">{config.macroWindowStatus.nextScheduledLabel}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 gap-1 shrink-0">
+              <button
+                type="button"
+                disabled={savingMacroGuard}
+                onClick={() => handleToggleMacroGuard(true)}
+                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition ${
+                  config?.macroGuardEnabled !== false
+                    ? 'bg-amber-500/25 text-amber-300 border border-amber-400/50'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Макро-фильтр ВКЛ
+              </button>
+              <button
+                type="button"
+                disabled={savingMacroGuard}
+                onClick={() => handleToggleMacroGuard(false)}
+                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition ${
+                  config?.macroGuardEnabled === false
+                    ? 'bg-slate-800 text-slate-200 border border-slate-600'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Отключен
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Idea B: OKX Crowd Long/Short Ratio Filter */}
+        <div className="mt-5 pt-5 border-t border-slate-800/90 space-y-3 font-mono text-xs">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <Users className="w-4 h-4 text-cyan-400" />
+                <h4 className="text-sm font-bold font-sans text-white">
+                  Фильтр перекоса толпы OKX (Long/Short Ratio)
+                </h4>
+              </div>
+              <p className="text-[11px] font-sans text-slate-400 leading-relaxed">
+                Запрашивает реальный баланс счетов OKX. Если в одну сторону зашло больше порога (по умолчанию ≥ {config?.maxCrowdSharePct ?? 78}%), бот не догоняет толпу и переходит к следующей монете; входы против перегретой стороны разрешены.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 gap-1">
+                {[75, 78, 80].map((pct) => (
+                  <button
+                    key={pct}
+                    type="button"
+                    disabled={savingCrowdGuard}
+                    onClick={() => handleUpdateCrowdGuard({ maxCrowdSharePct: pct, enabled: true })}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition ${
+                      (config?.maxCrowdSharePct ?? 78) === pct && config?.crowdGuardEnabled !== false
+                        ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-400/50'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    ≥{pct}%
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 gap-1">
+                <button
+                  type="button"
+                  disabled={savingCrowdGuard}
+                  onClick={() => handleUpdateCrowdGuard({ enabled: true })}
+                  className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition ${
+                    config?.crowdGuardEnabled !== false
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/50'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Фильтр ВКЛ
+                </button>
+                <button
+                  type="button"
+                  disabled={savingCrowdGuard}
+                  onClick={() => handleUpdateCrowdGuard({ enabled: false })}
+                  className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition ${
+                    config?.crowdGuardEnabled === false
+                      ? 'bg-slate-800 text-slate-200 border border-slate-600'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Выкл
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {config?.crowdRatioSnapshot && config.crowdRatioSnapshot.length > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 bg-slate-950/90 border border-slate-800 rounded-xl p-2.5 text-[11px]">
+              {config.crowdRatioSnapshot.map((row) => {
+                const isCrowded = row.crowdedSide !== 'BALANCED';
+                return (
+                  <div
+                    key={row.symbol}
+                    className={`px-2.5 py-1.5 rounded-lg border ${
+                      isCrowded
+                        ? 'bg-amber-950/35 border-amber-500/40'
+                        : 'bg-slate-900/70 border-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-white">{row.symbol.replace('USDT', '')}</span>
+                      <span className="text-[10px] text-slate-400">L/S {row.ratio.toFixed(2)}</span>
+                    </div>
+                    <div className={`text-[10px] mt-0.5 font-bold ${isCrowded ? 'text-amber-300' : 'text-emerald-400'}`}>
+                      {row.longSharePct >= row.shortSharePct
+                        ? `${row.longSharePct.toFixed(1)}% LONG`
+                        : `${row.shortSharePct.toFixed(1)}% SHORT`}
+                      {isCrowded ? ' · СТОП ПО ХОДУ' : ' · НОРМА'}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Idea C: Gold XAUUSDT (OKX XAU-USDT-SWAP) */}
+        <div className="mt-5 pt-5 border-t border-slate-800/90 font-mono text-xs">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <Coins className="w-4 h-4 text-yellow-400" />
+                <h4 className="text-sm font-bold font-sans text-white">
+                  Золото в пуле стратегий (XAUUSDT · OKX XAU-USDT-SWAP)
+                </h4>
+              </div>
+              <p className="text-[11px] font-sans text-slate-400 leading-relaxed">
+                Подключает торговлю бессрочным контрактом на золото OKX (XAU-USDT-SWAP, шаг 0.001 XAU ≈ $3.5) как защитный актив во время слабости альткоинов и для сигналов @ne_investor по XAU.
+              </p>
+            </div>
+
+            <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 gap-1 shrink-0">
+              <button
+                type="button"
+                disabled={savingGoldMode}
+                onClick={() => handleToggleGoldMode(true)}
+                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition ${
+                  config?.goldTradingEnabled !== false
+                    ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-400/50'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Золото XAU ВКЛ
+              </button>
+              <button
+                type="button"
+                disabled={savingGoldMode}
+                onClick={() => handleToggleGoldMode(false)}
+                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition ${
+                  config?.goldTradingEnabled === false
+                    ? 'bg-slate-800 text-slate-200 border border-slate-600'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Исключить
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Idea D: Security, AML Hygiene & Trader Discipline Checklist (@ne_investor) */}
+      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-5 h-5 text-emerald-400" />
+            <h3 className="font-extrabold text-sm text-white uppercase tracking-wider">
+              Памятка безопасности, AML-гигиены и дисциплины
+            </h3>
+          </div>
+          <span className="text-[11px] font-mono text-slate-400">Базовые правила работы с депозитом</span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+          <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
+            <div className="flex items-center gap-1.5 font-bold text-emerald-300">
+              <ShieldCheck className="w-4 h-4 shrink-0" />
+              <span>1. AML-проверка USDT (&lt; 25%)</span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Перед пополнением биржи с P2P или сторонних кошельков проверяйте адрес через AML-бот: риск выше 25–50% может привести к блокировке аккаунта биржей.
+            </p>
+          </div>
+
+          <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
+            <div className="flex items-center gap-1.5 font-bold text-cyan-300">
+              <Lock className="w-4 h-4 shrink-0" />
+              <span>2. Изоляция API и резерва</span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              API-ключи строго с правами «Чтение / Торговля» (без «Вывода»). Крупный капитал держите отдельно от торгового субаккаунта/лимита, в боте задан безопасный рабочий лимит.
+            </p>
+          </div>
+
+          <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
+            <div className="flex items-center gap-1.5 font-bold text-amber-300">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>3. Запрет догона свечи</span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Не заходите вручную в ушедший импульс после +3–5% движения и при сильном перекосе толпы. Лучшие точки входа — откат по сетке (SO1/SO2), а не FOMO на хаях.
+            </p>
+          </div>
+
+          <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
+            <div className="flex items-center gap-1.5 font-bold text-indigo-300">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>4. Плечо 4x и дневной стоп -5%</span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Низкое изолированное плечо 4x выдерживает рыночные «прострелы» до сетки усреднения без ликвидации, а дневной Kill-Switch -5% гарантированно останавливает серию неудач.
+            </p>
+          </div>
+        </div>
       </div>
     </div>
   );
 };
+

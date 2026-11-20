@@ -277,6 +277,16 @@ export const Header: React.FC<HeaderProps> = ({
                   🌙 ×{health.sessionProfile.riskMultiplier}
                 </button>
               )}
+              {health?.macroGuardEnabled !== false && health?.macroWindowStatus?.isBlocked && (
+                <button
+                  type="button"
+                  onClick={() => onSelectTab('settings')}
+                  title={health.macroWindowStatus.activeWindowLabel || 'Макро-пауза новых входов'}
+                  className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-400/40 hover:bg-amber-500/30 transition animate-pulse"
+                >
+                  ⏸️ Макро-окно ({health.macroWindowStatus.minutesRemaining}м)
+                </button>
+              )}
             </div>
 
             {/* Notification Center Bell */}

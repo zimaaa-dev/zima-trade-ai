@@ -51,6 +51,7 @@ const RAW_OKX_SWAP_SPECS: Array<Omit<OkxSwapInstrument, 'symbol'>> = [
   { instId: 'INJ-USDT-SWAP', ctVal: 0.1, lotSz: 1, minSz: 1, tickSz: 0.001, maxLever: 50 },
   { instId: 'ARB-USDT-SWAP', ctVal: 10, lotSz: 0.1, minSz: 0.1, tickSz: 0.00001, maxLever: 50 },
   { instId: 'OP-USDT-SWAP', ctVal: 1, lotSz: 1, minSz: 1, tickSz: 0.00001, maxLever: 50 },
+  { instId: 'XAU-USDT-SWAP', ctVal: 0.001, lotSz: 1, minSz: 1, tickSz: 0.1, maxLever: 100 },
 ];
 
 export const DEFAULT_OKX_SWAP_INSTRUMENTS: Record<string, OkxSwapInstrument> = Object.fromEntries(

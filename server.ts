@@ -166,6 +166,8 @@ import {
   validateSignalFreshness,
   computeTrailingStopPrice,
   getMskSessionRiskProfile,
+  evaluateMacroNewsWindow,
+  evaluateCrowdLongShortGuard,
   type OrderbookL2,
   type InstrumentRules,
 } from './src/lib/engine-math.ts';
@@ -392,6 +394,10 @@ interface AppSystemState {
   agents: any[];
   botTradingEnabled: boolean;
   nightModeEnabled: boolean;
+  macroGuardEnabled: boolean;
+  crowdGuardEnabled: boolean;
+  maxCrowdSharePct: number;
+  goldTradingEnabled: boolean;
   autoMarketAdaptationEnabled?: boolean;
   lastAutoAdaptedAt?: number;
   currentMarketRegime?: string;
@@ -445,6 +451,10 @@ const systemState: AppSystemState = {
   pings: { bybit: 24, okx: 32, mexc: 31 },
   botTradingEnabled: true,
   nightModeEnabled: true,
+  macroGuardEnabled: true,
+  crowdGuardEnabled: true,
+  maxCrowdSharePct: 78,
+  goldTradingEnabled: true,
   autoMarketAdaptationEnabled: true,
   lastAutoAdaptedAt: Date.now(),
   currentMarketRegime: '🔄 Боковой диапазон (Range / Choppy)',
@@ -459,6 +469,7 @@ const systemState: AppSystemState = {
     { symbol: 'BTCUSDT', turnover24h: 3420000000, spreadBps: 0.8, atrPct: 2.8, status: 'READY', price: 68650.0 },
     { symbol: 'ETHUSDT', turnover24h: 1850000000, spreadBps: 1.2, atrPct: 3.4, status: 'READY', price: 3485.5 },
     { symbol: 'SOLUSDT', turnover24h: 920000000, spreadBps: 1.5, atrPct: 4.9, status: 'READY', price: 176.2 },
+    { symbol: 'XAUUSDT', turnover24h: 1100000000, spreadBps: 0.4, atrPct: 1.9, status: 'READY', price: 3536.5 },
     { symbol: 'DOGEUSDT', turnover24h: 480000000, spreadBps: 2.1, atrPct: 6.2, status: 'READY', price: 0.1645 },
     { symbol: 'AVAXUSDT', turnover24h: 210000000, spreadBps: 2.4, atrPct: 5.1, status: 'READY', price: 28.4 },
     { symbol: 'SUIUSDT', turnover24h: 180000000, spreadBps: 2.0, atrPct: 7.4, status: 'WARMING_UP', price: 2.045 },
@@ -723,6 +734,10 @@ function buildPersistPayload() {
     lastUnblockedAt: systemState.lastUnblockedAt || 0,
     botTradingEnabled: systemState.botTradingEnabled,
     nightModeEnabled: systemState.nightModeEnabled !== false,
+    macroGuardEnabled: systemState.macroGuardEnabled !== false,
+    crowdGuardEnabled: systemState.crowdGuardEnabled !== false,
+    maxCrowdSharePct: systemState.maxCrowdSharePct || 78,
+    goldTradingEnabled: systemState.goldTradingEnabled !== false,
     autoMarketAdaptationEnabled: systemState.autoMarketAdaptationEnabled !== false,
     lastAutoAdaptedAt: systemState.lastAutoAdaptedAt || Date.now(),
     currentMarketRegime: systemState.currentMarketRegime,
@@ -948,6 +963,12 @@ function loadPersistedState(): void {
       }
       if (typeof parsed.botTradingEnabled === 'boolean') systemState.botTradingEnabled = parsed.botTradingEnabled;
       if (typeof parsed.nightModeEnabled === 'boolean') systemState.nightModeEnabled = parsed.nightModeEnabled;
+      if (typeof parsed.macroGuardEnabled === 'boolean') systemState.macroGuardEnabled = parsed.macroGuardEnabled;
+      if (typeof parsed.crowdGuardEnabled === 'boolean') systemState.crowdGuardEnabled = parsed.crowdGuardEnabled;
+      if (typeof parsed.maxCrowdSharePct === 'number' && parsed.maxCrowdSharePct >= 60 && parsed.maxCrowdSharePct <= 95) {
+        systemState.maxCrowdSharePct = parsed.maxCrowdSharePct;
+      }
+      if (typeof parsed.goldTradingEnabled === 'boolean') systemState.goldTradingEnabled = parsed.goldTradingEnabled;
       if (typeof parsed.autoMarketAdaptationEnabled === 'boolean') systemState.autoMarketAdaptationEnabled = parsed.autoMarketAdaptationEnabled;
       if (typeof parsed.lastAutoAdaptedAt === 'number') systemState.lastAutoAdaptedAt = parsed.lastAutoAdaptedAt;
       if (typeof parsed.currentMarketRegime === 'string') systemState.currentMarketRegime = parsed.currentMarketRegime;
@@ -2596,7 +2617,7 @@ function resolveInstrumentRules(symbol: string, referencePrice?: number): Instru
   const price =
     referencePrice ||
     systemState.screenerSymbols.find((s) => s.symbol === sym)?.price ||
-    (sym === 'BTCUSDT' ? 68500 : sym === 'ETHUSDT' ? 2500 : sym === 'SOLUSDT' ? 145 : 10.0);
+    (sym === 'BTCUSDT' ? 68500 : sym === 'XAUUSDT' ? 3536.5 : sym === 'ETHUSDT' ? 2500 : sym === 'SOLUSDT' ? 145 : 10.0);
 
   if (systemState.activeExchange === 'OKX') {
     if (Date.now() - lastOkxInstrumentsFetchTs > 5 * 60 * 1000) {
@@ -2694,6 +2715,7 @@ function resolveSafeSymbolFallbackPrice(symbol: string): number {
   const fromOrd = systemState.limitOrdersQueue.find((o) => o.symbol === symbol);
   if (fromOrd && fromOrd.limitPrice > 0) return fromOrd.limitPrice;
   if (symbol === 'BTCUSDT') return 68500.0;
+  if (symbol === 'XAUUSDT') return 3536.5;
   if (symbol === 'ETHUSDT') return 2550.0;
   if (symbol === 'SOLUSDT') return 145.0;
   if (symbol === 'BNBUSDT') return 580.0;
@@ -2764,6 +2786,78 @@ async function fetchRealOkxFundingRate(symbol: string): Promise<{ fundingRate: n
   return cached
     ? { fundingRate: cached.fundingRate, nextFundingTime: cached.nextFundingTime }
     : { fundingRate: 0.0001, nextFundingTime: now + 3600000 };
+}
+
+const cachedOkxCrowdRatio: Record<string, { ratio: number | null; fetchedAt: number }> = {};
+const CROWD_SNAPSHOT_SYMBOLS = ['BTCUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'SUIUSDT'];
+let lastCrowdSnapshotBgFetchTs = 0;
+
+async function fetchOkxLongShortRatio(symbol: string): Promise<number | null> {
+  const sym = symbol.toUpperCase();
+  const baseCcy = sym.endsWith('USDT') ? sym.slice(0, -4) : sym;
+  if (!baseCcy || baseCcy === 'XAU') return null;
+  const cached = cachedOkxCrowdRatio[sym];
+  const now = Date.now();
+  if (cached && now - cached.fetchedAt < 180_000) {
+    return cached.ratio;
+  }
+  try {
+    const { ok, data } = await fetchOkxPublicJson(
+      `/api/v5/rubik/stat/contracts/long-short-account-ratio?ccy=${encodeURIComponent(baseCcy)}&period=1H`,
+      3500
+    );
+    const latest = Array.isArray(data?.data) ? data.data[0] : null;
+    const rawRatio = Array.isArray(latest) ? parseFloat(latest[1]) : NaN;
+    if (ok && Number.isFinite(rawRatio) && rawRatio > 0) {
+      cachedOkxCrowdRatio[sym] = { ratio: rawRatio, fetchedAt: now };
+      return rawRatio;
+    }
+    cachedOkxCrowdRatio[sym] = { ratio: null, fetchedAt: now };
+    return null;
+  } catch {
+    return cached ? cached.ratio : null;
+  }
+}
+
+function triggerBackgroundCrowdSnapshotRefresh(): void {
+  const now = Date.now();
+  if (now - lastCrowdSnapshotBgFetchTs < 90_000) return;
+  lastCrowdSnapshotBgFetchTs = now;
+  Promise.all(CROWD_SNAPSHOT_SYMBOLS.map((sym) => fetchOkxLongShortRatio(sym))).catch(() => {});
+}
+
+function getCrowdRatioSnapshotList() {
+  triggerBackgroundCrowdSnapshotRefresh();
+  const threshold = systemState.maxCrowdSharePct || 78;
+  return CROWD_SNAPSHOT_SYMBOLS.map((sym) => {
+    const ratio = cachedOkxCrowdRatio[sym]?.ratio;
+    if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio <= 0) return null;
+    const longSharePct = Number(((ratio / (1 + ratio)) * 100).toFixed(1));
+    const shortSharePct = Number((100 - longSharePct).toFixed(1));
+    const crowdedSide: 'LONG' | 'SHORT' | 'BALANCED' =
+      longSharePct >= threshold ? 'LONG' : shortSharePct >= threshold ? 'SHORT' : 'BALANCED';
+    return {
+      symbol: sym,
+      ratio: Number(ratio.toFixed(2)),
+      longSharePct,
+      shortSharePct,
+      crowdedSide,
+    };
+  }).filter((item): item is NonNullable<typeof item> => Boolean(item));
+}
+
+function getRecentMacroHeadlineFromFeed(): { ts: number | null; title: string | null } {
+  const macroPattern = /\b(FOMC|CPI|PPI|NFP|NON-FARM|NONFARM|FED\s+RATE|POWELL|INFLATION\s+DATA|INTEREST\s+RATE)\b/i;
+  const now = Date.now();
+  const recentItem = systemState.parsedNewsFeed.find(
+    (item) =>
+      typeof item?.timestamp === 'number' &&
+      now - item.timestamp <= 15 * 60 * 1000 &&
+      macroPattern.test(String(item?.rawText || ''))
+  );
+  if (!recentItem) return { ts: null, title: null };
+  const snippet = String(recentItem.rawText || '').replace(/\s+/g, ' ').trim().slice(0, 64);
+  return { ts: recentItem.timestamp, title: snippet || 'Макро-событие США' };
 }
 
 async function fetchRealOkxTickers(): Promise<any[]> {
@@ -3770,6 +3864,20 @@ function buildFullSystemHealthPayload() {
       nightModeEnabled: systemState.nightModeEnabled !== false,
       baseMaxSpreadBps: 8.0,
     }),
+    macroGuardEnabled: systemState.macroGuardEnabled !== false,
+    macroWindowStatus: (() => {
+      const headline = getRecentMacroHeadlineFromFeed();
+      return evaluateMacroNewsWindow({
+        nowTs: Date.now(),
+        macroGuardEnabled: systemState.macroGuardEnabled !== false,
+        recentMacroHeadlineTs: headline.ts,
+        recentMacroHeadlineTitle: headline.title,
+      });
+    })(),
+    crowdGuardEnabled: systemState.crowdGuardEnabled !== false,
+    maxCrowdSharePct: systemState.maxCrowdSharePct || 78,
+    crowdRatioSnapshot: getCrowdRatioSnapshotList(),
+    goldTradingEnabled: systemState.goldTradingEnabled !== false,
     pings: systemState.pings,
     nodes: {
       nodeA: {
@@ -4776,8 +4884,10 @@ const INSTITUTIONAL_CRYPTO_WHITELIST = [
   'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'SUIUSDT',
   'NEARUSDT', 'LTCUSDT', 'BCHUSDT', 'DOTUSDT', 'UNIUSDT',
   'AAVEUSDT', 'APTUSDT', 'INJUSDT', 'ARBUSDT', 'OPUSDT',
+  'XAUUSDT',
 ];
 const INSTITUTIONAL_WHITELIST_SET = new Set(INSTITUTIONAL_CRYPTO_WHITELIST);
+let lastMacroGuardLogTs = 0;
 
 // Autonomous Bot Trading Engine for Mode 1 (Shadow Forward-Testing)
 async function runBotEngineCycle() {
@@ -5178,6 +5288,29 @@ async function runBotEngineCycle() {
         : baseMaxAllowedOpen;
 
     if (systemState.activePositions.length < maxAllowedOpenPositions) {
+      // Macro News Blackout Window Guard (FOMC / CPI / NFP / Live Macro Shock)
+      const macroHeadline = getRecentMacroHeadlineFromFeed();
+      const macroWindow = evaluateMacroNewsWindow({
+        nowTs: Date.now(),
+        macroGuardEnabled: systemState.macroGuardEnabled !== false,
+        recentMacroHeadlineTs: macroHeadline.ts,
+        recentMacroHeadlineTitle: macroHeadline.title,
+      });
+      if (macroWindow.isBlocked) {
+        if (Date.now() - lastMacroGuardLogTs > 5 * 60 * 1000) {
+          lastMacroGuardLogTs = Date.now();
+          addBotLog({
+            botId: 'system',
+            botName: 'Макро-Фильтр',
+            action: 'RISK_GUARD',
+            symbol: 'MACRO',
+            message: `Пауза новых входов (${macroWindow.activeWindowLabel}). Открытые сделки продолжают сопровождаться.`,
+            rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
+          });
+        }
+        return;
+      }
+
       const activeBots = systemState.agents.filter(
         (a) =>
           a.isEnabled !== false &&
@@ -5213,21 +5346,27 @@ async function runBotEngineCycle() {
           baseMaxSpreadBps: Math.min(8.0, actingBot.brain?.maxSpreadBps || 10.0),
         });
 
-        // Base configured symbols for the bot, strictly intersected with the Top-20 Whitelist
+        // Base configured symbols for the bot, strictly intersected with the Top-20 + Gold Whitelist
+        const goldAllowed = systemState.goldTradingEnabled !== false;
         const rawAllowed = Array.isArray(actingBot.allowedSymbols)
-          ? actingBot.allowedSymbols.filter((s: string) => INSTITUTIONAL_WHITELIST_SET.has(s))
+          ? actingBot.allowedSymbols.filter(
+              (s: string) => INSTITUTIONAL_WHITELIST_SET.has(s) && (goldAllowed || s !== 'XAUUSDT')
+            )
           : [];
         const baseAllowedSymbols: string[] =
-          rawAllowed.length > 0 ? rawAllowed : INSTITUTIONAL_CRYPTO_WHITELIST;
+          rawAllowed.length > 0
+            ? rawAllowed
+            : INSTITUTIONAL_CRYPTO_WHITELIST.filter((s) => goldAllowed || s !== 'XAUUSDT');
 
         const isDynamicScanEnabled =
           actingBot.dynamicScreenerScan !== false ||
           (Array.isArray(actingBot.allowedSymbols) &&
             (actingBot.allowedSymbols.includes('ALL') || actingBot.allowedSymbols.includes('DYNAMIC_TRENDS')));
 
-        const rawUniverse = isDynamicScanEnabled
+        const rawUniverse = (isDynamicScanEnabled
           ? Array.from(new Set([...baseAllowedSymbols, ...INSTITUTIONAL_CRYPTO_WHITELIST]))
-          : baseAllowedSymbols;
+          : baseAllowedSymbols
+        ).filter((s) => goldAllowed || s !== 'XAUUSDT');
 
         // Freqtrade Pairlist Pipeline: SpreadFilter -> VolatilityFilter -> PerformanceFilter
         const rankedPairlist = applyFreqtradePairlistPipeline({
@@ -5353,7 +5492,44 @@ async function runBotEngineCycle() {
           return Math.abs(b.evalResult.compositeScore) - Math.abs(a.evalResult.compositeScore);
         });
 
-        const bestCandidate = evaluatedBatch[0];
+        // Filter out crowded OKX Long/Short pairs if Crowd Guard is enabled, seamlessly falling back to the next valid candidate
+        let bestCandidate = evaluatedBatch[0];
+        if (systemState.crowdGuardEnabled !== false) {
+          let chosenCandidate: typeof bestCandidate | null = null;
+          for (const cand of evaluatedBatch) {
+            if (cand.evalResult.action === 'SKIP') {
+              if (!chosenCandidate) chosenCandidate = cand;
+              break;
+            }
+            const candRatio = await fetchOkxLongShortRatio(cand.symbol);
+            const crowdCheck = evaluateCrowdLongShortGuard({
+              side: cand.evalResult.action,
+              longShortRatio: candRatio,
+              maxCrowdSharePct: systemState.maxCrowdSharePct || 78,
+              crowdGuardEnabled: true,
+            });
+            if (crowdCheck.allowed) {
+              chosenCandidate = cand;
+              break;
+            } else {
+              addBotLog({
+                botId: actingBot.agentId,
+                botName: actingBot.name,
+                action: 'RISK_GUARD',
+                symbol: cand.symbol,
+                side: cand.evalResult.action,
+                price: cand.bestBid,
+                message: `Риск-Файрвол отклонил вход ${cand.evalResult.action} ${cand.symbol}: ${crowdCheck.reason}`,
+                rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
+              });
+            }
+          }
+          if (!chosenCandidate) {
+            return;
+          }
+          bestCandidate = chosenCandidate;
+        }
+
         const targetSymbol = bestCandidate.symbol;
         const book = bestCandidate.book;
         const bestBid = bestCandidate.bestBid;
@@ -8084,6 +8260,20 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
       nightModeEnabled: systemState.nightModeEnabled !== false,
       baseMaxSpreadBps: 8.0,
     }),
+    macroGuardEnabled: systemState.macroGuardEnabled !== false,
+    macroWindowStatus: (() => {
+      const headline = getRecentMacroHeadlineFromFeed();
+      return evaluateMacroNewsWindow({
+        nowTs: Date.now(),
+        macroGuardEnabled: systemState.macroGuardEnabled !== false,
+        recentMacroHeadlineTs: headline.ts,
+        recentMacroHeadlineTitle: headline.title,
+      });
+    })(),
+    crowdGuardEnabled: systemState.crowdGuardEnabled !== false,
+    maxCrowdSharePct: systemState.maxCrowdSharePct || 78,
+    crowdRatioSnapshot: getCrowdRatioSnapshotList(),
+    goldTradingEnabled: systemState.goldTradingEnabled !== false,
     dataSources: {
       marketData: {
         provider: 'OKX V5 & Bybit V5 Multi-Exchange Gateway',
@@ -8228,6 +8418,95 @@ app.post('/api/config/night-mode', (req: Request, res: Response) => {
     success: true,
     nightModeEnabled: systemState.nightModeEnabled,
     sessionProfile,
+    health: buildFullSystemHealthPayload(),
+  });
+});
+
+// Toggle Macro News Blackout Window (FOMC, US CPI, NFP)
+app.post('/api/config/macro-guard', (req: Request, res: Response) => {
+  const enabled = Boolean(req.body?.enabled);
+  systemState.macroGuardEnabled = enabled;
+  const headline = getRecentMacroHeadlineFromFeed();
+  const macroWindowStatus = evaluateMacroNewsWindow({
+    nowTs: Date.now(),
+    macroGuardEnabled: enabled,
+    recentMacroHeadlineTs: headline.ts,
+    recentMacroHeadlineTitle: headline.title,
+  });
+
+  addBotLog({
+    botId: 'system',
+    botName: 'Риск-Контроль',
+    action: 'SCAN_PASS',
+    symbol: 'MACRO',
+    message: enabled
+      ? 'Макро-фильтр (ФРС / CPI / NFP) ВКЛЮЧЕН: новые входы ставятся на паузу за 30 мин до и 15 мин после публикаций США.'
+      : 'Макро-фильтр новостей США отключен.',
+    rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
+  });
+
+  savePersistedState(true);
+  res.json({
+    success: true,
+    macroGuardEnabled: systemState.macroGuardEnabled,
+    macroWindowStatus,
+    health: buildFullSystemHealthPayload(),
+  });
+});
+
+// Toggle & Configure OKX Crowd Long/Short Ratio Anti-FOMO Guard
+app.post('/api/config/crowd-guard', (req: Request, res: Response) => {
+  if (typeof req.body?.enabled === 'boolean') {
+    systemState.crowdGuardEnabled = req.body.enabled;
+  }
+  if (typeof req.body?.maxCrowdSharePct === 'number') {
+    const num = Number(req.body.maxCrowdSharePct);
+    if (Number.isFinite(num) && num >= 65 && num <= 90) {
+      systemState.maxCrowdSharePct = Number(num.toFixed(0));
+    }
+  }
+
+  addBotLog({
+    botId: 'system',
+    botName: 'Риск-Контроль',
+    action: 'SCAN_PASS',
+    symbol: 'CROWD',
+    message: systemState.crowdGuardEnabled
+      ? `Фильтр перекоса толпы OKX (Long/Short Ratio) ВКЛЮЧЕН: порог перегрева стороны >= ${systemState.maxCrowdSharePct}%.`
+      : 'Фильтр перекоса толпы OKX (Long/Short Ratio) отключен.',
+    rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
+  });
+
+  savePersistedState(true);
+  res.json({
+    success: true,
+    crowdGuardEnabled: systemState.crowdGuardEnabled,
+    maxCrowdSharePct: systemState.maxCrowdSharePct,
+    crowdRatioSnapshot: getCrowdRatioSnapshotList(),
+    health: buildFullSystemHealthPayload(),
+  });
+});
+
+// Toggle Gold (XAUUSDT / OKX XAU-USDT-SWAP) in autonomous strategy universe
+app.post('/api/config/gold-mode', (req: Request, res: Response) => {
+  const enabled = Boolean(req.body?.enabled);
+  systemState.goldTradingEnabled = enabled;
+
+  addBotLog({
+    botId: 'system',
+    botName: 'Риск-Контроль',
+    action: 'SCAN_PASS',
+    symbol: 'XAUUSDT',
+    message: enabled
+      ? 'Золото XAUUSDT (OKX XAU-USDT-SWAP) добавлено в рабочий пул стратегий.'
+      : 'Торговля золотом XAUUSDT временно исключена из пула стратегий.',
+    rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
+  });
+
+  savePersistedState(true);
+  res.json({
+    success: true,
+    goldTradingEnabled: systemState.goldTradingEnabled,
     health: buildFullSystemHealthPayload(),
   });
 });
