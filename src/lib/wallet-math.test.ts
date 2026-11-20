@@ -5,6 +5,10 @@ import {
   calculatePortfolioSummary,
   filterClosedTrades,
   buildEquityCurve,
+  computeMskPeriodBounds,
+  calculateMskPeriodBreakdown,
+  formatTelegramPeriodSummaryHtml,
+  shouldSendDailyTelegramDigest,
   type ClosedTradeRecord,
 } from './wallet-math';
 
@@ -282,4 +286,109 @@ test('calculatePortfolioSummary and filterClosedTrades exclude synthetic seed tr
   assert.equal(filtered[0].id, 'trd-real-solusdt-01');
 });
 
+test('calculateMskPeriodBreakdown computes calendar MSK today, week (Mon), and month PnL accurately', () => {
+  // Friday, 2026-11-20 18:30:00 MSK = 15:30:00 UTC
+  const nowTs = Date.UTC(2026, 10, 20, 15, 30, 0);
+  const bounds = computeMskPeriodBounds(nowTs);
+  assert.equal(bounds.mskDateKey, '2026-11-20');
+  assert.equal(bounds.mskDateLabel, '20.11.2026');
+  assert.equal(bounds.mskHour, 18);
+
+  const mkTrade = (id: string, closedAt: number, netPnlUsdt: number, isSynthetic = false): ClosedTradeRecord => ({
+    id,
+    symbol: 'BTCUSDT',
+    side: 'LONG',
+    qty: 0.01,
+    leverage: 4,
+    entryPrice: 60000,
+    exitPrice: 61000,
+    grossPnlUsdt: netPnlUsdt,
+    feeUsdt: 0,
+    fundingUsdt: 0,
+    netPnlUsdt,
+    roePct: 5,
+    mode: 'SHADOW',
+    exitReason: netPnlUsdt >= 0 ? 'TP_HIT' : 'SL_HIT',
+    botId: 'agent-onnx-ppo-v2',
+    botName: 'Delta-L2',
+    openedAt: closedAt - 60000,
+    closedAt,
+    isSynthetic,
+  });
+
+  const trades: ClosedTradeRecord[] = [
+    // Today MSK (2026-11-20 10:00 MSK = 07:00 UTC)
+    mkTrade('t-today-1', Date.UTC(2026, 10, 20, 7, 0, 0), 2.5),
+    // Today MSK right after 00:05 MSK (2026-11-19 21:05 UTC)
+    mkTrade('t-today-2', Date.UTC(2026, 10, 19, 21, 5, 0), -0.65),
+    // Earlier this week (Monday 2026-11-16 12:00 MSK = 09:00 UTC)
+    mkTrade('t-week-1', Date.UTC(2026, 10, 16, 9, 0, 0), 4.15),
+    // Earlier this month, previous week (Friday 2026-11-13 12:00 MSK = 09:00 UTC)
+    mkTrade('t-month-1', Date.UTC(2026, 10, 13, 9, 0, 0), 3.0),
+    // Previous month (2026-10-30 12:00 MSK) -> excluded from month/week/today
+    mkTrade('t-prev-month', Date.UTC(2026, 9, 30, 9, 0, 0), 10.0),
+    // Synthetic seed trade today -> excluded
+    mkTrade('trd-seed-fake', Date.UTC(2026, 10, 20, 8, 0, 0), 99.0, true),
+  ];
+
+  const breakdown = calculateMskPeriodBreakdown({
+    closedTrades: trades,
+    baseCapitalUsdt: 100,
+    nowTs,
+  });
+
+  // Today: +2.5 - 0.65 = +1.85 (2 trades)
+  assert.equal(breakdown.today.pnlUsdt, 1.85);
+  assert.equal(breakdown.today.returnPct, 1.85);
+  assert.equal(breakdown.today.tradesCount, 2);
+  assert.equal(breakdown.today.winsCount, 1);
+
+  // Week (since Mon Nov 16 00:00 MSK): +1.85 + 4.15 = +6.00 (3 trades)
+  assert.equal(breakdown.week.pnlUsdt, 6.0);
+  assert.equal(breakdown.week.tradesCount, 3);
+
+  // Month (since Nov 1 00:00 MSK): +6.00 + 3.00 = +9.00 (4 trades)
+  assert.equal(breakdown.month.pnlUsdt, 9.0);
+  assert.equal(breakdown.month.tradesCount, 4);
+
+  // All time (real only): +19.00 (5 trades)
+  assert.equal(breakdown.allTime.pnlUsdt, 19.0);
+  assert.equal(breakdown.allTime.tradesCount, 5);
+
+  const html = formatTelegramPeriodSummaryHtml(breakdown);
+  assert.match(html, /Сегодня: <b>\+\$1\.85 USDT \(\+1\.85% · 2 сд\.\)<\/b>/);
+  assert.match(html, /Неделя: <b>\+\$6\.00 USDT \(\+6\.00% · 3 сд\.\)<\/b>/);
+  assert.match(html, /Месяц: <b>\+\$9\.00 USDT \(\+9\.00% · 4 сд\.\)<\/b>/);
+});
+
+test('shouldSendDailyTelegramDigest fires once per calendar MSK day at target hour', () => {
+  // 20:59 MSK -> not due
+  assert.equal(
+    shouldSendDailyTelegramDigest({
+      nowTs: Date.UTC(2026, 10, 20, 17, 59, 0),
+      lastSentMskDate: null,
+      targetHourMsk: 21,
+    }).due,
+    false
+  );
+
+  // 21:05 MSK -> due when not sent today
+  const at2105 = shouldSendDailyTelegramDigest({
+    nowTs: Date.UTC(2026, 10, 20, 18, 5, 0),
+    lastSentMskDate: '2026-11-19',
+    targetHourMsk: 21,
+  });
+  assert.equal(at2105.due, true);
+  assert.equal(at2105.mskDateKey, '2026-11-20');
+
+  // 21:15 MSK same day after already sent -> not due
+  assert.equal(
+    shouldSendDailyTelegramDigest({
+      nowTs: Date.UTC(2026, 10, 20, 18, 15, 0),
+      lastSentMskDate: '2026-11-20',
+      targetHourMsk: 21,
+    }).due,
+    false
+  );
+});
 

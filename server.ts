@@ -180,6 +180,11 @@ import {
 import {
   calculateClosedTradeMetrics,
   calculatePortfolioSummary,
+  calculateMskPeriodBreakdown,
+  formatTelegramPeriodSummaryHtml,
+  formatSignedUsdt,
+  formatSignedPct,
+  shouldSendDailyTelegramDigest,
   type ClosedTradeRecord,
   type WalletLedgerEntry,
 } from './src/lib/wallet-math.ts';
@@ -308,6 +313,7 @@ export interface TelegramBotRuntimeState {
   lastError: string | null;
   dndUntil?: number | null;
   profileSanitizedAt?: number;
+  lastDailyDigestMskDate?: string | null;
   subscribers: TelegramSubscriberState[];
   toggles: TelegramNotificationTogglesState;
   recentMessages: TelegramDispatchedMessageState[];
@@ -624,6 +630,7 @@ const systemState: AppSystemState = {
     lastCheckedAt: Date.now(),
     lastUpdateOffset: 0,
     lastError: null,
+    lastDailyDigestMskDate: null,
     subscribers: process.env.TELEGRAM_CHAT_ID
       ? [
           {
@@ -1382,7 +1389,8 @@ const OFFICIAL_TG_FULL_DESC =
 
 const OFFICIAL_TG_COMMANDS = [
   { command: 'start', description: 'Открыть кнопочное меню терминала' },
-  { command: 'status', description: 'Баланс, PnL 24ч и риск-статус' },
+  { command: 'status', description: 'Баланс и PnL за сегодня, неделю, месяц' },
+  { command: 'report', description: 'Итоговый отчет PnL (сутки/неделя/месяц)' },
   { command: 'positions', description: 'Открытые сделки и уровни SL/TP' },
   { command: 'bots', description: 'Статистика торговых стратегий' },
   { command: 'dnd', description: 'Режим «Не беспокоить» (таймер тишины)' },
@@ -1782,10 +1790,20 @@ export function emitAppNotification(params: {
         ? 'CLOSE'
         : 'COMMAND_REPLY';
 
+    const closeBreakdownBlock =
+      tgCat === 'CLOSE'
+        ? `\n\n${formatTelegramPeriodSummaryHtml(
+            calculateMskPeriodBreakdown({
+              closedTrades: systemState.closedTrades,
+              baseCapitalUsdt: systemState.capitalUsdt,
+            })
+          )}`
+        : '';
+
     dispatchTelegramNotification({
       category: tgCat,
       title: `${params.severity === 'CRITICAL' ? '🚨' : '🛡️'} ${cleanTitle}`,
-      htmlBody: `${cleanMessage}${params.symbol ? `\n• <b>Инструмент:</b> #${params.symbol}` : ''}${cleanBotName ? `\n• <b>Стратегия:</b> ${cleanBotName}` : ''}${params.pnl !== undefined ? `\n• <b>Итог PnL:</b> ${params.pnl >= 0 ? '+' : ''}$${params.pnl.toFixed(2)} USDT` : ''}`,
+      htmlBody: `${cleanMessage}${params.symbol ? `\n• <b>Инструмент:</b> #${params.symbol}` : ''}${cleanBotName ? `\n• <b>Стратегия:</b> ${cleanBotName}` : ''}${params.pnl !== undefined ? `\n• <b>Итог PnL:</b> ${params.pnl >= 0 ? '+' : ''}$${params.pnl.toFixed(2)} USDT` : ''}${closeBreakdownBlock}`,
       plainPreview: `${cleanTitle}: ${cleanMessage}`,
       isManualOrUrgent: true,
     }).catch(() => {});
@@ -1823,10 +1841,20 @@ export async function processDelayedTelegramNotifications(): Promise<number> {
         notif.severity === 'WARNING' ? '⚠️' :
         notif.severity === 'SUCCESS' ? '✅' : 'ℹ️';
 
+      const closeBreakdownBlock =
+        tgCat === 'CLOSE'
+          ? `\n\n${formatTelegramPeriodSummaryHtml(
+              calculateMskPeriodBreakdown({
+                closedTrades: systemState.closedTrades,
+                baseCapitalUsdt: systemState.capitalUsdt,
+              })
+            )}`
+          : '';
+
       dispatchTelegramNotification({
         category: tgCat,
         title: `${icon} ${notif.title}`,
-        htmlBody: `${notif.message}${notif.symbol ? `\n• <b>Инструмент:</b> #${notif.symbol}` : ''}${notif.botName ? `\n• <b>Стратегия:</b> ${notif.botName}` : ''}${notif.pnl !== undefined ? `\n• <b>Итог PnL:</b> ${notif.pnl >= 0 ? '+' : ''}$${notif.pnl.toFixed(2)} USDT` : ''}`,
+        htmlBody: `${notif.message}${notif.symbol ? `\n• <b>Инструмент:</b> #${notif.symbol}` : ''}${notif.botName ? `\n• <b>Стратегия:</b> ${notif.botName}` : ''}${notif.pnl !== undefined ? `\n• <b>Итог PnL:</b> ${notif.pnl >= 0 ? '+' : ''}$${notif.pnl.toFixed(2)} USDT` : ''}${closeBreakdownBlock}`,
         plainPreview: `${notif.title}: ${notif.message}`,
         symbol: notif.symbol,
         isManualOrUrgent: false,
@@ -1888,23 +1916,37 @@ function buildTelegramCommandReply(
 
   if (cmd === '/start' || cmd === '/menu') {
     return {
-      html: `✅ <b>Терминал ZimaTrade подключен!</b>\n\nВаш Chat ID: <code>${chatIdStr}</code> привязан к ядру.\n\n💰 <b>Баланс портфеля:</b> $${equity} USDT\n📊 <b>Активных позиций:</b> ${systemState.activePositions.length}\n⚙️ <b>Режим:</b> ${systemState.mode === 'LIVE' ? 'LIVE (Боевой)' : 'SHADOW (Форвард-тест L2)'}\n🔔 <b>Уведомления:</b> ${dndStatusLine}\n\nИспользуйте <b>кнопочное меню внизу экрана</b> для быстрого управления или команды:\n/status — Баланс, PnL 24ч и риск-статус\n/positions — Открытые сделки\n/bots — Статистика стратегий\n/dnd — Режим «Не беспокоить» на N времени\n/kill — Аварийный Стоп-Кран`,
+      html: `✅ <b>Терминал ZimaTrade подключен!</b>\n\nВаш Chat ID: <code>${chatIdStr}</code> привязан к ядру.\n\n💰 <b>Баланс портфеля:</b> $${equity} USDT\n📊 <b>Активных позиций:</b> ${systemState.activePositions.length}\n⚙️ <b>Режим:</b> ${systemState.mode === 'LIVE' ? 'LIVE (Боевой)' : 'SHADOW (Форвард-тест L2)'}\n🔔 <b>Уведомления:</b> ${dndStatusLine}\n\nИспользуйте <b>кнопочное меню внизу экрана</b> для быстрого управления или команды:\n/status — Баланс и PnL (сегодня, неделя, месяц)\n/report — Итоговый отчет PnL\n/positions — Открытые сделки\n/bots — Статистика стратегий\n/dnd — Режим «Не беспокоить» на N времени\n/kill — Аварийный Стоп-Кран`,
       replyMarkup: getTelegramReplyKeyboard(),
     };
   }
 
   if (cmd === '/help') {
     return {
-      html: `❓ <b>Справка по управлению ZimaTrade</b>\n\n<b>Кнопки быстрого доступа (внизу чата):</b>\n• <b>📊 Баланс & Статус</b> — Сводка по депозиту ($${equity}), PnL за 24ч и пингам Bybit/OKX\n• <b>📈 Позиции</b> — Текущие открытые сделки, цены входа, SL и TP\n• <b>⚙️ Стратегии</b> — Показатели Sharpe, Profit Factor и веса алгоритмов\n• <b>🌙 Не беспокоить</b> — Отключить торговые уведомления на 30 мин, 1ч, 2ч, 4ч, 8ч или 24ч\n• <b>🚨 Стоп-Кран</b> — Мгновенная блокировка новых входов (Kill-Switch)\n\n<b>Команды таймера тишины:</b>\n• <code>/dnd</code> — Открыть меню выбора времени\n• <code>/dnd 45m</code> или <code>/dnd 3h</code> — Включить тишину на заданное время\n• <code>/dnd off</code> — Сразу включить все уведомления\n\n<i>Примечание: Критические оповещения безопасности (Стоп-Кран) доставляются всегда, даже в режиме «Не беспокоить».</i>`,
+      html: `❓ <b>Справка по управлению ZimaTrade</b>\n\n<b>Кнопки быстрого доступа (внизу чата):</b>\n• <b>📊 Баланс & Статус</b> — Сводка по депозиту ($${equity}), итогам за сегодня/неделю/месяц и пингам\n• <b>📈 Позиции</b> — Текущие открытые сделки, цены входа, SL и TP\n• <b>⚙️ Стратегии</b> — Показатели Sharpe, Profit Factor и веса алгоритмов\n• <b>🌙 Не беспокоить</b> — Отключить торговые уведомления на 30 мин, 1ч, 2ч, 4ч, 8ч или 24ч\n• <b>🚨 Стоп-Кран</b> — Мгновенная блокировка новых входов (Kill-Switch)\n\n<b>Команды отчетов и таймера:</b>\n• <code>/report</code> — Итоги PnL за сегодня, неделю и месяц (МСК)\n• <code>/dnd</code> — Открыть меню выбора времени тишины\n• <code>/dnd 45m</code> или <code>/dnd 3h</code> — Включить тишину на заданное время\n• <code>/dnd off</code> — Сразу включить все уведомления\n\n<i>Примечание: Критические оповещения безопасности (Стоп-Кран) доставляются всегда, даже в режиме «Не беспокоить».</i>`,
       replyMarkup: getTelegramReplyKeyboard(),
     };
   }
 
-  if (cmd === '/status' || cmd === '/balance') {
+  if (cmd === '/status' || cmd === '/balance' || cmd === '/report' || cmd === '/pnl') {
     recalculateRolling24hPnl();
-    const ddPct = ((systemState.rolling24hPnlUsdt / systemState.capitalUsdt) * 100).toFixed(2);
+    const breakdown = calculateMskPeriodBreakdown({
+      closedTrades: systemState.closedTrades,
+      baseCapitalUsdt: systemState.capitalUsdt,
+    });
+    const floatingPnl = Number(
+      systemState.activePositions.reduce((acc, p) => acc + (Number(p.unrealizedPnl) || 0), 0).toFixed(2)
+    );
+    const totalEquity = (systemState.capitalUsdt + systemState.totalRealizedPnlUsdt + floatingPnl).toFixed(2);
+    const exBadge =
+      systemState.activeExchange === 'OKX'
+        ? systemState.okxDemoTrading !== false
+          ? 'OKX Demo'
+          : 'OKX Live'
+        : 'Bybit';
+    const modeLabel = systemState.mode === 'LIVE' ? `LIVE (${exBadge})` : `SHADOW (${exBadge})`;
     return {
-      html: `📊 <b>Статус терминала ZimaTrade</b>\n\n• Капитал: <b>$${equity} USDT</b>\n• Реализованный PnL: <b>${systemState.totalRealizedPnlUsdt >= 0 ? '+' : ''}$${systemState.totalRealizedPnlUsdt.toFixed(2)}</b>\n• 24ч PnL: <b>${systemState.rolling24hPnlUsdt >= 0 ? '+' : ''}$${systemState.rolling24hPnlUsdt.toFixed(2)} (${ddPct}%)</b>\n• Открытых сделок: <b>${systemState.activePositions.length}</b>\n• Стоп-Кран (Kill-Switch): <b>${systemState.isKillSwitchActive ? '🚨 АКТИВЕН' : '🟢 НОРМА'}</b>\n• Пинг Bybit / OKX: <b>${systemState.pings.bybit} мс / ${systemState.pings.okx} мс</b>\n• Режим тишины (DND): ${dndStatusLine}`,
+      html: `📊 <b>Отчет ZimaTrade · ${breakdown.mskTimeLabel}</b>\n\n• Режим: <b>${modeLabel}</b>\n• Баланс (закрытый): <b>$${equity} USDT</b> (Эквити: <b>$${totalEquity}</b>)\n• Плавающий PnL: <b>${formatSignedUsdt(floatingPnl)} USDT</b>\n• Общий PnL (всё время): <b>${formatSignedUsdt(systemState.totalRealizedPnlUsdt)} USDT</b>\n\n${formatTelegramPeriodSummaryHtml(breakdown)}\n\n• Открытых сделок: <b>${systemState.activePositions.length}</b>\n• Стоп-Кран: <b>${systemState.isKillSwitchActive ? '🚨 АКТИВЕН' : '🟢 НОРМА'}</b>\n• Пинг Bybit / OKX: <b>${systemState.pings.bybit} мс / ${systemState.pings.okx} мс</b>\n• Режим тишины (DND): ${dndStatusLine}`,
       replyMarkup: getTelegramReplyKeyboard(),
     };
   }
@@ -2253,11 +2295,16 @@ async function runProductionTelegramRelayBridge(): Promise<void> {
             let replyMarkup: Record<string, any> = getTelegramReplyKeyboard();
 
             if (cmd === '/start' || cmd === '/menu') {
-              replyHtml = `✅ <b>Боевой сервер ZimaTrade (194.113.34.230) подключен!</b>\n\nВаш Chat ID: <code>${chatIdStr}</code> привязан к боевому ядру.\n\n💰 <b>Баланс портфеля:</b> $${eq} USDT\n📊 <b>Активных позиций:</b> ${prodPositions.length}\n⚙️ <b>Режим:</b> ${modeStr === 'LIVE' ? 'LIVE (Боевой)' : 'SHADOW (Форвард-тест L2)'}\n🔔 <b>Уведомления:</b> ${dndText}\n\nИспользуйте <b>кнопочное меню внизу экрана</b> или команды:\n/status — Баланс, PnL 24ч и риск-статус\n/positions — Открытые сделки на сервере\n/bots — Статистика стратегий\n/dnd — Режим «Не беспокоить» на N времени\n/kill — Аварийный Стоп-Кран`;
-            } else if (cmd === '/status' || cmd === '/balance') {
-              const p24 = Number(prodHealth?.rolling24hPnlUsdt || 0);
-              const dd = Number(prodHealth?.drawdownPct || 0).toFixed(2);
-              replyHtml = `📊 <b>Статус боевого сервера (194.113.34.230)</b>\n\n• Капитал: <b>$${eq} USDT</b>\n• Реализованный PnL: <b>${realPnl >= 0 ? '+' : ''}$${Number(realPnl).toFixed(2)}</b>\n• 24ч PnL: <b>${p24 >= 0 ? '+' : ''}$${p24.toFixed(2)} (${dd}%)</b>\n• Открытых сделок: <b>${prodPositions.length}</b>\n• Стоп-Кран (Kill-Switch): <b>${prodHealth?.isKillSwitchActive ? '🚨 АКТИВЕН' : '🟢 НОРМА'}</b>\n• Режим тишины (DND): ${dndText}`;
+              replyHtml = `✅ <b>Боевой сервер ZimaTrade (194.113.34.230) подключен!</b>\n\nВаш Chat ID: <code>${chatIdStr}</code> привязан к боевому ядру.\n\n💰 <b>Баланс портфеля:</b> $${eq} USDT\n📊 <b>Активных позиций:</b> ${prodPositions.length}\n⚙️ <b>Режим:</b> ${modeStr === 'LIVE' ? 'LIVE (Боевой)' : 'SHADOW (Форвард-тест L2)'}\n🔔 <b>Уведомления:</b> ${dndText}\n\nИспользуйте <b>кнопочное меню внизу экрана</b> или команды:\n/status — Баланс и PnL (сегодня, неделя, месяц)\n/report — Итоговый отчет PnL\n/positions — Открытые сделки на сервере\n/bots — Статистика стратегий\n/dnd — Режим «Не беспокоить» на N времени\n/kill — Аварийный Стоп-Кран`;
+            } else if (cmd === '/status' || cmd === '/balance' || cmd === '/report' || cmd === '/pnl') {
+              const pPeriod = prodHealth?.periodPnl;
+              const periodBlock = pPeriod
+                ? formatTelegramPeriodSummaryHtml(pPeriod)
+                : `• 24ч PnL: <b>${formatSignedUsdt(Number(prodHealth?.rolling24hPnlUsdt || 0))} USDT</b>`;
+              const floating = Number(
+                prodPositions.reduce((acc: number, p: any) => acc + (Number(p?.unrealizedPnl) || 0), 0).toFixed(2)
+              );
+              replyHtml = `📊 <b>Статус боевого сервера (194.113.34.230)</b>\n\n• Баланс: <b>$${eq} USDT</b> (Плавающий: <b>${formatSignedUsdt(floating)}</b>)\n• Общий PnL: <b>${formatSignedUsdt(Number(realPnl))} USDT</b>\n\n${periodBlock}\n\n• Открытых сделок: <b>${prodPositions.length}</b>\n• Стоп-Кран: <b>${prodHealth?.isKillSwitchActive ? '🚨 АКТИВЕН' : '🟢 НОРМА'}</b>\n• Режим тишины (DND): ${dndText}`;
             } else if (cmd === '/positions') {
               if (prodPositions.length === 0) {
                 replyHtml = `📭 <b>На боевом сервере сейчас нет открытых позиций.</b> Алгоритмы сканируют стакан L2 Bybit и OKX.`;
@@ -3624,6 +3671,10 @@ function buildFullSystemHealthPayload() {
     rolling24hPnlUsdt: systemState.rolling24hPnlUsdt,
     drawdownPct: systemState.capitalUsdt > 0 ? (systemState.rolling24hPnlUsdt / systemState.capitalUsdt) * 100 : 0,
     totalRealizedPnlUsdt: systemState.totalRealizedPnlUsdt,
+    periodPnl: calculateMskPeriodBreakdown({
+      closedTrades: systemState.closedTrades,
+      baseCapitalUsdt: systemState.capitalUsdt,
+    }),
     memoryRssMb: rssMb,
     agentsOnline: systemState.agents.filter(a => a.status === 'RUNNING').length,
     totalAgents: systemState.agents.length,
@@ -7741,6 +7792,88 @@ app.post('/api/telegram/test', async (req: Request, res: Response) => {
   });
 });
 
+async function dispatchDailyTelegramDigestReport(manual = false): Promise<{
+  sent: boolean;
+  mskDateKey: string;
+  deliveredCount: number;
+  reason?: string;
+}> {
+  const breakdown = calculateMskPeriodBreakdown({
+    closedTrades: systemState.closedTrades,
+    baseCapitalUsdt: systemState.capitalUsdt,
+  });
+
+  if (!manual && isTelegramDndActive()) {
+    return { sent: false, mskDateKey: breakdown.mskDateKey, deliveredCount: 0, reason: 'DND_ACTIVE' };
+  }
+
+  const floatingPnl = Number(
+    systemState.activePositions.reduce((acc, p) => acc + (Number(p.unrealizedPnl) || 0), 0).toFixed(2)
+  );
+  const closedBal = (systemState.capitalUsdt + systemState.totalRealizedPnlUsdt).toFixed(2);
+  const totalEq = (systemState.capitalUsdt + systemState.totalRealizedPnlUsdt + floatingPnl).toFixed(2);
+  const todayWr =
+    breakdown.today.tradesCount > 0
+      ? `${Math.round((breakdown.today.winsCount / breakdown.today.tradesCount) * 100)}%`
+      : '—';
+  const exBadge =
+    systemState.activeExchange === 'OKX'
+      ? systemState.okxDemoTrading !== false
+        ? 'OKX Demo'
+        : 'OKX Live'
+      : 'Bybit';
+  const modeLabel = systemState.mode === 'LIVE' ? `LIVE (${exBadge})` : `SHADOW (${exBadge})`;
+
+  const htmlBody = [
+    `• <b>Режим:</b> ${modeLabel}`,
+    `• <b>Баланс (закрытый):</b> $${closedBal} USDT (Эквити: $${totalEq})`,
+    `• <b>Плавающий PnL:</b> ${formatSignedUsdt(floatingPnl)} USDT (поз.: ${systemState.activePositions.length})`,
+    `• <b>Винрейт за сегодня:</b> ${todayWr} (${breakdown.today.winsCount}/${breakdown.today.tradesCount})`,
+    '',
+    formatTelegramPeriodSummaryHtml(breakdown),
+    '',
+    `• <b>Общий PnL (всё время):</b> ${formatSignedUsdt(systemState.totalRealizedPnlUsdt)} USDT`,
+  ].join('\n');
+
+  const result = await dispatchTelegramNotification({
+    category: manual ? 'TEST' : 'COMMAND_REPLY',
+    title: `📊 ЕЖЕДНЕВНЫЙ ОТЧЁТ · ${breakdown.mskDateLabel}`,
+    htmlBody,
+    plainPreview: `Отчет ${breakdown.mskDateLabel}: сегодня ${formatSignedUsdt(breakdown.today.pnlUsdt)}, неделя ${formatSignedUsdt(breakdown.week.pnlUsdt)}, месяц ${formatSignedUsdt(breakdown.month.pnlUsdt)}`,
+    isManualOrUrgent: true,
+  });
+
+  if (!manual && result.deliveredCount > 0) {
+    systemState.telegramBot.lastDailyDigestMskDate = breakdown.mskDateKey;
+    savePersistedState();
+  }
+
+  return {
+    sent: result.deliveredCount > 0,
+    mskDateKey: breakdown.mskDateKey,
+    deliveredCount: result.deliveredCount,
+    reason: result.errorText,
+  };
+}
+
+app.post('/api/telegram/send-report', async (_req: Request, res: Response) => {
+  await pollTelegramUpdates().catch(() => {});
+  const breakdown = calculateMskPeriodBreakdown({
+    closedTrades: systemState.closedTrades,
+    baseCapitalUsdt: systemState.capitalUsdt,
+  });
+  const result = await dispatchDailyTelegramDigestReport(true);
+  res.json({
+    success: true,
+    ...result,
+    breakdown,
+    message:
+      result.deliveredCount > 0
+        ? `Отчет PnL (сегодня/неделя/месяц) отправлен в Telegram (${result.deliveredCount} получ.)!`
+        : 'Отчет сформирован (нет активных подписчиков Telegram или включен dev-режим без ENABLE_DEV_TELEGRAM).',
+  });
+});
+
 app.get('/api/arena/agents', (_req: Request, res: Response) => {
   res.json({
     agents: systemState.agents,
@@ -9859,6 +9992,16 @@ async function startServer() {
     setInterval(() => {
       if (areOkxKeysConfigured() && (systemState.activeExchange === 'OKX' || systemState.mode === 'LIVE')) {
         syncOkxAccountState().catch(() => {});
+      }
+      if (isProductionNode() || process.env.ENABLE_DEV_TELEGRAM === 'true') {
+        const digestCheck = shouldSendDailyTelegramDigest({
+          nowTs: Date.now(),
+          lastSentMskDate: systemState.telegramBot.lastDailyDigestMskDate,
+          targetHourMsk: 21,
+        });
+        if (digestCheck.due) {
+          dispatchDailyTelegramDigestReport(false).catch(() => {});
+        }
       }
     }, 60 * 1000);
     // Calibrate legacy seed prices to real live exchange tickers and measure real exchange RTT pings

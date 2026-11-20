@@ -405,3 +405,151 @@ export function buildEquityCurve(params: {
   };
 }
 
+const MSK_OFFSET_MS = 3 * 3600 * 1000;
+
+export interface TelegramPeriodStats {
+  pnlUsdt: number;
+  returnPct: number;
+  tradesCount: number;
+  winsCount: number;
+}
+
+export interface TelegramPeriodBreakdown {
+  mskDateKey: string;
+  mskDateLabel: string;
+  mskTimeLabel: string;
+  mskHour: number;
+  todayStartTs: number;
+  weekStartTs: number;
+  monthStartTs: number;
+  today: TelegramPeriodStats;
+  week: TelegramPeriodStats;
+  month: TelegramPeriodStats;
+  allTime: TelegramPeriodStats;
+}
+
+export function computeMskPeriodBounds(nowTs: number = Date.now()): {
+  mskDateKey: string;
+  mskDateLabel: string;
+  mskTimeLabel: string;
+  mskHour: number;
+  todayStartTs: number;
+  weekStartTs: number;
+  monthStartTs: number;
+} {
+  const mskDate = new Date(nowTs + MSK_OFFSET_MS);
+  const year = mskDate.getUTCFullYear();
+  const month = mskDate.getUTCMonth();
+  const day = mskDate.getUTCDate();
+  const mskHour = mskDate.getUTCHours();
+  const mskMin = mskDate.getUTCMinutes();
+  const dayOfWeek = mskDate.getUTCDay(); // 0 = Sunday, 1 = Monday ... 6 = Saturday
+  const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+
+  const pad2 = (n: number) => String(n).padStart(2, '0');
+  const mskDateKey = `${year}-${pad2(month + 1)}-${pad2(day)}`;
+  const mskDateLabel = `${pad2(day)}.${pad2(month + 1)}.${year}`;
+  const mskTimeLabel = `${pad2(mskHour)}:${pad2(mskMin)} МСК`;
+
+  const todayStartTs = Date.UTC(year, month, day, 0, 0, 0, 0) - MSK_OFFSET_MS;
+  const weekStartTs = Date.UTC(year, month, day - daysSinceMonday, 0, 0, 0, 0) - MSK_OFFSET_MS;
+  const monthStartTs = Date.UTC(year, month, 1, 0, 0, 0, 0) - MSK_OFFSET_MS;
+
+  return {
+    mskDateKey,
+    mskDateLabel,
+    mskTimeLabel,
+    mskHour,
+    todayStartTs,
+    weekStartTs,
+    monthStartTs,
+  };
+}
+
+function aggregateTradesForPeriod(
+  trades: ClosedTradeRecord[],
+  cutoffTs: number,
+  baseCapitalUsdt: number
+): TelegramPeriodStats {
+  const subset = cutoffTs > 0 ? trades.filter((t) => t.closedAt >= cutoffTs) : trades;
+  const pnlUsdt = Number(subset.reduce((acc, t) => acc + (Number(t.netPnlUsdt) || 0), 0).toFixed(2));
+  const returnPct =
+    baseCapitalUsdt > 0 ? Number(((pnlUsdt / baseCapitalUsdt) * 100).toFixed(2)) : 0;
+  const winsCount = subset.filter((t) => (Number(t.netPnlUsdt) || 0) > 0).length;
+  return {
+    pnlUsdt,
+    returnPct,
+    tradesCount: subset.length,
+    winsCount,
+  };
+}
+
+export function calculateMskPeriodBreakdown(params: {
+  closedTrades: ClosedTradeRecord[];
+  baseCapitalUsdt: number;
+  nowTs?: number;
+  includeSynthetic?: boolean;
+}): TelegramPeriodBreakdown {
+  const { closedTrades, baseCapitalUsdt, nowTs = Date.now(), includeSynthetic = false } = params;
+  const realTrades = includeSynthetic
+    ? closedTrades
+    : closedTrades.filter((t) => !t.isSynthetic && !String(t.id || '').startsWith('trd-seed-'));
+
+  const bounds = computeMskPeriodBounds(nowTs);
+  return {
+    ...bounds,
+    today: aggregateTradesForPeriod(realTrades, bounds.todayStartTs, baseCapitalUsdt),
+    week: aggregateTradesForPeriod(realTrades, bounds.weekStartTs, baseCapitalUsdt),
+    month: aggregateTradesForPeriod(realTrades, bounds.monthStartTs, baseCapitalUsdt),
+    allTime: aggregateTradesForPeriod(realTrades, 0, baseCapitalUsdt),
+  };
+}
+
+export function formatSignedUsdt(value: number): string {
+  const rounded = Number((Number(value) || 0).toFixed(2));
+  const normalized = Object.is(rounded, -0) ? 0 : rounded;
+  const sign = normalized >= 0 ? '+' : '-';
+  return `${sign}$${Math.abs(normalized).toFixed(2)}`;
+}
+
+export function formatSignedPct(value: number): string {
+  const rounded = Number((Number(value) || 0).toFixed(2));
+  const normalized = Object.is(rounded, -0) ? 0 : rounded;
+  const sign = normalized >= 0 ? '+' : '-';
+  return `${sign}${Math.abs(normalized).toFixed(2)}%`;
+}
+
+export function formatTelegramPeriodSummaryHtml(
+  breakdown: TelegramPeriodBreakdown,
+  titleLabel = '📅 <b>Итоги PnL (МСК):</b>'
+): string {
+  const fmtLine = (label: string, s: TelegramPeriodStats) =>
+    `• ${label}: <b>${formatSignedUsdt(s.pnlUsdt)} USDT (${formatSignedPct(s.returnPct)} · ${s.tradesCount} сд.)</b>`;
+
+  return [
+    titleLabel,
+    fmtLine('Сегодня', breakdown.today),
+    fmtLine('Неделя', breakdown.week),
+    fmtLine('Месяц', breakdown.month),
+  ].join('\n');
+}
+
+export function shouldSendDailyTelegramDigest(params: {
+  nowTs?: number;
+  lastSentMskDate?: string | null;
+  targetHourMsk?: number;
+}): {
+  due: boolean;
+  mskDateKey: string;
+  mskDateLabel: string;
+  mskHour: number;
+} {
+  const { nowTs = Date.now(), lastSentMskDate, targetHourMsk = 21 } = params;
+  const bounds = computeMskPeriodBounds(nowTs);
+  return {
+    due: bounds.mskHour === targetHourMsk && lastSentMskDate !== bounds.mskDateKey,
+    mskDateKey: bounds.mskDateKey,
+    mskDateLabel: bounds.mskDateLabel,
+    mskHour: bounds.mskHour,
+  };
+}
