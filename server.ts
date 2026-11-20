@@ -96,6 +96,15 @@ function loadEnvFromFiles() {
   if (!isKeyValid(process.env.BYBIT_API_SECRET)) {
     delete process.env.BYBIT_API_SECRET;
   }
+  if (!isKeyValid(process.env.OKX_API_KEY)) {
+    delete process.env.OKX_API_KEY;
+  }
+  if (!isKeyValid(process.env.OKX_API_SECRET)) {
+    delete process.env.OKX_API_SECRET;
+  }
+  if (!isKeyValid(process.env.OKX_PASSPHRASE)) {
+    delete process.env.OKX_PASSPHRASE;
+  }
   if (!isValidTelegramBotToken(process.env.TELEGRAM_BOT_TOKEN)) {
     delete process.env.TELEGRAM_BOT_TOKEN;
   }
@@ -189,6 +198,7 @@ import {
   applyFreqtradePairlistPipeline,
   isSyntheticBrainHistoryLabel,
   buildTrendGridPlan,
+  computeEffectiveGridRiskStopPct,
   evaluateTrendGridSafetyOrderFill,
   TREND_GRID_CORE_SYMBOLS,
   type TrendGridSafetyOrder,
@@ -199,6 +209,18 @@ import {
   type BotBrainState,
   type XaiDecisionRecord,
 } from './src/lib/bot-learning-math.ts';
+import {
+  DEFAULT_OKX_SWAP_INSTRUMENTS,
+  buildOkxInstrumentRules,
+  convertBaseQtyToOkxContracts,
+  convertOkxContractsToBaseQty,
+  buildOkxV5Headers,
+  buildOkxSetLeveragePayload,
+  buildOkxMarketOrderPayload,
+  buildOkxAmendAlgoPayload,
+  type OkxSwapInstrument,
+  type OkxPositionMode,
+} from './src/lib/okx-exchange.ts';
 import {
   parseTelegramSignalPost,
   extractSignalsFromTelegramWebHtml,
@@ -340,6 +362,11 @@ export interface BotLogEntry {
 interface AppSystemState {
   mode: 'SHADOW' | 'LIVE';
   activeExchange: 'BYBIT' | 'OKX';
+  okxDemoTrading: boolean;
+  okxPosMode: OkxPositionMode;
+  okxAccountEquityUsdt?: number;
+  okxAvailableBalanceUsdt?: number;
+  okxLastSyncedAt?: number;
   isKillSwitchActive: boolean;
   killSwitchTriggerReason: string | null;
   lastUnblockedAt?: number;
@@ -394,7 +421,9 @@ const initialXaiDecisions: XaiDecisionRecord[] = [];
 
 const systemState: AppSystemState = {
   mode: 'SHADOW',
-  activeExchange: 'BYBIT',
+  activeExchange: 'OKX',
+  okxDemoTrading: process.env.OKX_DEMO_TRADING !== 'false',
+  okxPosMode: 'net_mode',
   isKillSwitchActive: false,
   killSwitchTriggerReason: null,
   lastUnblockedAt: 0,
@@ -557,7 +586,7 @@ const systemState: AppSystemState = {
       isEnabled: false,
       riskPerTradePct: 1.2,
       leverage: 4,
-      allowedSymbols: ['SOLUSDT', 'BTCUSDT', 'ETHUSDT'],
+      allowedSymbols: [...TREND_GRID_CORE_SYMBOLS],
       dynamicScreenerScan: false,
       tpSlRatio: 2.0,
       maxConcurrentPositions: 1,
@@ -663,6 +692,10 @@ let isPersistingToDisk = false;
 function buildPersistPayload() {
   return {
     savedAt: Date.now(),
+    activeExchange: systemState.activeExchange,
+    okxDemoTrading: systemState.okxDemoTrading,
+    okxPosMode: systemState.okxPosMode,
+    migratedToOkxDefault: true,
     capitalUsdt: systemState.capitalUsdt,
     rolling24hPnlUsdt: systemState.rolling24hPnlUsdt,
     totalRealizedPnlUsdt: systemState.totalRealizedPnlUsdt,
@@ -828,8 +861,16 @@ function loadPersistedState(): void {
         }
       }
 
-      if (parsed.activeExchange === 'OKX' || parsed.activeExchange === 'BYBIT') {
+      if (!parsed.migratedToOkxDefault) {
+        systemState.activeExchange = 'OKX';
+      } else if (parsed.activeExchange === 'OKX' || parsed.activeExchange === 'BYBIT') {
         systemState.activeExchange = parsed.activeExchange;
+      }
+      if (typeof parsed.okxDemoTrading === 'boolean') {
+        systemState.okxDemoTrading = parsed.okxDemoTrading;
+      }
+      if (parsed.okxPosMode === 'net_mode' || parsed.okxPosMode === 'long_short_mode') {
+        systemState.okxPosMode = parsed.okxPosMode;
       }
       const isLegacy10k = typeof parsed.capitalUsdt === 'number' && parsed.capitalUsdt >= 1000;
       if (typeof parsed.capitalUsdt === 'number' && !isLegacy10k) {
@@ -2387,45 +2428,99 @@ const instrumentRules: Record<string, InstrumentRules> = {
   },
 };
 
-function resolveInstrumentRules(symbol: string, referencePrice?: number): InstrumentRules {
-  const isMicroAccount = (systemState.capitalUsdt + systemState.totalRealizedPnlUsdt) < 500;
-  const exName = (systemState.activeExchange || 'BYBIT').toLowerCase();
+// Live OKX V5 SWAP instrument cache (refreshed from /api/v5/public/instruments?instType=SWAP)
+const okxSwapInstrumentsCache: Record<string, OkxSwapInstrument> = { ...DEFAULT_OKX_SWAP_INSTRUMENTS };
+let lastOkxInstrumentsFetchTs = 0;
 
+async function refreshOkxSwapInstrumentsCache(force = false): Promise<void> {
+  const now = Date.now();
+  if (!force && now - lastOkxInstrumentsFetchTs < 5 * 60 * 1000) return;
+  lastOkxInstrumentsFetchTs = now;
+  try {
+    const { ok, data } = await fetchOkxPublicJson('/api/v5/public/instruments?instType=SWAP', 5000);
+    if (ok && Array.isArray(data?.data)) {
+      for (const row of data.data) {
+        const instId = String(row.instId || '').toUpperCase();
+        if (!instId.endsWith('-USDT-SWAP')) continue;
+        const sym = fromOkxSwapInstId(instId);
+        const ctVal = parseFloat(row.ctVal || '0');
+        const lotSz = parseFloat(row.lotSz || '0');
+        const minSz = parseFloat(row.minSz || '0');
+        const tickSz = parseFloat(row.tickSz || '0');
+        const maxLever = parseFloat(row.lever || '20');
+        if (ctVal > 0 && lotSz > 0 && minSz > 0 && tickSz > 0) {
+          okxSwapInstrumentsCache[sym] = { instId, symbol: sym, ctVal, lotSz, minSz, tickSz, maxLever };
+        }
+      }
+    }
+  } catch {
+    // keep cached/default specs
+  }
+}
+
+function getOkxSwapInstrument(symbol: string): OkxSwapInstrument {
+  const sym = symbol.toUpperCase();
+  if (okxSwapInstrumentsCache[sym]) {
+    return okxSwapInstrumentsCache[sym];
+  }
+  return {
+    instId: toOkxSwapInstId(sym),
+    symbol: sym,
+    ctVal: 1,
+    lotSz: 0.1,
+    minSz: 0.1,
+    tickSz: 0.001,
+    maxLever: 50,
+  };
+}
+
+function resolveInstrumentRules(symbol: string, referencePrice?: number): InstrumentRules {
+  const sym = symbol.toUpperCase();
   const price =
     referencePrice ||
-    systemState.screenerSymbols.find((s) => s.symbol === symbol)?.price ||
-    (symbol === 'BTCUSDT' ? 68500 : symbol === 'ETHUSDT' ? 2500 : symbol === 'SOLUSDT' ? 145 : 10.0);
+    systemState.screenerSymbols.find((s) => s.symbol === sym)?.price ||
+    (sym === 'BTCUSDT' ? 68500 : sym === 'ETHUSDT' ? 2500 : sym === 'SOLUSDT' ? 145 : 10.0);
+
+  if (systemState.activeExchange === 'OKX') {
+    if (Date.now() - lastOkxInstrumentsFetchTs > 5 * 60 * 1000) {
+      refreshOkxSwapInstrumentsCache(false).catch(() => {});
+    }
+    return buildOkxInstrumentRules(getOkxSwapInstrument(sym), price);
+  }
+
+  const isMicroAccount = (systemState.capitalUsdt + systemState.totalRealizedPnlUsdt) < 500;
+  const exName = (systemState.activeExchange || 'OKX').toLowerCase();
 
   if (isMicroAccount) {
-    // Micro-lot rules for small capital ($10 USDT) so fractional contracts on BTC/ETH/SOL/Alts execute within 1.5% risk
+    // Micro-lot rules for small Bybit SHADOW testing
     if (price >= 10000) {
-      return { exchange: exName, symbol, tickSize: 0.1, qtyStep: 0.00001, minQty: 0.00001, minNotional: 0.5, maxLeverage: 20 };
+      return { exchange: exName, symbol: sym, tickSize: 0.1, qtyStep: 0.00001, minQty: 0.00001, minNotional: 0.5, maxLeverage: 20 };
     }
     if (price >= 500) {
-      return { exchange: exName, symbol, tickSize: 0.01, qtyStep: 0.0001, minQty: 0.0001, minNotional: 0.5, maxLeverage: 20 };
+      return { exchange: exName, symbol: sym, tickSize: 0.01, qtyStep: 0.0001, minQty: 0.0001, minNotional: 0.5, maxLeverage: 20 };
     }
     if (price >= 50) {
-      return { exchange: exName, symbol, tickSize: 0.01, qtyStep: 0.001, minQty: 0.001, minNotional: 0.5, maxLeverage: 20 };
+      return { exchange: exName, symbol: sym, tickSize: 0.01, qtyStep: 0.001, minQty: 0.001, minNotional: 0.5, maxLeverage: 20 };
     }
     if (price >= 1) {
-      return { exchange: exName, symbol, tickSize: 0.001, qtyStep: 0.01, minQty: 0.05, minNotional: 0.5, maxLeverage: 20 };
+      return { exchange: exName, symbol: sym, tickSize: 0.001, qtyStep: 0.01, minQty: 0.05, minNotional: 0.5, maxLeverage: 20 };
     }
-    return { exchange: exName, symbol, tickSize: 0.0001, qtyStep: 1, minQty: 1, minNotional: 0.5, maxLeverage: 20 };
+    return { exchange: exName, symbol: sym, tickSize: 0.0001, qtyStep: 1, minQty: 1, minNotional: 0.5, maxLeverage: 20 };
   }
 
-  if (instrumentRules[symbol]) {
-    return { ...instrumentRules[symbol], exchange: exName };
+  if (instrumentRules[sym]) {
+    return { ...instrumentRules[sym], exchange: exName };
   }
   if (price >= 10000) {
-    return { exchange: exName, symbol, tickSize: 0.1, qtyStep: 0.001, minQty: 0.001, minNotional: 5.0, maxLeverage: 20 };
+    return { exchange: exName, symbol: sym, tickSize: 0.1, qtyStep: 0.001, minQty: 0.001, minNotional: 5.0, maxLeverage: 20 };
   }
   if (price >= 100) {
-    return { exchange: exName, symbol, tickSize: 0.01, qtyStep: 0.01, minQty: 0.01, minNotional: 5.0, maxLeverage: 20 };
+    return { exchange: exName, symbol: sym, tickSize: 0.01, qtyStep: 0.01, minQty: 0.01, minNotional: 5.0, maxLeverage: 20 };
   }
   if (price >= 1) {
-    return { exchange: exName, symbol, tickSize: 0.001, qtyStep: 0.1, minQty: 0.5, minNotional: 5.0, maxLeverage: 20 };
+    return { exchange: exName, symbol: sym, tickSize: 0.001, qtyStep: 0.1, minQty: 0.5, minNotional: 5.0, maxLeverage: 20 };
   }
-  return { exchange: exName, symbol, tickSize: 0.0001, qtyStep: 10, minQty: 10, minNotional: 5.0, maxLeverage: 20 };
+  return { exchange: exName, symbol: sym, tickSize: 0.0001, qtyStep: 10, minQty: 10, minNotional: 5.0, maxLeverage: 20 };
 }
 
 function recalculateRolling24hPnl(): number {
@@ -2527,6 +2622,33 @@ async function fetchOkxPublicJson(pathAndQuery: string, timeoutMs = 4500): Promi
   return { ok: false, data: null, rttMs: 120 };
 }
 
+const cachedOkxFunding: Record<string, { fundingRate: number; nextFundingTime: number; fetchedAt: number }> = {};
+
+async function fetchRealOkxFundingRate(symbol: string): Promise<{ fundingRate: number; nextFundingTime: number }> {
+  const sym = symbol.toUpperCase();
+  const cached = cachedOkxFunding[sym];
+  const now = Date.now();
+  if (cached && now - cached.fetchedAt < 120_000) {
+    return { fundingRate: cached.fundingRate, nextFundingTime: cached.nextFundingTime };
+  }
+  try {
+    const instId = toOkxSwapInstId(sym);
+    const { ok, data } = await fetchOkxPublicJson(`/api/v5/public/funding-rate?instId=${encodeURIComponent(instId)}`, 3500);
+    const item = Array.isArray(data?.data) ? data.data[0] : null;
+    if (ok && item) {
+      const rate = parseFloat(item.fundingRate || '0.0001');
+      const nextTs = parseInt(item.nextFundingTime || String(now + 3600000), 10);
+      cachedOkxFunding[sym] = { fundingRate: rate, nextFundingTime: nextTs, fetchedAt: now };
+      return { fundingRate: rate, nextFundingTime: nextTs };
+    }
+  } catch {
+    // ignore funding fetch error
+  }
+  return cached
+    ? { fundingRate: cached.fundingRate, nextFundingTime: cached.nextFundingTime }
+    : { fundingRate: 0.0001, nextFundingTime: now + 3600000 };
+}
+
 async function fetchRealOkxTickers(): Promise<any[]> {
   try {
     const { ok, data, rttMs } = await fetchOkxPublicJson('/api/v5/market/tickers?instType=SWAP', 5000);
@@ -2548,6 +2670,7 @@ async function fetchRealOkxTickers(): Promise<any[]> {
           const absChange = Math.abs(priceChangePct);
           const trendDirection = priceChangePct >= 1.0 ? 'BULLISH' : priceChangePct <= -1.0 ? 'BEARISH' : 'NEUTRAL';
           const isTrendHot = absChange >= 2.0 && turnover >= 2000000;
+          const cachedFr = cachedOkxFunding[sym];
           return {
             symbol: sym,
             exchange: 'OKX',
@@ -2559,8 +2682,8 @@ async function fetchRealOkxTickers(): Promise<any[]> {
             isTrendHot,
             status: isTrendHot ? 'TREND' : turnover >= 3000000 ? 'READY' : 'WARMING_UP',
             price,
-            fundingRate: 0.0001,
-            nextFundingTime: Date.now() + 3600000,
+            fundingRate: cachedFr?.fundingRate ?? 0.0001,
+            nextFundingTime: cachedFr?.nextFundingTime ?? Date.now() + 3600000,
           };
         })
         .filter((t: any) => t.price > 0 && t.turnover24h >= 1500000 && t.spreadBps <= 35.0)
@@ -2865,6 +2988,369 @@ async function executeRealBybitV5Order(params: {
   }
 }
 
+// Real OKX V5 HMAC-SHA256 Base64 Live & Demo Execution Engine
+function areOkxKeysConfigured(): boolean {
+  return (
+    isKeyValid(process.env.OKX_API_KEY) &&
+    isKeyValid(process.env.OKX_API_SECRET) &&
+    isKeyValid(process.env.OKX_PASSPHRASE)
+  );
+}
+
+async function executeOkxPrivateRequest(params: {
+  method: 'GET' | 'POST';
+  requestPath: string;
+  bodyObj?: Record<string, any>;
+  timeoutMs?: number;
+}): Promise<{ attempted: boolean; ok: boolean; data?: any; retMsg: string; rttMs: number }> {
+  if (!areOkxKeysConfigured()) {
+    return {
+      attempted: false,
+      ok: false,
+      retMsg: 'OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE не заданы',
+      rttMs: 0,
+    };
+  }
+
+  const bodyStr = params.bodyObj ? JSON.stringify(params.bodyObj) : '';
+  const endpoints = ['https://www.okx.com', 'https://aws.okx.com'];
+  let lastError = 'OKX network error';
+
+  for (const baseUrl of endpoints) {
+    try {
+      const headers = buildOkxV5Headers({
+        apiKey: process.env.OKX_API_KEY!,
+        secretKey: process.env.OKX_API_SECRET!,
+        passphrase: process.env.OKX_PASSPHRASE!,
+        method: params.method,
+        requestPath: params.requestPath,
+        body: bodyStr,
+        isDemo: systemState.okxDemoTrading !== false,
+      });
+
+      const t0 = Date.now();
+      const res = await fetch(`${baseUrl}${params.requestPath}`, {
+        method: params.method,
+        headers,
+        body: params.method === 'POST' ? bodyStr : undefined,
+        signal: AbortSignal.timeout(params.timeoutMs || 6000),
+      });
+      const rttMs = Date.now() - t0;
+      const json = await res.json().catch(() => null);
+
+      if (res.ok && json && json.code === '0') {
+        systemState.pings.okx = Math.min(200, Math.max(10, rttMs));
+        return { attempted: true, ok: true, data: json.data, retMsg: json.msg || 'OK', rttMs };
+      }
+
+      const firstItem = Array.isArray(json?.data) ? json.data[0] : null;
+      const sMsg = firstItem?.sMsg || json?.msg || `HTTP ${res.status}`;
+      const sCode = firstItem?.sCode || json?.code || res.status;
+      lastError = `[${sCode}] ${sMsg}`;
+      // Do not failover on deterministic API rejection (auth/balance/lot rejection)
+      if (res.status < 500 && json?.code) {
+        return { attempted: true, ok: false, data: json?.data, retMsg: lastError, rttMs };
+      }
+    } catch (err: any) {
+      lastError = err.message || 'OKX timeout';
+    }
+  }
+
+  return { attempted: true, ok: false, retMsg: lastError, rttMs: 120 };
+}
+
+async function syncOkxAccountState(): Promise<{
+  ok: boolean;
+  equityUsdt?: number;
+  availUsdt?: number;
+  posMode?: OkxPositionMode;
+  positionsCount?: number;
+  retMsg: string;
+  rttMs?: number;
+}> {
+  if (!areOkxKeysConfigured()) {
+    return { ok: false, retMsg: 'OKX ключи не настроены' };
+  }
+
+  const [balRes, cfgRes, posRes] = await Promise.all([
+    executeOkxPrivateRequest({ method: 'GET', requestPath: '/api/v5/account/balance?ccy=USDT' }),
+    executeOkxPrivateRequest({ method: 'GET', requestPath: '/api/v5/account/config' }),
+    executeOkxPrivateRequest({ method: 'GET', requestPath: '/api/v5/account/positions?instType=SWAP' }),
+  ]);
+
+  if (!balRes.ok) {
+    return { ok: false, retMsg: balRes.retMsg, rttMs: balRes.rttMs };
+  }
+
+  const balRoot = Array.isArray(balRes.data) ? balRes.data[0] : null;
+  const usdtDetail = Array.isArray(balRoot?.details)
+    ? balRoot.details.find((d: any) => d.ccy === 'USDT')
+    : null;
+  const equityUsdt = parseFloat(usdtDetail?.eq || balRoot?.totalEq || '0');
+  const availUsdt = parseFloat(usdtDetail?.availEq || usdtDetail?.cashBal || '0');
+
+  if (cfgRes.ok && Array.isArray(cfgRes.data) && cfgRes.data[0]?.posMode) {
+    const pm = String(cfgRes.data[0].posMode);
+    systemState.okxPosMode = pm === 'long_short_mode' ? 'long_short_mode' : 'net_mode';
+  }
+
+  const okxOpenPositions = Array.isArray(posRes.data)
+    ? posRes.data.filter((p: any) => Math.abs(parseFloat(p.pos || '0')) > 0)
+    : [];
+
+  systemState.okxAccountEquityUsdt = Number(equityUsdt.toFixed(2));
+  systemState.okxAvailableBalanceUsdt = Number(availUsdt.toFixed(2));
+  systemState.okxLastSyncedAt = Date.now();
+
+  if (systemState.mode === 'LIVE' && systemState.activeExchange === 'OKX' && equityUsdt > 0) {
+    systemState.capitalUsdt = Number(equityUsdt.toFixed(2));
+  }
+
+  return {
+    ok: true,
+    equityUsdt: systemState.okxAccountEquityUsdt,
+    availUsdt: systemState.okxAvailableBalanceUsdt,
+    posMode: systemState.okxPosMode,
+    positionsCount: okxOpenPositions.length,
+    retMsg: 'OK',
+    rttMs: balRes.rttMs,
+  };
+}
+
+async function fetchOkxPendingAlgoId(symbol: string): Promise<string | undefined> {
+  const instId = toOkxSwapInstId(symbol);
+  const res = await executeOkxPrivateRequest({
+    method: 'GET',
+    requestPath: `/api/v5/trade/orders-algo-pending?instType=SWAP&instId=${encodeURIComponent(instId)}&ordType=oco,conditional`,
+  });
+  if (res.ok && Array.isArray(res.data) && res.data.length > 0) {
+    return res.data[0]?.algoId;
+  }
+  return undefined;
+}
+
+async function executeRealOkxLiveEntry(params: {
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  baseQty: number;
+  leverage: number;
+  slPrice?: number;
+  tpPrice?: number;
+  priceDecimals?: number;
+}): Promise<{
+  attempted: boolean;
+  ok: boolean;
+  orderId?: string;
+  algoId?: string;
+  contractsSz?: string;
+  executedBaseQty: number;
+  retMsg: string;
+}> {
+  if (!areOkxKeysConfigured()) {
+    return { attempted: false, ok: false, executedBaseQty: 0, retMsg: 'OKX ключи не заданы' };
+  }
+  await refreshOkxSwapInstrumentsCache(false);
+  const inst = getOkxSwapInstrument(params.symbol);
+  const conv = convertBaseQtyToOkxContracts(params.baseQty, inst);
+  if (!conv.ok) {
+    return { attempted: false, ok: false, executedBaseQty: 0, retMsg: conv.reason || 'Конвертация контрактов OKX не удалась' };
+  }
+
+  // 1. Ensure isolated leverage on OKX SWAP
+  const levPayload = buildOkxSetLeveragePayload({
+    symbol: params.symbol,
+    leverage: params.leverage,
+    side: params.side,
+    posMode: systemState.okxPosMode || 'net_mode',
+  });
+  const levRes = await executeOkxPrivateRequest({
+    method: 'POST',
+    requestPath: '/api/v5/account/set-leverage',
+    bodyObj: levPayload,
+  });
+  if (!levRes.ok) {
+    return {
+      attempted: true,
+      ok: false,
+      executedBaseQty: 0,
+      retMsg: `OKX set-leverage: ${levRes.retMsg}`,
+    };
+  }
+
+  // 2. Place Market Entry with attached Algo SL/TP
+  const clOrdId = `zt${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`.slice(0, 32);
+  const attachAlgoClOrdId = `za${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`.slice(0, 32);
+  const orderPayload = buildOkxMarketOrderPayload({
+    symbol: params.symbol,
+    side: params.side,
+    contractsSz: conv.contractsSz,
+    slTriggerPrice: params.slPrice,
+    tpTriggerPrice: params.tpPrice,
+    priceDecimals: params.priceDecimals ?? 4,
+    clOrdId,
+    attachAlgoClOrdId,
+    posMode: systemState.okxPosMode || 'net_mode',
+  });
+
+  const ordRes = await executeOkxPrivateRequest({
+    method: 'POST',
+    requestPath: '/api/v5/trade/order',
+    bodyObj: orderPayload,
+  });
+
+  const item = Array.isArray(ordRes.data) ? ordRes.data[0] : null;
+  if (!ordRes.ok || (item && item.sCode !== '0')) {
+    return {
+      attempted: true,
+      ok: false,
+      executedBaseQty: 0,
+      retMsg: item?.sMsg || ordRes.retMsg,
+    };
+  }
+
+  const orderId = item?.ordId || clOrdId;
+  const algoId = (await fetchOkxPendingAlgoId(params.symbol)) || undefined;
+
+  return {
+    attempted: true,
+    ok: true,
+    orderId,
+    algoId,
+    contractsSz: conv.contractsSz,
+    executedBaseQty: conv.actualBaseQty,
+    retMsg: 'OK',
+  };
+}
+
+async function executeRealOkxLiveAddQty(params: {
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  addedBaseQty: number;
+}): Promise<{ attempted: boolean; ok: boolean; orderId?: string; executedBaseQty: number; retMsg: string }> {
+  if (!areOkxKeysConfigured()) {
+    return { attempted: false, ok: false, executedBaseQty: 0, retMsg: 'OKX ключи не заданы' };
+  }
+  const inst = getOkxSwapInstrument(params.symbol);
+  const conv = convertBaseQtyToOkxContracts(params.addedBaseQty, inst);
+  if (!conv.ok) {
+    return { attempted: false, ok: false, executedBaseQty: 0, retMsg: conv.reason || 'Недостаточный лот OKX для добора' };
+  }
+
+  const payload = buildOkxMarketOrderPayload({
+    symbol: params.symbol,
+    side: params.side,
+    contractsSz: conv.contractsSz,
+    posMode: systemState.okxPosMode || 'net_mode',
+  });
+  const ordRes = await executeOkxPrivateRequest({
+    method: 'POST',
+    requestPath: '/api/v5/trade/order',
+    bodyObj: payload,
+  });
+  const item = Array.isArray(ordRes.data) ? ordRes.data[0] : null;
+  if (!ordRes.ok || (item && item.sCode !== '0')) {
+    return { attempted: true, ok: false, executedBaseQty: 0, retMsg: item?.sMsg || ordRes.retMsg };
+  }
+  return {
+    attempted: true,
+    ok: true,
+    orderId: item?.ordId,
+    executedBaseQty: conv.actualBaseQty,
+    retMsg: 'OK',
+  };
+}
+
+async function updateOkxLivePositionProtection(params: {
+  symbol: string;
+  algoId?: string;
+  slPrice?: number;
+  tpPrice?: number;
+  priceDecimals?: number;
+}): Promise<{ ok: boolean; algoId?: string; retMsg: string }> {
+  if (!areOkxKeysConfigured()) {
+    return { ok: false, retMsg: 'OKX ключи не заданы' };
+  }
+  let targetAlgoId = params.algoId || (await fetchOkxPendingAlgoId(params.symbol));
+  if (!targetAlgoId) {
+    return { ok: false, retMsg: 'Активный Algo SL/TP ордер на OKX не найден' };
+  }
+
+  const amendPayload = buildOkxAmendAlgoPayload({
+    symbol: params.symbol,
+    algoId: targetAlgoId,
+    slTriggerPrice: params.slPrice,
+    tpTriggerPrice: params.tpPrice,
+    priceDecimals: params.priceDecimals ?? 4,
+  });
+
+  const res = await executeOkxPrivateRequest({
+    method: 'POST',
+    requestPath: '/api/v5/trade/amend-algos',
+    bodyObj: amendPayload,
+  });
+  const item = Array.isArray(res.data) ? res.data[0] : null;
+  if (res.ok && (!item || item.sCode === '0')) {
+    return { ok: true, algoId: targetAlgoId, retMsg: 'OK' };
+  }
+  return { ok: false, algoId: targetAlgoId, retMsg: item?.sMsg || res.retMsg };
+}
+
+async function closeRealOkxLivePosition(params: {
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  baseQty: number;
+  algoId?: string;
+}): Promise<{ ok: boolean; orderId?: string; retMsg: string }> {
+  if (!areOkxKeysConfigured()) {
+    return { ok: false, retMsg: 'OKX ключи не заданы' };
+  }
+  const instId = toOkxSwapInstId(params.symbol);
+  const targetAlgoId = params.algoId || (await fetchOkxPendingAlgoId(params.symbol));
+  if (targetAlgoId) {
+    await executeOkxPrivateRequest({
+      method: 'POST',
+      requestPath: '/api/v5/trade/cancel-algos',
+      bodyObj: [{ instId, algoId: targetAlgoId }] as any,
+    }).catch(() => {});
+  }
+
+  const inst = getOkxSwapInstrument(params.symbol);
+  const conv = convertBaseQtyToOkxContracts(params.baseQty, inst);
+  if (!conv.ok) {
+    // Fallback to OKX close-position endpoint if baseQty doesn't divide cleanly
+    const closeAllRes = await executeOkxPrivateRequest({
+      method: 'POST',
+      requestPath: '/api/v5/trade/close-position',
+      bodyObj: {
+        instId,
+        mgnMode: 'isolated',
+        ...(systemState.okxPosMode === 'long_short_mode'
+          ? { posSide: params.side === 'LONG' ? 'long' : 'short' }
+          : {}),
+      },
+    });
+    return { ok: closeAllRes.ok, retMsg: closeAllRes.retMsg };
+  }
+
+  const payload = buildOkxMarketOrderPayload({
+    symbol: params.symbol,
+    side: params.side,
+    contractsSz: conv.contractsSz,
+    reduceOnly: true,
+    posMode: systemState.okxPosMode || 'net_mode',
+  });
+  const ordRes = await executeOkxPrivateRequest({
+    method: 'POST',
+    requestPath: '/api/v5/trade/order',
+    bodyObj: payload,
+  });
+  const item = Array.isArray(ordRes.data) ? ordRes.data[0] : null;
+  if (!ordRes.ok || (item && item.sCode !== '0')) {
+    return { ok: false, retMsg: item?.sMsg || ordRes.retMsg };
+  }
+  return { ok: true, orderId: item?.ordId, retMsg: 'OK' };
+}
+
 async function fetchRealOkxOrderbook(symbol: string): Promise<OrderbookL2 | null> {
   try {
     const instId = toOkxSwapInstId(symbol);
@@ -3126,7 +3612,12 @@ function buildFullSystemHealthPayload() {
     uptimeSec: Math.round(process.uptime()),
     timestamp: Date.now(),
     mode: systemState.mode,
-    activeExchange: systemState.activeExchange || 'BYBIT',
+    activeExchange: systemState.activeExchange || 'OKX',
+    okxDemoTrading: systemState.okxDemoTrading !== false,
+    okxKeysConfigured: areOkxKeysConfigured(),
+    okxPosMode: systemState.okxPosMode || 'net_mode',
+    okxAccountEquityUsdt: systemState.okxAccountEquityUsdt,
+    okxAvailableBalanceUsdt: systemState.okxAvailableBalanceUsdt,
     isKillSwitchActive: systemState.isKillSwitchActive,
     killSwitchTriggerReason: systemState.killSwitchTriggerReason,
     capitalUsdt: systemState.capitalUsdt,
@@ -3224,11 +3715,38 @@ app.post('/api/exchange/select', async (req: Request, res: Response) => {
   for (const k of Object.keys(cachedOrderbooks)) {
     delete cachedOrderbooks[k];
   }
+  if (rawEx === 'OKX') {
+    await refreshOkxSwapInstrumentsCache(false).catch(() => {});
+    if (areOkxKeysConfigured()) {
+      await syncOkxAccountState().catch(() => {});
+    }
+  }
   await fetchRealBybitTickers().catch(() => {});
   savePersistedState();
   res.json({
     success: true,
     activeExchange: systemState.activeExchange,
+    health: buildFullSystemHealthPayload(),
+  });
+});
+
+// Toggle OKX Demo Trading (x-simulated-trading: 1) vs OKX Live Real Account
+app.post('/api/exchange/okx-mode', async (req: Request, res: Response) => {
+  const demo = Boolean(req.body?.demo);
+  systemState.okxDemoTrading = demo;
+  process.env.OKX_DEMO_TRADING = demo ? 'true' : 'false';
+  writeEnvFile(path.resolve(process.cwd(), '.env'), {
+    OKX_DEMO_TRADING: demo ? 'true' : 'false',
+  });
+  let syncRes: Awaited<ReturnType<typeof syncOkxAccountState>> | null = null;
+  if (areOkxKeysConfigured()) {
+    syncRes = await syncOkxAccountState().catch(() => null);
+  }
+  savePersistedState();
+  res.json({
+    success: true,
+    okxDemoTrading: systemState.okxDemoTrading,
+    sync: syncRes,
     health: buildFullSystemHealthPayload(),
   });
 });
@@ -3300,26 +3818,61 @@ app.get('/api/system/cloudflare', (_req: Request, res: Response) => {
   });
 });
 
-app.post('/api/system/mode', (req: Request, res: Response) => {
+app.post('/api/system/mode', async (req: Request, res: Response) => {
   const { mode } = req.body;
   if (mode !== 'SHADOW' && mode !== 'LIVE') {
     res.status(400).json({ error: 'Mode must be SHADOW or LIVE' });
     return;
   }
   if (mode === 'LIVE' && systemState.isKillSwitchActive) {
-    res.status(403).json({ error: 'Cannot activate LIVE mode while Risk Kill-Switch is ACTIVE.' });
+    res.status(403).json({ error: 'Невозможно включить LIVE-режим пока активен Risk Kill-Switch.' });
     return;
   }
-  systemState.mode = mode;
+
   const bybitKeysConfigured = isKeyValid(process.env.BYBIT_API_KEY) && isKeyValid(process.env.BYBIT_API_SECRET);
+  const okxKeysConfigured = areOkxKeysConfigured();
+  const activeEx = systemState.activeExchange || 'OKX';
+
+  if (mode === 'LIVE') {
+    if (activeEx === 'OKX') {
+      if (!okxKeysConfigured) {
+        res.status(400).json({
+          error: 'Для LIVE-торговли на OKX сначала укажите OKX_API_KEY, OKX_API_SECRET и OKX_PASSPHRASE во вкладке «ТГ-Бот & API».',
+        });
+        return;
+      }
+      const okxSync = await syncOkxAccountState();
+      if (!okxSync.ok) {
+        res.status(400).json({
+          error: `Проверка ключей OKX (${systemState.okxDemoTrading ? 'Demo' : 'Live'}) не пройдена: ${okxSync.retMsg}`,
+        });
+        return;
+      }
+    } else if (activeEx === 'BYBIT' && !bybitKeysConfigured) {
+      res.status(400).json({
+        error: 'Для LIVE-торговли на Bybit сначала укажите BYBIT_API_KEY и BYBIT_API_SECRET во вкладке «ТГ-Бот & API».',
+      });
+      return;
+    }
+  }
+
+  systemState.mode = mode;
+  savePersistedState();
   res.json({
     success: true,
     mode: systemState.mode,
+    activeExchange: activeEx,
     bybitKeysConfigured,
+    okxKeysConfigured,
+    okxDemoTrading: systemState.okxDemoTrading,
     executionBackend:
-      mode === 'LIVE' && bybitKeysConfigured
+      mode === 'LIVE' && activeEx === 'OKX' && okxKeysConfigured
+        ? systemState.okxDemoTrading
+          ? 'OKX_V5_DEMO_HMAC'
+          : 'OKX_V5_LIVE_HMAC'
+        : mode === 'LIVE' && activeEx === 'BYBIT' && bybitKeysConfigured
         ? 'BYBIT_V5_LIVE_HMAC'
-        : 'BYBIT_V5_L2_SHADOW_SIMULATION',
+        : `${activeEx}_L2_SHADOW_SIMULATION`,
   });
 });
 
@@ -3592,31 +4145,79 @@ app.post('/api/orders/execute', async (req: Request, res: Response) => {
 
   if (orderType === 'MARKET') {
     const t0 = Date.now();
-    const exec = executeMarketOrderL2(book, side === 'LONG' ? 'BUY' : 'SELL', parseFloat(qty), 0.00055);
-    let liveExchangeOrder: { attempted: boolean; ok: boolean; orderId?: string; retMsg?: string } | undefined;
+    const activeEx = systemState.activeExchange || 'OKX';
+    const takerFeeRate = activeEx === 'OKX' ? 0.0005 : 0.00055;
+    const exec = executeMarketOrderL2(book, side === 'LONG' ? 'BUY' : 'SELL', parseFloat(qty), takerFeeRate);
+    let liveExchangeOrder: {
+      attempted: boolean;
+      ok: boolean;
+      orderId?: string;
+      algoId?: string;
+      executedBaseQty?: number;
+      retMsg?: string;
+    } | undefined;
 
-    if (systemState.mode === 'LIVE' && isKeyValid(process.env.BYBIT_API_KEY) && isKeyValid(process.env.BYBIT_API_SECRET)) {
-      liveExchangeOrder = await executeRealBybitV5Order({
-        symbol,
-        side: side === 'LONG' ? 'Buy' : 'Sell',
-        orderType: 'Market',
-        qty: String(exec.executedQty),
-        stopLoss: stopLossPrice ? String(stopLossPrice) : undefined,
-        takeProfit: collapsedTPs[0]?.price ? String(collapsedTPs[0].price) : undefined,
-      });
+    if (systemState.mode === 'LIVE') {
+      if (activeEx === 'OKX') {
+        const priceDecimals = inst.tickSize < 0.01 ? 4 : inst.tickSize < 0.1 ? 2 : 1;
+        liveExchangeOrder = await executeRealOkxLiveEntry({
+          symbol,
+          side,
+          baseQty: exec.executedQty,
+          leverage: 4,
+          slPrice: parseFloat(stopLossPrice) || undefined,
+          tpPrice: collapsedTPs[0]?.price || undefined,
+          priceDecimals,
+        });
+        if (!liveExchangeOrder.ok) {
+          res.status(400).json({
+            success: false,
+            reason: `OKX Live ордер отклонён: ${liveExchangeOrder.retMsg}`,
+            liveExchangeOrder,
+          });
+          return;
+        }
+      } else if (isKeyValid(process.env.BYBIT_API_KEY) && isKeyValid(process.env.BYBIT_API_SECRET)) {
+        liveExchangeOrder = await executeRealBybitV5Order({
+          symbol,
+          side: side === 'LONG' ? 'Buy' : 'Sell',
+          orderType: 'Market',
+          qty: String(exec.executedQty),
+          stopLoss: stopLossPrice ? String(stopLossPrice) : undefined,
+          takeProfit: collapsedTPs[0]?.price ? String(collapsedTPs[0].price) : undefined,
+        });
+        if (!liveExchangeOrder.ok) {
+          res.status(400).json({
+            success: false,
+            reason: `Bybit Live ордер отклонён: ${liveExchangeOrder.retMsg}`,
+            liveExchangeOrder,
+          });
+          return;
+        }
+      }
     }
 
+    const executedQty =
+      liveExchangeOrder?.ok && liveExchangeOrder.executedBaseQty && liveExchangeOrder.executedBaseQty > 0
+        ? liveExchangeOrder.executedBaseQty
+        : exec.executedQty;
+
+    const posLeverage = activeEx === 'OKX' ? 4 : 10;
     const newPos = {
       id: liveExchangeOrder?.orderId || `pos-${symbol.toLowerCase()}-${Date.now().toString().slice(-4)}`,
       symbol,
       side,
-      qty: exec.executedQty,
+      qty: executedQty,
       entryVwap: exec.vwapPrice,
       currentPrice: side === 'LONG' ? bestBid : bestAsk,
       unrealizedPnl: 0.0,
-      leverage: 10,
+      leverage: posLeverage,
       marginType: 'ISOLATED',
       mode: systemState.mode,
+      exchange: activeEx,
+      okxDemo: activeEx === 'OKX' ? systemState.okxDemoTrading !== false : undefined,
+      exchangeOrderId: liveExchangeOrder?.orderId,
+      exchangeAlgoId: liveExchangeOrder?.algoId,
       slPrice: parseFloat(stopLossPrice),
       tpGrid: collapsedTPs,
       fundingPaid: 0.0,
@@ -3626,10 +4227,19 @@ app.post('/api/orders/execute', async (req: Request, res: Response) => {
     systemState.activePositions.unshift(newPos);
     savePersistedState();
 
+    const exSourceLabel =
+      liveExchangeOrder?.ok && activeEx === 'OKX'
+        ? systemState.okxDemoTrading
+          ? 'OKX V5 Demo API'
+          : 'OKX V5 Live API'
+        : liveExchangeOrder?.ok
+        ? 'Bybit V5 Live API'
+        : `${activeEx} L2 VWAP`;
+
     emitAppNotification({
       category: 'TRADE_OPEN',
       severity: 'INFO',
-      title: `🟢 Ордер исполнен: ${symbol} ${side} 10x`,
+      title: `🟢 Ордер исполнен (${activeEx}): ${symbol} ${side} ${posLeverage}x`,
       message: `Вход VWAP $${newPos.entryVwap.toFixed(2)}, объем ${newPos.qty}, SL $${newPos.slPrice.toFixed(2)}`,
       symbol,
       isUrgent: false,
@@ -3637,8 +4247,8 @@ app.post('/api/orders/execute', async (req: Request, res: Response) => {
 
     dispatchTelegramNotification({
       category: 'OPEN',
-      title: `🟢 ОТКРЫТ ОРДЕР · ${symbol} ${side} 10x`,
-      htmlBody: `• <b>Источник:</b> Ручной терминал L2 (${liveExchangeOrder?.ok ? 'Bybit V5 Live API' : 'Bybit L2 VWAP'})\n• <b>Инструмент:</b> #${symbol} (${side})\n• <b>Цена входа VWAP:</b> $${newPos.entryVwap.toFixed(2)}\n• <b>Объем:</b> ${newPos.qty}\n• <b>Stop-Loss:</b> $${newPos.slPrice.toFixed(2)}`,
+      title: `🟢 ОТКРЫТ ОРДЕР · ${symbol} ${side} ${posLeverage}x`,
+      htmlBody: `• <b>Источник:</b> Ручной терминал L2 (${exSourceLabel})\n• <b>Инструмент:</b> #${symbol} (${side})\n• <b>Цена входа VWAP:</b> $${newPos.entryVwap.toFixed(2)}\n• <b>Объем:</b> ${newPos.qty}\n• <b>Stop-Loss:</b> $${newPos.slPrice.toFixed(2)}`,
       plainPreview: `Ручной вход ${side} ${symbol} (${newPos.qty}) по $${newPos.entryVwap.toFixed(2)}, SL $${newPos.slPrice.toFixed(2)}`,
       symbol,
       isManualOrUrgent: true,
@@ -3648,7 +4258,7 @@ app.post('/api/orders/execute', async (req: Request, res: Response) => {
       success: true,
       execution: exec,
       collapsedTPs,
-      simulatedDelayMs: Math.max(12, systemState.pings.bybit + (Date.now() - t0)),
+      simulatedDelayMs: Math.max(12, (activeEx === 'OKX' ? systemState.pings.okx : systemState.pings.bybit) + (Date.now() - t0)),
       position: newPos,
       liveExchangeOrder,
     });
@@ -3699,14 +4309,15 @@ function recordClosedPosition(
   options?: { isPartialScaleOut?: boolean }
 ): ClosedTradeRecord {
   const isPartial = options?.isPartialScaleOut === true;
+  const posEx = pos.exchange || systemState.activeExchange || 'OKX';
   const metrics = calculateClosedTradeMetrics({
     side: pos.side,
     qty: pos.qty,
     entryPrice: pos.entryVwap,
     exitPrice,
-    leverage: pos.leverage || 10,
+    leverage: pos.leverage || 4,
     fundingUsdt: pos.fundingPaid || 0,
-    takerFeeRate: 0.00055,
+    takerFeeRate: posEx === 'OKX' ? 0.0005 : 0.00055,
   });
 
   const trade: ClosedTradeRecord = {
@@ -3897,10 +4508,23 @@ function recordClosedPosition(
 }
 
 // Close an active position
-app.post('/api/positions/close', (req: Request, res: Response) => {
+app.post('/api/positions/close', async (req: Request, res: Response) => {
   const { id } = req.body;
   const idx = systemState.activePositions.findIndex((p) => p.id === id);
   if (idx !== -1) {
+    const target = systemState.activePositions[idx];
+    if (target.mode === 'LIVE' && target.exchange === 'OKX') {
+      const closeRes = await closeRealOkxLivePosition({
+        symbol: target.symbol,
+        side: target.side,
+        baseQty: target.qty,
+        algoId: target.exchangeAlgoId,
+      });
+      if (!closeRes.ok) {
+        res.status(502).json({ error: `Не удалось закрыть позицию на OKX: ${closeRes.retMsg}` });
+        return;
+      }
+    }
     const closed = systemState.activePositions.splice(idx, 1)[0];
     const trade = recordClosedPosition(closed, closed.currentPrice, 'MANUAL_CLOSE');
     addBotLog({
@@ -3912,7 +4536,7 @@ app.post('/api/positions/close', (req: Request, res: Response) => {
       price: closed.currentPrice,
       pnl: trade.netPnlUsdt,
       message: `Позиция ${closed.symbol} закрыта вручную по $${closed.currentPrice.toFixed(2)}. Чистый PnL: ${trade.netPnlUsdt >= 0 ? '+' : ''}$${trade.netPnlUsdt.toFixed(2)} USDT.`,
-      rttMs: systemState.pings.bybit,
+      rttMs: closed.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
     });
     res.json({ success: true, closed, trade });
   } else {
@@ -3921,11 +4545,24 @@ app.post('/api/positions/close', (req: Request, res: Response) => {
 });
 
 // Close all active positions at market price
-app.post('/api/positions/close-all', (_req: Request, res: Response) => {
-  const closedCount = systemState.activePositions.length;
+app.post('/api/positions/close-all', async (_req: Request, res: Response) => {
   const closedTradesList: ClosedTradeRecord[] = [];
-  while (systemState.activePositions.length > 0) {
-    const pos = systemState.activePositions.shift()!;
+  const errors: string[] = [];
+  for (let i = systemState.activePositions.length - 1; i >= 0; i--) {
+    const pos = systemState.activePositions[i];
+    if (pos.mode === 'LIVE' && pos.exchange === 'OKX') {
+      const closeRes = await closeRealOkxLivePosition({
+        symbol: pos.symbol,
+        side: pos.side,
+        baseQty: pos.qty,
+        algoId: pos.exchangeAlgoId,
+      });
+      if (!closeRes.ok) {
+        errors.push(`${pos.symbol}: ${closeRes.retMsg}`);
+        continue;
+      }
+    }
+    systemState.activePositions.splice(i, 1);
     const trade = recordClosedPosition(pos, pos.currentPrice, 'MANUAL_CLOSE');
     closedTradesList.push(trade);
     addBotLog({
@@ -3937,11 +4574,16 @@ app.post('/api/positions/close-all', (_req: Request, res: Response) => {
       price: pos.currentPrice,
       pnl: trade.netPnlUsdt,
       message: `Позиция ${pos.symbol} закрыта оператором по $${pos.currentPrice.toFixed(2)}. Чистый PnL: ${trade.netPnlUsdt >= 0 ? '+' : ''}$${trade.netPnlUsdt.toFixed(2)} USDT.`,
-      rttMs: systemState.pings.bybit,
+      rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
     });
   }
   savePersistedState();
-  res.json({ success: true, closedCount, closedTrades: closedTradesList });
+  res.json({
+    success: errors.length === 0,
+    closedCount: closedTradesList.length,
+    closedTrades: closedTradesList,
+    errors: errors.length > 0 ? errors : undefined,
+  });
 });
 
 function addBotLog(entry: {
@@ -4038,31 +4680,90 @@ async function runBotEngineCycle() {
         });
 
         if (dcaFill.triggered) {
-          pos.qty = dcaFill.newQty;
-          pos.entryVwap = dcaFill.newEntryVwap;
-          pos.safetyOrders = dcaFill.updatedSafetyOrders;
-          pos.tpGrid = [{ price: dcaFill.newTpPrice, qty: dcaFill.newQty }];
-          pos.peakPrice = pos.currentPrice;
-          pos.isBreakEven = false;
-          pos.isTrailing = false;
+          let appliedAddedQty = dcaFill.addedQty;
+          if (pos.mode === 'LIVE' && pos.exchange === 'OKX') {
+            const addRes = await executeRealOkxLiveAddQty({
+              symbol: pos.symbol,
+              side: pos.side,
+              addedBaseQty: dcaFill.addedQty,
+            });
+            if (!addRes.ok) {
+              addBotLog({
+                botId: pos.botId || 'agent-tg-crypto-alpha',
+                botName: pos.botName || 'Сетка @ne_investor',
+                action: 'RISK_GUARD',
+                symbol: pos.symbol,
+                side: pos.side,
+                price: pos.currentPrice,
+                message: `OKX Live Добор #${dcaFill.filledStepIndex}/2 отклонён: ${addRes.retMsg}`,
+                rttMs: systemState.pings.okx,
+              });
+            } else {
+              if (addRes.executedBaseQty > 0) appliedAddedQty = addRes.executedBaseQty;
+              const prevQty = pos.qty;
+              const newQty = Number((prevQty + appliedAddedQty).toFixed(qtyDecimals));
+              const newEntryVwap = Number(
+                ((prevQty * pos.entryVwap + appliedAddedQty * pos.currentPrice) / Math.max(1e-8, newQty)).toFixed(priceDecimals)
+              );
+              const newTpPrice = Number(
+                (newEntryVwap * (1 + dirSign * ((pos.tpTargetPct || 1.85) / 100))).toFixed(priceDecimals)
+              );
+              pos.qty = newQty;
+              pos.entryVwap = newEntryVwap;
+              pos.safetyOrders = dcaFill.updatedSafetyOrders;
+              pos.tpGrid = [{ price: newTpPrice, qty: newQty }];
+              pos.peakPrice = pos.currentPrice;
+              pos.isBreakEven = false;
+              pos.isTrailing = false;
 
-          addBotLog({
-            botId: pos.botId || 'agent-tg-crypto-alpha',
-            botName: pos.botName || 'Сетка @ne_investor',
-            action: 'LIMIT_FILL',
-            symbol: pos.symbol,
-            side: pos.side,
-            price: pos.currentPrice,
-            message: `Сетка @ne_investor [Добор #${dcaFill.filledStepIndex}/2]: откуп просадки ${pos.side} ${pos.symbol} по $${pos.currentPrice.toFixed(priceDecimals)} (+${dcaFill.addedQty}). Средняя цена улучшена до $${pos.entryVwap.toFixed(priceDecimals)}, цель разгрузки TP смещена на $${dcaFill.newTpPrice.toFixed(priceDecimals)} (+${(pos.tpTargetPct || 1.85).toFixed(2)}%).`,
-            rttMs: systemState.pings.bybit,
-          });
-          savePersistedState();
+              const protRes = await updateOkxLivePositionProtection({
+                symbol: pos.symbol,
+                algoId: pos.exchangeAlgoId,
+                slPrice: pos.slPrice,
+                tpPrice: newTpPrice,
+                priceDecimals,
+              });
+              if (protRes.algoId) pos.exchangeAlgoId = protRes.algoId;
+
+              addBotLog({
+                botId: pos.botId || 'agent-tg-crypto-alpha',
+                botName: pos.botName || 'Сетка @ne_investor',
+                action: 'LIMIT_FILL',
+                symbol: pos.symbol,
+                side: pos.side,
+                price: pos.currentPrice,
+                message: `OKX ${pos.okxDemo ? 'Demo' : 'Live'} [Добор #${dcaFill.filledStepIndex}/2]: откуп просадки ${pos.side} ${pos.symbol} по $${pos.currentPrice.toFixed(priceDecimals)} (+${appliedAddedQty}). Средняя цена улучшена до $${pos.entryVwap.toFixed(priceDecimals)}, цель TP/SL синхронизирована на бирже ($${newTpPrice.toFixed(priceDecimals)}).`,
+                rttMs: systemState.pings.okx,
+              });
+              savePersistedState();
+            }
+          } else {
+            pos.qty = dcaFill.newQty;
+            pos.entryVwap = dcaFill.newEntryVwap;
+            pos.safetyOrders = dcaFill.updatedSafetyOrders;
+            pos.tpGrid = [{ price: dcaFill.newTpPrice, qty: dcaFill.newQty }];
+            pos.peakPrice = pos.currentPrice;
+            pos.isBreakEven = false;
+            pos.isTrailing = false;
+
+            addBotLog({
+              botId: pos.botId || 'agent-tg-crypto-alpha',
+              botName: pos.botName || 'Сетка @ne_investor',
+              action: 'LIMIT_FILL',
+              symbol: pos.symbol,
+              side: pos.side,
+              price: pos.currentPrice,
+              message: `Сетка @ne_investor [Добор #${dcaFill.filledStepIndex}/2]: откуп просадки ${pos.side} ${pos.symbol} по $${pos.currentPrice.toFixed(priceDecimals)} (+${dcaFill.addedQty}). Средняя цена улучшена до $${pos.entryVwap.toFixed(priceDecimals)}, цель разгрузки TP смещена на $${dcaFill.newTpPrice.toFixed(priceDecimals)} (+${(pos.tpTargetPct || 1.85).toFixed(2)}%).`,
+              rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
+            });
+            savePersistedState();
+          }
         }
 
         const diff = (pos.currentPrice - pos.entryVwap) * dirSign;
         pos.unrealizedPnl = Number((diff * pos.qty).toFixed(2));
 
-        // 2a. Early Breakeven & Trailing Stop Protection (activates at +1.05% from averaged entryVwap, locks >= +0.25% above fees and trails 70% of wave)
+        // 2a. Breakeven & Trailing Stop Protection (activates at +1.30% from averaged entryVwap, locks >= +0.28% above fees and trails 72% of wave)
         const trailUpdate = computeTrailingStopPrice({
           side: pos.side,
           entryPrice: pos.entryVwap,
@@ -4070,20 +4771,37 @@ async function runBotEngineCycle() {
           currentSlPrice: pos.slPrice,
           previousPeakPrice: pos.peakPrice,
           priceDecimals,
-          activationPct: 1.05,
-          feeBufferPct: 0.25,
-          lockFraction: 0.70,
+          activationPct: 1.30,
+          feeBufferPct: 0.28,
+          lockFraction: 0.72,
         });
         pos.peakPrice = trailUpdate.newPeakPrice;
         if (trailUpdate.updated) {
           pos.slPrice = trailUpdate.newSlPrice;
           pos.isBreakEven = true;
           pos.isTrailing = true;
+          if (pos.mode === 'LIVE' && pos.exchange === 'OKX') {
+            const protRes = await updateOkxLivePositionProtection({
+              symbol: pos.symbol,
+              algoId: pos.exchangeAlgoId,
+              slPrice: trailUpdate.newSlPrice,
+              priceDecimals,
+            });
+            if (protRes.algoId) pos.exchangeAlgoId = protRes.algoId;
+          }
         }
 
         // 2b. Check Catastrophic Grid Stop-Loss or Trailing Stop breach
         const slHit = pos.side === 'LONG' ? pos.currentPrice <= pos.slPrice : pos.currentPrice >= pos.slPrice;
         if (slHit) {
+          if (pos.mode === 'LIVE' && pos.exchange === 'OKX') {
+            await closeRealOkxLivePosition({
+              symbol: pos.symbol,
+              side: pos.side,
+              baseQty: pos.qty,
+              algoId: pos.exchangeAlgoId,
+            }).catch(() => {});
+          }
           systemState.activePositions.splice(i, 1);
           const isProfitableTrailExit = (pos.isTrailing || pos.isBreakEven) && diff > pos.entryVwap * 0.0020;
           const exitReasonCode = isProfitableTrailExit ? 'TP_HIT' : 'SL_HIT';
@@ -4101,7 +4819,7 @@ async function runBotEngineCycle() {
             price: pos.currentPrice,
             pnl: tradeRecord.netPnlUsdt,
             message: `${slTag} сработал на $${pos.slPrice.toFixed(priceDecimals)} по ${pos.symbol}. Итог с комиссией: ${tradeRecord.netPnlUsdt >= 0 ? '+' : ''}$${tradeRecord.netPnlUsdt.toFixed(2)} USDT.`,
-            rttMs: systemState.pings.bybit,
+            rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
           });
           continue;
         }
@@ -4111,6 +4829,14 @@ async function runBotEngineCycle() {
           const targetTp = pos.tpGrid[0];
           const tpHit = pos.side === 'LONG' ? pos.currentPrice >= targetTp.price : pos.currentPrice <= targetTp.price;
           if (tpHit) {
+            if (pos.mode === 'LIVE' && pos.exchange === 'OKX') {
+              await closeRealOkxLivePosition({
+                symbol: pos.symbol,
+                side: pos.side,
+                baseQty: pos.qty,
+                algoId: pos.exchangeAlgoId,
+              }).catch(() => {});
+            }
             systemState.activePositions.splice(i, 1);
             const tradeRecord = recordClosedPosition(pos, pos.currentPrice, 'TP_HIT');
             const filledStepsCount = Array.isArray(pos.safetyOrders)
@@ -4126,7 +4852,7 @@ async function runBotEngineCycle() {
               price: pos.currentPrice,
               pnl: tradeRecord.netPnlUsdt,
               message: `Разгрузка сетки Take-Profit ($${targetTp.price.toFixed(priceDecimals)}, сработало доборов: ${filledStepsCount}/2) по ${pos.symbol}! Чистый профит +$${tradeRecord.netPnlUsdt.toFixed(2)} USDT.`,
-              rttMs: systemState.pings.bybit,
+              rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
             });
             continue;
           }
@@ -4149,6 +4875,14 @@ async function runBotEngineCycle() {
         });
 
         if (ftExitCheck.shouldExit && ftExitCheck.exitType === 'ROI') {
+          if (pos.mode === 'LIVE' && pos.exchange === 'OKX') {
+            await closeRealOkxLivePosition({
+              symbol: pos.symbol,
+              side: pos.side,
+              baseQty: pos.qty,
+              algoId: pos.exchangeAlgoId,
+            }).catch(() => {});
+          }
           systemState.activePositions.splice(i, 1);
           const tradeRecord = recordClosedPosition(pos, pos.currentPrice, 'TP_HIT');
 
@@ -4161,7 +4895,7 @@ async function runBotEngineCycle() {
             price: pos.currentPrice,
             pnl: tradeRecord.netPnlUsdt,
             message: `Фиксация волны сетки [${ftExitCheck.exitReasonTag}] по ${pos.symbol} (удержание ${ftExitCheck.holdDurationMinutes}м, цена $${pos.currentPrice.toFixed(priceDecimals)}): чистый PnL +$${tradeRecord.netPnlUsdt.toFixed(2)} USDT!`,
-            rttMs: systemState.pings.bybit,
+            rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
           });
           continue;
         }
@@ -4187,6 +4921,14 @@ async function runBotEngineCycle() {
           liveTgSent * posDir <= -0.78;
 
         if (isCounterTgSignal) {
+          if (pos.mode === 'LIVE' && pos.exchange === 'OKX') {
+            await closeRealOkxLivePosition({
+              symbol: pos.symbol,
+              side: pos.side,
+              baseQty: pos.qty,
+              algoId: pos.exchangeAlgoId,
+            }).catch(() => {});
+          }
           systemState.activePositions.splice(i, 1);
           const exitCode = pos.unrealizedPnl >= 0 ? 'TP_HIT' : 'SL_HIT';
           const tradeRecord = recordClosedPosition(pos, pos.currentPrice, exitCode);
@@ -4199,7 +4941,7 @@ async function runBotEngineCycle() {
             price: pos.currentPrice,
             pnl: tradeRecord.netPnlUsdt,
             message: `Ротация позиции по свежему встречному сигналу канала (${latestTgForPos?.sourceHandle || '@ne_investor'}): закрыт ${pos.side} ${pos.symbol} (${tradeRecord.netPnlUsdt >= 0 ? '+' : ''}$${tradeRecord.netPnlUsdt.toFixed(2)} USDT).`,
-            rttMs: systemState.pings.bybit,
+            rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
           });
           continue;
         }
@@ -4544,13 +5286,16 @@ async function runBotEngineCycle() {
           return;
         }
 
-        // Check Market Spread & Funding Settlement Guards
+        // Check Market Spread & Funding Settlement Guards (with real OKX funding feed when OKX is active)
+        const activeEx = systemState.activeExchange || 'OKX';
         const tickerMeta = systemState.screenerSymbols.find((s) => s.symbol === targetSymbol);
+        const okxFunding = activeEx === 'OKX' ? await fetchRealOkxFundingRate(targetSymbol) : null;
+        const nextFundingTs = okxFunding?.nextFundingTime || tickerMeta?.nextFundingTime || 0;
         const minutesToNextFunding =
-          tickerMeta?.nextFundingTime && tickerMeta.nextFundingTime > Date.now()
-            ? Math.round((tickerMeta.nextFundingTime - Date.now()) / 60000)
+          nextFundingTs > Date.now()
+            ? Math.round((nextFundingTs - Date.now()) / 60000)
             : 45;
-        const projectedFundingRate = tickerMeta?.fundingRate ?? 0.0001;
+        const projectedFundingRate = okxFunding?.fundingRate ?? tickerMeta?.fundingRate ?? 0.0001;
 
         const guards = checkMarketGuards({
           bestBid,
@@ -4570,7 +5315,7 @@ async function runBotEngineCycle() {
             side,
             price: bestBid,
             message: `Риск-Файрвол отклонил вход ${side} ${targetSymbol}: ${guards.reason}`,
-            rttMs: systemState.pings.bybit,
+            rttMs: activeEx === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
           });
           return;
         }
@@ -4580,11 +5325,16 @@ async function runBotEngineCycle() {
         const botRiskPct = Math.max(0.5, Math.min(2.5, Number(actingBot.riskPerTradePct) || 1.5));
 
         const topBookPrice = side === 'LONG' ? bestAsk : bestBid;
+        if (activeEx === 'OKX') {
+          await refreshOkxSwapInstrumentsCache(false).catch(() => {});
+        }
         const inst = resolveInstrumentRules(targetSymbol, topBookPrice);
         const priceDecimals = inst.tickSize < 0.01 ? 4 : inst.tickSize < 0.1 ? 2 : 1;
         const qtyDecimals = Math.max(0, -Math.floor(Math.log10(inst.qtyStep) + 1e-9));
 
-        const effectiveSlPct = Math.max(1.25, Math.min(2.20, evalResult.slDistancePct));
+        // Worst-case Trend-Grid stop distance sizing: caps total filled Base+SO1+SO2 catastrophic SL loss at <= botRiskPct
+        const gridRiskMetrics = computeEffectiveGridRiskStopPct(features.atrPct);
+        const effectiveSlPct = gridRiskMetrics.effectiveWorstCaseStopPct;
         const slDist = topBookPrice * (effectiveSlPct / 100);
         const slPrice = side === 'LONG' ? topBookPrice - slDist : topBookPrice + slDist;
 
@@ -4614,7 +5364,7 @@ async function runBotEngineCycle() {
             side,
             price: topBookPrice,
             message: `Риск-Файрвол заблокировал ордер ${targetSymbol}: ${sizeCalc.rejectReason || 'Превышен лимит загрузки свободной маржи (80%)'}.`,
-            rttMs: systemState.pings.bybit,
+            rttMs: activeEx === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
           });
           return;
         }
@@ -4641,13 +5391,14 @@ async function runBotEngineCycle() {
           }
         }
 
+        const takerFeeRate = activeEx === 'OKX' ? 0.0005 : 0.00055;
         // Walk L2-50 Orderbook for realistic VWAP execution & slippage verification
-        let l2Exec = executeMarketOrderL2(book, side === 'LONG' ? 'BUY' : 'SELL', plannedQty, 0.00055);
+        let l2Exec = executeMarketOrderL2(book, side === 'LONG' ? 'BUY' : 'SELL', plannedQty, takerFeeRate);
         if ((!l2Exec.filled || l2Exec.slippagePct > 0.002) && plannedQty > inst.minQty) {
           const fallbackQty = Math.max(inst.minQty, Number((Math.floor((plannedQty * 0.5) / inst.qtyStep) * inst.qtyStep).toFixed(qtyDecimals)));
           if (fallbackQty < plannedQty) {
             plannedQty = fallbackQty;
-            l2Exec = executeMarketOrderL2(book, side === 'LONG' ? 'BUY' : 'SELL', plannedQty, 0.00055);
+            l2Exec = executeMarketOrderL2(book, side === 'LONG' ? 'BUY' : 'SELL', plannedQty, takerFeeRate);
           }
         }
 
@@ -4660,15 +5411,15 @@ async function runBotEngineCycle() {
             side,
             price: topBookPrice,
             message: `Защита от проскальзывания L2: VWAP slippage ${(l2Exec.slippagePct * 100).toFixed(3)}% по ${targetSymbol} превышает лимит безопасности 0.25%.`,
-            rttMs: systemState.pings.bybit,
+            rttMs: activeEx === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
           });
           return;
         }
 
-        const qty = l2Exec.executedQty;
+        let qty = l2Exec.executedQty;
         const entryPrice = l2Exec.vwapPrice;
         // Re-anchor grid plan to exact executed VWAP price
-        const finalGridPlan = buildTrendGridPlan({
+        let finalGridPlan = buildTrendGridPlan({
           side,
           entryPrice,
           totalPlannedQty: sizeCalc.qty,
@@ -4678,8 +5429,66 @@ async function runBotEngineCycle() {
           priceDecimals,
         });
 
+        let exchangeOrderId: string | undefined;
+        let exchangeAlgoId: string | undefined;
+
+        if (systemState.mode === 'LIVE') {
+          if (activeEx === 'OKX') {
+            const liveRes = await executeRealOkxLiveEntry({
+              symbol: targetSymbol,
+              side,
+              baseQty: qty,
+              leverage: botLeverage,
+              slPrice: finalGridPlan.catastrophicSlPrice,
+              tpPrice: finalGridPlan.initialTpPrice,
+              priceDecimals,
+            });
+            if (!liveRes.ok) {
+              addBotLog({
+                botId: actingBot.agentId,
+                botName: actingBot.name,
+                action: 'RISK_GUARD',
+                symbol: targetSymbol,
+                side,
+                price: entryPrice,
+                message: `OKX ${systemState.okxDemoTrading ? 'Demo' : 'Live'} отклонил ордер ${side} ${targetSymbol}: ${liveRes.retMsg}`,
+                rttMs: systemState.pings.okx,
+              });
+              return;
+            }
+            if (liveRes.executedBaseQty > 0) {
+              qty = liveRes.executedBaseQty;
+            }
+            exchangeOrderId = liveRes.orderId;
+            exchangeAlgoId = liveRes.algoId;
+          } else {
+            const bybitRes = await executeRealBybitV5Order({
+              symbol: targetSymbol,
+              side: side === 'LONG' ? 'Buy' : 'Sell',
+              orderType: 'Market',
+              qty: String(qty),
+              stopLoss: String(finalGridPlan.catastrophicSlPrice),
+              takeProfit: String(finalGridPlan.initialTpPrice),
+            });
+            if (!bybitRes.ok) {
+              addBotLog({
+                botId: actingBot.agentId,
+                botName: actingBot.name,
+                action: 'RISK_GUARD',
+                symbol: targetSymbol,
+                side,
+                price: entryPrice,
+                message: `Bybit Live отклонил ордер ${side} ${targetSymbol}: ${bybitRes.retMsg}`,
+                rttMs: systemState.pings.bybit,
+              });
+              return;
+            }
+            exchangeOrderId = bybitRes.orderId;
+          }
+        }
+
         const tpGrid = [{ price: finalGridPlan.initialTpPrice, qty: Number(qty.toFixed(qtyDecimals)) }];
-        const posId = `pos-${targetSymbol.toLowerCase()}-${Date.now().toString().slice(-4)}`;
+        const posId = exchangeOrderId || `pos-${targetSymbol.toLowerCase()}-${Date.now().toString().slice(-4)}`;
 
         const newPos = {
           id: posId,
@@ -4692,7 +5501,11 @@ async function runBotEngineCycle() {
           unrealizedPnl: 0.0,
           leverage: botLeverage,
           marginType: 'ISOLATED',
-          mode: 'SHADOW',
+          mode: systemState.mode,
+          exchange: activeEx,
+          okxDemo: activeEx === 'OKX' ? systemState.okxDemoTrading !== false : undefined,
+          exchangeOrderId,
+          exchangeAlgoId,
           slPrice: finalGridPlan.catastrophicSlPrice,
           tpGrid,
           safetyOrders: finalGridPlan.safetyOrders,
@@ -4747,6 +5560,14 @@ async function runBotEngineCycle() {
 
         const so1Price = finalGridPlan.safetyOrders[0]?.triggerPrice ?? entryPrice;
         const so2Price = finalGridPlan.safetyOrders[1]?.triggerPrice ?? entryPrice;
+        const envPrefix =
+          systemState.mode === 'LIVE'
+            ? activeEx === 'OKX'
+              ? systemState.okxDemoTrading
+                ? 'OKX Demo'
+                : 'OKX LIVE'
+              : 'Bybit LIVE'
+            : `${activeEx} Учебн.`;
 
         addBotLog({
           botId: actingBot.agentId,
@@ -4755,18 +5576,18 @@ async function runBotEngineCycle() {
           symbol: targetSymbol,
           side,
           price: newPos.entryVwap,
-          message: `Сетка @ne_investor [Шаг 1/3 · ${newPos.leverage}x]: Вход ${side} ${targetSymbol} (базовый объем ${newPos.qty}) по $${newPos.entryVwap.toFixed(priceDecimals)}. Уровни добора на просадке: SO1 $${so1Price.toFixed(priceDecimals)}, SO2 $${so2Price.toFixed(priceDecimals)}. Цель разгрузки TP: $${finalGridPlan.initialTpPrice.toFixed(priceDecimals)} (+${finalGridPlan.tpTargetPct}%).`,
-          rttMs: systemState.pings.bybit,
+          message: `Сетка [${envPrefix} · Шаг 1/3 · ${newPos.leverage}x]: Вход ${side} ${targetSymbol} (${newPos.qty}) по $${newPos.entryVwap.toFixed(priceDecimals)}. Доборы: SO1 $${so1Price.toFixed(priceDecimals)}, SO2 $${so2Price.toFixed(priceDecimals)}. Стоп: $${finalGridPlan.catastrophicSlPrice.toFixed(priceDecimals)}. TP: $${finalGridPlan.initialTpPrice.toFixed(priceDecimals)} (+${finalGridPlan.tpTargetPct}%).`,
+          rttMs: activeEx === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
         });
 
         emitAppNotification({
           category: 'TRADE_OPEN',
           severity: 'INFO',
-          title: `🟢 Сетка по тренду: ${targetSymbol} ${side} ${newPos.leverage}x`,
-          message: `${actingBot.name}: Базовый вход $${newPos.entryVwap.toFixed(priceDecimals)} (${newPos.qty}), доборы SO1 $${so1Price.toFixed(priceDecimals)} / SO2 $${so2Price.toFixed(priceDecimals)}, цель разгрузки TP $${finalGridPlan.initialTpPrice.toFixed(priceDecimals)} (+${finalGridPlan.tpTargetPct}%)`,
+          title: `🟢 ${envPrefix}: ${targetSymbol} ${side} ${newPos.leverage}x`,
+          message: `${actingBot.name}: Вход $${newPos.entryVwap.toFixed(priceDecimals)} (${newPos.qty}), SO1 $${so1Price.toFixed(priceDecimals)} / SO2 $${so2Price.toFixed(priceDecimals)}, SL $${finalGridPlan.catastrophicSlPrice.toFixed(priceDecimals)}, TP $${finalGridPlan.initialTpPrice.toFixed(priceDecimals)} (+${finalGridPlan.tpTargetPct}%)`,
           symbol: targetSymbol,
           botName: actingBot.name,
-          isUrgent: false,
+          isUrgent: systemState.mode === 'LIVE',
         });
 
         savePersistedState();
@@ -5374,13 +6195,26 @@ app.post('/api/bots/config', (req: Request, res: Response) => {
 });
 
 // Close all active positions for a specific bot (or ALL bots)
-app.post('/api/bots/close-all', (req: Request, res: Response) => {
+app.post('/api/bots/close-all', async (req: Request, res: Response) => {
   const { agentId } = req.body;
   const closedList: ClosedTradeRecord[] = [];
+  const errors: string[] = [];
 
   for (let i = systemState.activePositions.length - 1; i >= 0; i--) {
     const pos = systemState.activePositions[i];
     if (!agentId || agentId === 'ALL' || pos.botId === agentId) {
+      if (pos.mode === 'LIVE' && pos.exchange === 'OKX') {
+        const closeRes = await closeRealOkxLivePosition({
+          symbol: pos.symbol,
+          side: pos.side,
+          baseQty: pos.qty,
+          algoId: pos.exchangeAlgoId,
+        });
+        if (!closeRes.ok) {
+          errors.push(`${pos.symbol}: ${closeRes.retMsg}`);
+          continue;
+        }
+      }
       systemState.activePositions.splice(i, 1);
       const trade = recordClosedPosition(pos, pos.currentPrice, 'MANUAL_CLOSE');
       closedList.push(trade);
@@ -5397,17 +6231,18 @@ app.post('/api/bots/close-all', (req: Request, res: Response) => {
       symbol: 'MULTI',
       pnl: Number(totalNet.toFixed(2)),
       message: `Закрыто позиций (${closedList.length} шт.) по запросу оператора. Суммарный чистый результат: ${totalNet >= 0 ? '+' : ''}$${totalNet.toFixed(2)} USDT.`,
-      rttMs: systemState.pings.bybit,
+      rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
     });
   }
 
   savePersistedState();
 
   res.json({
-    success: true,
+    success: errors.length === 0,
     closedCount: closedList.length,
     closedTrades: closedList,
     activePositions: systemState.activePositions,
+    errors: errors.length > 0 ? errors : undefined,
   });
 });
 
@@ -6970,22 +7805,28 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
   const bybitSecretSet = isKeyValid(process.env.BYBIT_API_SECRET);
   const okxKeySet = isKeyValid(process.env.OKX_API_KEY);
   const okxSecretSet = isKeyValid(process.env.OKX_API_SECRET);
+  const okxPassSet = isKeyValid(process.env.OKX_PASSPHRASE);
+  const okxFullyConfigured = okxKeySet && okxSecretSet && okxPassSet;
   const mexcKeySet = isKeyValid(process.env.MEXC_API_KEY);
   const tgIdSet = isKeyValid(process.env.TG_API_ID);
   const tgHashSet = isKeyValid(process.env.TG_API_HASH);
 
   res.json({
-    activeExchange: systemState.activeExchange || 'BYBIT',
+    activeExchange: systemState.activeExchange || 'OKX',
+    okxDemoTrading: systemState.okxDemoTrading !== false,
+    okxPosMode: systemState.okxPosMode || 'net_mode',
+    okxAccountEquityUsdt: systemState.okxAccountEquityUsdt,
+    okxAvailableBalanceUsdt: systemState.okxAvailableBalanceUsdt,
     dataSources: {
       marketData: {
-        provider: 'Bybit V5 & OKX V5 Multi-Exchange Gateway',
+        provider: 'OKX V5 & Bybit V5 Multi-Exchange Gateway',
         type: 'REAL_LIVE_STREAM',
         requiresKey: false,
         status: 'CONNECTED',
-        description: 'Реальные котировки, живой стакан L2-50, тикеры 24ч и ставки фандинга берутся напрямую с Bybit V5 и OKX V5.',
+        description: 'Реальные котировки, живой стакан L2-50, тикеры 24ч и ставки фандинга берутся напрямую с OKX V5 и Bybit V5.',
       },
       backupMarketData: {
-        provider: 'OKX V5 & MEXC Public Gateway',
+        provider: 'Bybit V5 & MEXC Public Gateway',
         type: 'REAL_LIVE_STREAM',
         requiresKey: false,
         status: 'CONNECTED',
@@ -7008,10 +7849,14 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
         source: bybitKeySet && bybitSecretSet ? 'Сохранено в .env' : 'Не настроено',
       },
       okxTrading: {
-        name: 'OKX_API_KEY & SECRET',
-        purpose: 'Боевое исполнение ордеров OKX V5 (USDT Swaps)',
-        configured: okxKeySet && okxSecretSet,
-        source: okxKeySet && okxSecretSet ? 'Сохранено в .env' : okxKeySet ? 'Указан API Key' : 'Не настроено',
+        name: 'OKX_API_KEY, SECRET & PASSPHRASE',
+        purpose: 'Реальное/Демо исполнение OKX V5 USDT SWAP (Net Isolated 4x + Algo SL/TP)',
+        configured: okxFullyConfigured,
+        source: okxFullyConfigured
+          ? `Сохранено в .env (${systemState.okxDemoTrading !== false ? 'OKX Demo' : 'OKX Live'})`
+          : okxKeySet
+          ? 'Указана часть ключей (нужны Key, Secret и Passphrase)'
+          : 'Не настроено',
       },
       mexcTrading: {
         name: 'MEXC_API_KEY & SECRET',
@@ -7074,6 +7919,35 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
       });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
+    }
+  } else if (target === 'okx_private') {
+    if (!areOkxKeysConfigured()) {
+      res.json({
+        success: false,
+        error: 'Укажите OKX_API_KEY, OKX_API_SECRET и OKX_PASSPHRASE в форме ниже и нажмите «Сохранить ключи».',
+        statusText: 'Ключи OKX не заполнены (нужны API Key, Secret Key и Passphrase).',
+      });
+      return;
+    }
+    const sync = await syncOkxAccountState();
+    const envName = systemState.okxDemoTrading !== false ? 'OKX Demo Trading (x-simulated-trading: 1)' : 'OKX Live Real Account';
+    if (sync.ok) {
+      savePersistedState();
+      res.json({
+        success: true,
+        latencyMs: sync.rttMs || systemState.pings.okx,
+        equityUsdt: sync.equityUsdt,
+        availUsdt: sync.availUsdt,
+        posMode: sync.posMode,
+        positionsCount: sync.positionsCount,
+        statusText: `${envName} подключен (${sync.rttMs || 35}мс)! Эквити: $${(sync.equityUsdt || 0).toFixed(2)} USDT (свободно $${(sync.availUsdt || 0).toFixed(2)}), режим позиций: ${sync.posMode}, открытых SWAP: ${sync.positionsCount || 0}.`,
+      });
+    } else {
+      res.json({
+        success: false,
+        error: sync.retMsg,
+        statusText: `Ошибка авторизации ${envName}: ${sync.retMsg}`,
+      });
     }
   } else if (target === 'ollama_cloud') {
     let host = ollamaCloud.getHost();
@@ -7382,13 +8256,21 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
     else if (val === '') { delete process.env.TG_API_HASH; updates.TG_API_HASH = ''; }
   }
 
+  if (typeof req.body?.okxDemoTrading === 'boolean') {
+    systemState.okxDemoTrading = req.body.okxDemoTrading;
+    process.env.OKX_DEMO_TRADING = req.body.okxDemoTrading ? 'true' : 'false';
+    updates.OKX_DEMO_TRADING = process.env.OKX_DEMO_TRADING;
+  }
+
   // Persist to zima_trade_ai/.env and root .env
   writeEnvFile(path.resolve(process.cwd(), 'zima_trade_ai', '.env'), updates);
   writeEnvFile(path.resolve(process.cwd(), '.env'), updates);
 
+  savePersistedState();
+
   const poolStatus = ollamaCloud.getPoolStatus();
   const bybitConfigured = isKeyValid(process.env.BYBIT_API_KEY) && isKeyValid(process.env.BYBIT_API_SECRET);
-  const okxConfigured = isKeyValid(process.env.OKX_API_KEY) && isKeyValid(process.env.OKX_API_SECRET);
+  const okxConfigured = areOkxKeysConfigured();
 
   res.json({
     success: true,
@@ -7397,6 +8279,7 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
     ollamaPool: poolStatus,
     bybitConfigured,
     okxConfigured,
+    okxDemoTrading: systemState.okxDemoTrading,
   });
 });
 
@@ -8968,7 +9851,17 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`ZimaTrade AI Terminal running at http://0.0.0.0:${PORT}`);
-    // Calibrate legacy seed prices to real live Bybit tickers and measure real exchange RTT pings
+    // Load live OKX SWAP contract specs & sync private OKX account state if keys are configured
+    refreshOkxSwapInstrumentsCache(true).catch(() => {});
+    if (areOkxKeysConfigured()) {
+      syncOkxAccountState().catch(() => {});
+    }
+    setInterval(() => {
+      if (areOkxKeysConfigured() && (systemState.activeExchange === 'OKX' || systemState.mode === 'LIVE')) {
+        syncOkxAccountState().catch(() => {});
+      }
+    }, 60 * 1000);
+    // Calibrate legacy seed prices to real live exchange tickers and measure real exchange RTT pings
     calibrateSeedStateWithLiveBybit().catch(() => {});
     measureRealExchangePings(true).catch(() => {});
     // Verify Telegram Bot (@zimatradeai_bot) on startup, enforce profile anti-spam guard, and start getUpdates / Production Relay Bridge

@@ -45,7 +45,8 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const isKillSwitch = health?.isKillSwitchActive ?? false;
   const currentMode = health?.mode ?? 'SHADOW';
-  const activeExchange: ExchangeId = health?.activeExchange ?? 'BYBIT';
+  const activeExchange: ExchangeId = health?.activeExchange ?? 'OKX';
+  const isOkxDemo = health?.okxDemoTrading !== false;
   const drawdown = health?.drawdownPct ?? -1.42;
   const walletBalance = (health?.capitalUsdt ?? 10) + (health?.totalRealizedPnlUsdt ?? 0.76);
 
@@ -133,7 +134,7 @@ export const Header: React.FC<HeaderProps> = ({
                 <button
                   type="button"
                   onClick={() => onExchangeChange?.('OKX')}
-                  title={`Активный поток биржи OKX V5 (${health?.pings.okx ?? 32} мс)`}
+                  title={`Активный поток биржи OKX V5 (${isOkxDemo ? 'Demo' : 'Live'} · ${health?.pings.okx ?? 32} мс)`}
                   className={`px-2 py-0.5 rounded-md flex items-center gap-1 transition ${
                     activeExchange === 'OKX'
                       ? 'bg-cyan-500/25 text-cyan-300 font-bold border border-cyan-400/40'
@@ -142,6 +143,11 @@ export const Header: React.FC<HeaderProps> = ({
                 >
                   <span className={`w-1.5 h-1.5 rounded-full ${activeExchange === 'OKX' ? 'bg-emerald-400' : 'bg-slate-600'}`} />
                   <span>OKX</span>
+                  {activeExchange === 'OKX' && health?.okxKeysConfigured && (
+                    <span className={`text-[9px] px-1 rounded ${isOkxDemo ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
+                      {isOkxDemo ? 'DEMO' : 'LIVE'}
+                    </span>
+                  )}
                   <span className="hidden lg:inline text-[10px] text-slate-400">{health?.pings.okx ?? 32}ms</span>
                 </button>
               </div>

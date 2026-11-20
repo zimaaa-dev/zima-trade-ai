@@ -6,6 +6,11 @@ export interface SystemHealth {
   status: string;
   mode: ExecutionMode;
   activeExchange?: ExchangeId;
+  okxDemoTrading?: boolean;
+  okxKeysConfigured?: boolean;
+  okxPosMode?: 'net_mode' | 'long_short_mode';
+  okxAccountEquityUsdt?: number;
+  okxAvailableBalanceUsdt?: number;
   isKillSwitchActive: boolean;
   killSwitchTriggerReason: string | null;
   capitalUsdt: number;
@@ -35,7 +40,10 @@ export interface SystemHealth {
 export const DEFAULT_SYSTEM_HEALTH: SystemHealth = {
   status: 'ONLINE',
   mode: 'SHADOW',
-  activeExchange: 'BYBIT',
+  activeExchange: 'OKX',
+  okxDemoTrading: true,
+  okxKeysConfigured: false,
+  okxPosMode: 'net_mode',
   isKillSwitchActive: false,
   killSwitchTriggerReason: null,
   capitalUsdt: 10,

@@ -19,6 +19,7 @@ import {
   evaluateLowProfitPairsProtection,
   applyFreqtradePairlistPipeline,
   buildTrendGridPlan,
+  computeEffectiveGridRiskStopPct,
   evaluateTrendGridSafetyOrderFill,
   TREND_GRID_CORE_SYMBOLS,
   type SymbolCooldownEntry,
@@ -446,6 +447,52 @@ test('[Variant 3 · Trend-Grid @ne_investor] buildTrendGridPlan and evaluateTren
   assert.equal(pullbackSignal.action, 'LONG');
   assert.match(pullbackSignal.reasonSummary, /TREND_GRID_PULLBACK/);
 });
+
+test('computeEffectiveGridRiskStopPct caps full-grid SO1+SO2 worst-case SL loss strictly near 2% risk budget ($2 on $100)', async () => {
+  const { calculateRiskFirewallOrderSize } = await import('./engine-math.ts');
+  const { DEFAULT_OKX_SWAP_INSTRUMENTS, buildOkxInstrumentRules } = await import('./okx-exchange.ts');
+  const entryPrice = 100.0;
+  const riskMeta = computeEffectiveGridRiskStopPct(1.25);
+  const inst = buildOkxInstrumentRules(DEFAULT_OKX_SWAP_INSTRUMENTS.SOLUSDT, entryPrice);
+  const slForSizing = entryPrice * (1 + riskMeta.effectiveWorstCaseStopPct / 100);
+  const sizeCalc = calculateRiskFirewallOrderSize({
+    capital: 100,
+    entryPrice,
+    stopLossPrice: slForSizing,
+    side: 'SHORT',
+    requestedLeverage: 4,
+    instrument: inst,
+    riskPctLimit: 0.02,
+  });
+  assert.equal(sizeCalc.allowed, true);
+
+  const plan = buildTrendGridPlan({
+    side: 'SHORT',
+    entryPrice,
+    totalPlannedQty: sizeCalc.qty,
+    atrPct: 1.25,
+    qtyStep: inst.qtyStep,
+    minQty: inst.minQty,
+    priceDecimals: 2,
+  });
+
+  // Simulate worst-case: Base + SO1 + SO2 all fill, then catastrophicSL triggers
+  const so1 = plan.safetyOrders[0];
+  const so2 = plan.safetyOrders[1];
+  const totalQty = plan.baseOrderQty + so1.qty + so2.qty;
+  const avgEntry =
+    (plan.baseOrderQty * entryPrice + so1.qty * so1.triggerPrice + so2.qty * so2.triggerPrice) / totalQty;
+  const grossLoss = (plan.catastrophicSlPrice - avgEntry) * totalQty;
+  const fees = (avgEntry + plan.catastrophicSlPrice) * totalQty * 0.0005;
+  const totalNetLoss = grossLoss + fees;
+
+  assert.ok(
+    totalNetLoss <= 2.15,
+    `Full-grid SL loss ($${totalNetLoss.toFixed(2)}) must stay bounded near $2.00 risk budget, never $4.20`
+  );
+  assert.equal(TREND_GRID_CORE_SYMBOLS.includes('ETHUSDT' as any), false);
+});
+
 
 
 

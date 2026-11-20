@@ -17,6 +17,11 @@ import {
 import type { TelegramBotStatus, TelegramNotificationToggles } from '../types.ts';
 
 interface ConfigStatus {
+  activeExchange?: string;
+  okxDemoTrading?: boolean;
+  okxPosMode?: string;
+  okxAccountEquityUsdt?: number;
+  okxAvailableBalanceUsdt?: number;
   dataSources: {
     marketData: {
       provider: string;
@@ -87,6 +92,7 @@ export const SettingsConfigView: React.FC = () => {
   const [testingTarget, setTestingTarget] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [togglingOkxDemo, setTogglingOkxDemo] = useState<boolean>(false);
 
   // Telegram Bot (@zimatradeai_bot) State
   const [tgStatus, setTgStatus] = useState<TelegramBotStatus | null>(null);
@@ -249,6 +255,32 @@ export const SettingsConfigView: React.FC = () => {
       });
     } finally {
       setTestingTarget(null);
+    }
+  };
+
+  const handleToggleOkxDemoMode = async (demo: boolean) => {
+    setTogglingOkxDemo(true);
+    setSaveStatus(null);
+    try {
+      const res = await fetch('/api/exchange/okx-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ demo }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        await fetchStatus();
+        setSaveStatus({
+          type: 'success',
+          message: demo
+            ? 'OKX переключён на Demo Trading (x-simulated-trading: 1). Тестируйте реальные ордера на демо-балансе OKX.'
+            : 'OKX переключён на Боевой LIVE-аккаунт. Все ордера в LIVE-режиме пойдут на реальный счёт OKX!',
+        });
+      }
+    } catch (err: any) {
+      setSaveStatus({ type: 'error', message: err.message || 'Ошибка переключения среды OKX' });
+    } finally {
+      setTogglingOkxDemo(false);
     }
   };
 
@@ -598,15 +630,22 @@ export const SettingsConfigView: React.FC = () => {
               <tr className="hover:bg-slate-800/30">
                 <td className="py-3 px-3">
                   <div className="font-bold text-white">OKX_API_KEY, SECRET & PASSPHRASE</div>
-                  <span className="text-[10px] text-amber-400">OKX v5 REST / Private WS</span>
+                  <span className="text-[10px] text-amber-400">
+                    OKX v5 REST ({config?.okxDemoTrading !== false ? 'Demo Trading' : 'Live Real'}) · {config?.okxPosMode || 'net_mode'} · Isolated 4x
+                  </span>
                 </td>
                 <td className="py-3 px-3 text-slate-300 text-[11px]">
-                  Боевое исполнение ордеров на OKX в Live Mode
+                  Исполнение ордеров OKX V5 USDT SWAP и Algo SL/TP
+                  {typeof config?.okxAccountEquityUsdt === 'number' && (
+                    <span className="block text-[10px] text-cyan-300 mt-0.5">
+                      Баланс OKX: ${config.okxAccountEquityUsdt.toFixed(2)} USDT (свободно ${(config.okxAvailableBalanceUsdt ?? 0).toFixed(2)})
+                    </span>
+                  )}
                 </td>
                 <td className="py-3 px-3">
                   {config?.credentials?.okxTrading?.configured ? (
                     <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 w-fit">
-                      <CheckCircle2 className="w-3 h-3" /> НАСТРОЕН
+                      <CheckCircle2 className="w-3 h-3" /> {config?.okxDemoTrading !== false ? 'OKX DEMO ГОТОВ' : 'OKX LIVE ГОТОВ'}
                     </span>
                   ) : (
                     <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-950 text-amber-400 border border-amber-800/40 flex items-center gap-1 w-fit">
@@ -615,7 +654,14 @@ export const SettingsConfigView: React.FC = () => {
                   )}
                 </td>
                 <td className="py-3 px-3 text-right">
-                  <span className="text-[10px] text-slate-500">Private API</span>
+                  <button
+                    type="button"
+                    onClick={() => runTest('okx_private')}
+                    disabled={testingTarget === 'okx_private'}
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-cyan-300 rounded text-[11px] transition"
+                  >
+                    {testingTarget === 'okx_private' ? 'Проверка...' : 'Проверить ключи OKX'}
+                  </button>
                 </td>
               </tr>
 
@@ -840,6 +886,41 @@ export const SettingsConfigView: React.FC = () => {
                 }
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
               />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800/80">
+            <div>
+              <span className="text-slate-200 font-bold block">Среда OKX V5 (Demo Trading / Live)</span>
+              <span className="text-[11px] text-slate-400">
+                Включите Demo Trading для безопасной проверки ордеров с виртуальными USDT на сервере OKX (заголовок simulated-trading).
+              </span>
+            </div>
+            <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 gap-1">
+              <button
+                type="button"
+                disabled={togglingOkxDemo}
+                onClick={() => handleToggleOkxDemoMode(true)}
+                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition ${
+                  config?.okxDemoTrading !== false
+                    ? 'bg-amber-500/25 text-amber-300 border border-amber-400/50'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                OKX Demo Trading
+              </button>
+              <button
+                type="button"
+                disabled={togglingOkxDemo}
+                onClick={() => handleToggleOkxDemoMode(false)}
+                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition ${
+                  config?.okxDemoTrading === false
+                    ? 'bg-rose-500/25 text-rose-300 border border-rose-400/50'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                OKX Live (Боевой)
+              </button>
             </div>
           </div>
 

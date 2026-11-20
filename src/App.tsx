@@ -39,6 +39,7 @@ export default function App() {
   const [health, setHealth] = useState<SystemHealth>(DEFAULT_SYSTEM_HEALTH);
   const [isNotificationCenterOpen, setIsNotificationCenterOpen] = useState<boolean>(false);
   const [unreadNotifCount, setUnreadNotifCount] = useState<number>(0);
+  const [modeSwitchError, setModeSwitchError] = useState<string | null>(null);
 
   // Authentication state
   const [authChecking, setAuthChecking] = useState<boolean>(true);
@@ -153,6 +154,7 @@ export default function App() {
   };
 
   const handleModeChange = async (newMode: ExecutionMode) => {
+    setModeSwitchError(null);
     try {
       const res = await fetch('/api/system/mode', {
         method: 'POST',
@@ -161,6 +163,9 @@ export default function App() {
       }).catch(() => null);
       if (res && res.ok) {
         fetchHealth();
+      } else if (res) {
+        const errData = await res.json().catch(() => null);
+        setModeSwitchError(errData?.error || `Не удалось переключить режим (HTTP ${res.status})`);
       }
     } catch {
       // safe fallback
@@ -239,11 +244,37 @@ export default function App() {
       />
 
       <main className="flex-1 w-full max-w-[100vw] overflow-x-hidden pb-12">
+        {modeSwitchError && (
+          <div className="max-w-[1600px] mx-auto px-3 sm:px-4 pt-3">
+            <div className="bg-amber-950/80 border border-amber-500/40 rounded-xl px-4 py-2.5 text-xs font-mono text-amber-200 flex flex-wrap items-center justify-between gap-3">
+              <span>{modeSwitchError}</span>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModeSwitchError(null);
+                    setActiveTab('settings');
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/40 text-cyan-200 font-bold transition"
+                >
+                  Настроить ключи OKX / Bybit
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setModeSwitchError(null)}
+                  className="px-2 py-1 text-slate-400 hover:text-white transition"
+                >
+                  Закрыть
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {activeTab === 'terminal' && (
           <L2Terminal
             mode={health?.mode ?? 'SHADOW'}
             isKillSwitchActive={health?.isKillSwitchActive ?? false}
-            activeExchange={health?.activeExchange ?? 'BYBIT'}
+            activeExchange={health?.activeExchange ?? 'OKX'}
             onRefreshHealth={fetchHealth}
           />
         )}

@@ -1628,9 +1628,30 @@ export const TREND_GRID_CORE_SYMBOLS = [
   'BTCUSDT',
   'SOLUSDT',
   'XRPUSDT',
-  'ETHUSDT',
   'BNBUSDT',
+  'DOGEUSDT',
+  'SUIUSDT',
+  'NEARUSDT',
+  'ADAUSDT',
 ] as const;
+
+export function computeEffectiveGridRiskStopPct(atrPct: number): {
+  gridStepPct: number;
+  tpTargetPct: number;
+  catastrophicSlPct: number;
+  effectiveWorstCaseStopPct: number;
+} {
+  const safeAtr = Number.isFinite(atrPct) && atrPct > 0 ? atrPct : 1.35;
+  const gridStepPct = Number(clamp(safeAtr * 0.95, 1.15, 1.95).toFixed(2));
+  const tpTargetPct = Number(clamp(gridStepPct * 1.45, 1.70, 2.45).toFixed(2));
+  const catastrophicSlPct = Number(clamp(gridStepPct * 3.3, 3.80, 4.80).toFixed(2));
+  // Across 40% Base (0x) + 30% SO1 (1.0x step) + 30% SO2 (2.1x step), averaged entry shifts ~0.93 * gridStepPct;
+  // therefore remaining distance from averaged entryVwap to catastrophicSl is catastrophicSlPct - 0.90 * gridStepPct.
+  const effectiveWorstCaseStopPct = Number(
+    Math.max(2.60, catastrophicSlPct - 0.90 * gridStepPct).toFixed(2)
+  );
+  return { gridStepPct, tpTargetPct, catastrophicSlPct, effectiveWorstCaseStopPct };
+}
 
 export interface TrendGridSafetyOrder {
   stepIndex: number; // 1 or 2
@@ -1649,7 +1670,7 @@ export interface TrendGridPlan {
   gridStepPct: number;
   tpTargetPct: number; // Full-grid unload target (+1.70% .. +2.45% from averaged entryVwap)
   initialTpPrice: number;
-  catastrophicSlPct: number; // Structural safety stop behind the entire 3-step grid (~3.8% - 4.5%)
+  catastrophicSlPct: number; // Structural safety stop behind the entire 3-step grid (~3.8% - 4.8%)
   catastrophicSlPrice: number;
   safetyOrders: TrendGridSafetyOrder[];
 }
@@ -1661,7 +1682,7 @@ export interface TrendGridPlan {
  *   - Base Entry Order (40% of total grid capacity, or minQty if indivisible)
  *   - Safety Order #1 (30% at -1.0 * gridStepPct pullback for LONG / +1.0 * gridStepPct bounce for SHORT)
  *   - Safety Order #2 (30% at -2.1 * gridStepPct deep pullback for LONG / +2.1 * gridStepPct for SHORT)
- * - Places Catastrophic Stop-Loss behind the entire grid (`3.4 * gridStepPct`, ~4.0-4.5% away),
+ * - Places Catastrophic Stop-Loss behind the entire grid (`3.3 * gridStepPct`, ~3.8-4.8% away),
  *   so 1.2% wicks fill Safety Order #1 and improve `entryVwap` instead of stopping out!
  * - Single Full-Position Unload Take-Profit (`+1.70%..+2.45%` from averaged `entryVwap`) — zero $0.03 premature cuts.
  */
@@ -1683,12 +1704,7 @@ export function buildTrendGridPlan(params: {
     return Number(Math.max(minQty, stepped).toFixed(qtyDecimals));
   };
 
-  // Grid step distance based on 15m ATR (bounded between 1.15% and 1.95%)
-  const gridStepPct = Number(clamp(atrPct * 0.95, 1.15, 1.95).toFixed(2));
-  // Unload bounce target: 1.45x grid step, bounded between +1.70% and +2.45% net move
-  const tpTargetPct = Number(clamp(gridStepPct * 1.45, 1.70, 2.45).toFixed(2));
-  // Catastrophic stop sits well behind Safety Order #2 (3.3x gridStepPct, bounded 3.80% .. 4.80%)
-  const catastrophicSlPct = Number(clamp(gridStepPct * 3.3, 3.80, 4.80).toFixed(2));
+  const { gridStepPct, tpTargetPct, catastrophicSlPct } = computeEffectiveGridRiskStopPct(atrPct);
 
   // Split totalPlannedQty into 40% Base + 30% SO1 + 30% SO2 if divisible into >= 3 * minQty;
   // otherwise use minQty for Base and minQty for SO1 & SO2 so every coin supports grid averaging.

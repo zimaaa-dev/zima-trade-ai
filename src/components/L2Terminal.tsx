@@ -33,7 +33,7 @@ interface L2TerminalProps {
 export const L2Terminal: React.FC<L2TerminalProps> = ({
   mode,
   isKillSwitchActive,
-  activeExchange = 'BYBIT',
+  activeExchange = 'OKX',
   onRefreshHealth,
 }) => {
   const exchangeLabel = activeExchange === 'OKX' ? 'OKX' : 'Bybit';
@@ -998,7 +998,7 @@ export const L2Terminal: React.FC<L2TerminalProps> = ({
           <span className="text-[11px] text-slate-400 font-mono">
             Режим: {mode === 'SHADOW' ? 'Учебный (Forward-Test)' : 'Реальный (LIVE)'} •{' '}
             <MetricTooltip metric="BYBIT_FEE" showIcon={false}>
-              <span>{exchangeLabel} Taker 0.055%</span>
+              <span>{exchangeLabel} Taker {activeExchange === 'OKX' ? '0.05%' : '0.055%'}</span>
             </MetricTooltip>
           </span>
         </div>
