@@ -193,6 +193,7 @@ import {
 } from './src/lib/wallet-math.ts';
 import {
   createDefaultBotBrain,
+  computeBrainSha256,
   extractMarketFeatures,
   evaluateBotSignal,
   updateBotBrainOnline,
@@ -220,6 +221,23 @@ import {
   type BotBrainState,
   type XaiDecisionRecord,
 } from './src/lib/bot-learning-math.ts';
+import {
+  STRATEGY_CATALOG_14,
+  EVENT_LABELS_RU,
+  detectActiveMarketEvents,
+  evaluateBtcBounceShortVeto,
+  evaluateSameDirectionCorrelationCap,
+  evaluateStrategyDirectionBias,
+  buildAiConductorPrompt,
+  parseAiConductorResponse,
+  applyDeterministicEvolutionFallback,
+  applyConductorDecisionToAgents,
+  type StrategySeedSpec,
+  type StrategyPerformanceInput,
+  type MarketSnapshotForAi,
+  type AiConductorDecision,
+  type MarketEventKey,
+} from './src/lib/ai-strategy-conductor.ts';
 import {
   DEFAULT_OKX_SWAP_INSTRUMENTS,
   buildOkxInstrumentRules,
@@ -403,6 +421,10 @@ interface AppSystemState {
   autoMarketAdaptationEnabled?: boolean;
   lastAutoAdaptedAt?: number;
   currentMarketRegime?: string;
+  aiConductorEnabled?: boolean;
+  lastAiConductorRunAt?: number;
+  currentAiConductorDecision?: AiConductorDecision | null;
+  aiConductorHistory?: AiConductorDecision[];
   botEngineSpeedMs: number;
   botTradeLogs: BotLogEntry[];
   closedTrades: ClosedTradeRecord[];
@@ -438,6 +460,40 @@ import {
 const initialLogs: BotLogEntry[] = isDemoSeedMode ? demoInitialLogs : [];
 const initialXaiDecisions: XaiDecisionRecord[] = [];
 
+function buildDefaultAgentFromSpec(spec: StrategySeedSpec) {
+  const brain = createDefaultBotBrain(spec.engineType, spec.agentId);
+  brain.weights = normalizeWeights(spec.weights);
+  brain.confidenceThreshold = spec.confidenceThreshold;
+  brain.atrMultiplier = spec.atrMultiplier;
+  brain.maxSpreadBps = spec.maxSpreadBps;
+  return {
+    agentId: spec.agentId,
+    name: spec.name,
+    engineType: spec.engineType,
+    strategyFamily: spec.strategyFamily,
+    preferredEvents: [...spec.preferredEvents],
+    directionBias: spec.directionBias,
+    mode: 'LIVE' as const,
+    sha256: computeBrainSha256(spec.agentId, brain.weights, 1),
+    tradesCount: 0,
+    profitFactor: 1.5,
+    sharpeRatio: 1.5,
+    maxDrawdownPct: 0,
+    virtualBalance: 20.0,
+    liveAllocation: 20.0,
+    isEnabled: spec.defaultEnabled,
+    riskPerTradePct: spec.riskPerTradePct,
+    leverage: spec.leverage,
+    allowedSymbols: [...spec.allowedSymbols],
+    dynamicScreenerScan: spec.dynamicScreenerScan,
+    tpSlRatio: spec.tpSlRatio,
+    targetTpPct: spec.targetTpPct,
+    maxConcurrentPositions: spec.maxConcurrentPositions,
+    mutationCount: 0,
+    brain,
+  };
+}
+
 const systemState: AppSystemState = {
   mode: 'SHADOW',
   activeExchange: 'OKX',
@@ -447,7 +503,7 @@ const systemState: AppSystemState = {
   killSwitchTriggerReason: null,
   lastUnblockedAt: 0,
   capitalUsdt: 10.0,
-  tradingCapitalCapUsdt: process.env.OKX_DEMO_TRADING !== 'false' ? 100.0 : null,
+  tradingCapitalCapUsdt: process.env.OKX_DEMO_TRADING !== 'false' ? 300.0 : null,
   rolling24hPnlUsdt: 0.0,
   totalRealizedPnlUsdt: 0.0,
   pings: { bybit: 24, okx: 32, mexc: 31 },
@@ -460,6 +516,10 @@ const systemState: AppSystemState = {
   autoMarketAdaptationEnabled: true,
   lastAutoAdaptedAt: Date.now(),
   currentMarketRegime: '🔄 Боковой диапазон (Range / Choppy)',
+  aiConductorEnabled: true,
+  lastAiConductorRunAt: 0,
+  currentAiConductorDecision: null,
+  aiConductorHistory: [],
   botEngineSpeedMs: 3500,
   botTradeLogs: initialLogs,
   closedTrades: initialClosedTrades,
@@ -575,71 +635,7 @@ const systemState: AppSystemState = {
     },
   ],
   parsedNewsFeed: [],
-  agents: [
-    {
-      agentId: 'agent-onnx-ppo-v2',
-      name: 'Delta-L2 · Стакан и Объемы',
-      engineType: 'ONNX_RL',
-      mode: 'LIVE',
-      sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-      tradesCount: 0,
-      profitFactor: 0,
-      sharpeRatio: 0,
-      maxDrawdownPct: 0,
-      virtualBalance: 10.0,
-      liveAllocation: 10.0,
-      isEnabled: true,
-      riskPerTradePct: 2.0,
-      leverage: 4,
-      allowedSymbols: [...TREND_GRID_CORE_SYMBOLS],
-      dynamicScreenerScan: false,
-      tpSlRatio: 2.5,
-      maxConcurrentPositions: 2,
-      brain: createDefaultBotBrain('ONNX_RL', 'agent-onnx-ppo-v2'),
-    },
-    {
-      agentId: 'agent-lgbm-nightly',
-      name: 'Momentum · Импульсный Скальпер',
-      engineType: 'LIGHTGBM',
-      mode: 'QUARANTINE',
-      sha256: 'a1f89bc321c10940982df4c8996fb92427ae41e4649b934ca495991b7852b112',
-      tradesCount: 0,
-      profitFactor: 0,
-      sharpeRatio: 0,
-      maxDrawdownPct: 0,
-      virtualBalance: 10.0,
-      liveAllocation: 0.0,
-      isEnabled: false,
-      riskPerTradePct: 1.2,
-      leverage: 4,
-      allowedSymbols: [...TREND_GRID_CORE_SYMBOLS],
-      dynamicScreenerScan: false,
-      tpSlRatio: 2.0,
-      maxConcurrentPositions: 1,
-      brain: createDefaultBotBrain('LIGHTGBM', 'agent-lgbm-nightly'),
-    },
-    {
-      agentId: 'agent-tg-crypto-alpha',
-      name: 'Alpha-Signal · Индекс Каналов',
-      engineType: 'TG_CHANNEL',
-      mode: 'LIVE',
-      sha256: '7c89a24198fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852e401',
-      tradesCount: 0,
-      profitFactor: 0,
-      sharpeRatio: 0,
-      maxDrawdownPct: 0,
-      virtualBalance: 10.0,
-      liveAllocation: 10.0,
-      isEnabled: true,
-      riskPerTradePct: 2.0,
-      leverage: 4,
-      allowedSymbols: [...TREND_GRID_CORE_SYMBOLS],
-      dynamicScreenerScan: false,
-      tpSlRatio: 2.5,
-      maxConcurrentPositions: 2,
-      brain: createDefaultBotBrain('TG_CHANNEL', 'agent-tg-crypto-alpha'),
-    },
-  ],
+  agents: STRATEGY_CATALOG_14.map((spec) => buildDefaultAgentFromSpec(spec)),
   telegramBot: {
     enabled: true,
     botToken: DEFAULT_TG_BOT_TOKEN,
@@ -743,6 +739,10 @@ function buildPersistPayload() {
     autoMarketAdaptationEnabled: systemState.autoMarketAdaptationEnabled !== false,
     lastAutoAdaptedAt: systemState.lastAutoAdaptedAt || Date.now(),
     currentMarketRegime: systemState.currentMarketRegime,
+    aiConductorEnabled: systemState.aiConductorEnabled !== false,
+    lastAiConductorRunAt: systemState.lastAiConductorRunAt || 0,
+    currentAiConductorDecision: systemState.currentAiConductorDecision || null,
+    aiConductorHistory: (systemState.aiConductorHistory || []).slice(0, 24),
     activePositions: systemState.activePositions,
     limitOrdersQueue: systemState.limitOrdersQueue,
     closedTrades: systemState.closedTrades,
@@ -927,7 +927,7 @@ function loadPersistedState(): void {
       ) {
         systemState.tradingCapitalCapUsdt = Number(parsed.tradingCapitalCapUsdt.toFixed(2));
       } else {
-        systemState.tradingCapitalCapUsdt = systemState.okxDemoTrading !== false ? 100.0 : null;
+        systemState.tradingCapitalCapUsdt = systemState.okxDemoTrading !== false ? 300.0 : null;
       }
       if (parsed.mode === 'LIVE' || parsed.mode === 'SHADOW') {
         const hasKeys =
@@ -974,6 +974,14 @@ function loadPersistedState(): void {
       if (typeof parsed.autoMarketAdaptationEnabled === 'boolean') systemState.autoMarketAdaptationEnabled = parsed.autoMarketAdaptationEnabled;
       if (typeof parsed.lastAutoAdaptedAt === 'number') systemState.lastAutoAdaptedAt = parsed.lastAutoAdaptedAt;
       if (typeof parsed.currentMarketRegime === 'string') systemState.currentMarketRegime = parsed.currentMarketRegime;
+      if (typeof parsed.aiConductorEnabled === 'boolean') systemState.aiConductorEnabled = parsed.aiConductorEnabled;
+      if (typeof parsed.lastAiConductorRunAt === 'number') systemState.lastAiConductorRunAt = parsed.lastAiConductorRunAt;
+      if (parsed.currentAiConductorDecision && typeof parsed.currentAiConductorDecision === 'object') {
+        systemState.currentAiConductorDecision = parsed.currentAiConductorDecision;
+      }
+      if (Array.isArray(parsed.aiConductorHistory)) {
+        systemState.aiConductorHistory = parsed.aiConductorHistory.slice(0, 24);
+      }
       if (typeof parsed.lastUnblockedAt === 'number') systemState.lastUnblockedAt = parsed.lastUnblockedAt;
       if (typeof parsed.isKillSwitchActive === 'boolean' && !isLegacy10k) {
         systemState.isKillSwitchActive = parsed.isKillSwitchActive;
@@ -1192,15 +1200,16 @@ function loadPersistedState(): void {
         };
       }
       if (Array.isArray(parsed.agents) && parsed.agents.length > 0) {
-        systemState.agents = systemState.agents.map((defaultAgent) => {
+        const catalogDefaults = STRATEGY_CATALOG_14.map((spec) => buildDefaultAgentFromSpec(spec));
+        systemState.agents = catalogDefaults.map((defaultAgent) => {
+          const spec = STRATEGY_CATALOG_14.find((s) => s.agentId === defaultAgent.agentId)!;
           const saved = parsed.agents.find((a: any) => a.agentId === defaultAgent.agentId);
           if (!saved) return defaultAgent;
-          const freshDefaultBrain = createDefaultBotBrain(defaultAgent.engineType, defaultAgent.agentId);
+          const freshDefaultBrain = defaultAgent.brain;
           const rawSavedHistory: any[] = Array.isArray(saved.brain?.rewardHistory)
             ? saved.brain.rewardHistory
             : [];
 
-          // Detect if rawSavedHistory starts with the legacy 7-point fake seed series
           const hasLegacySeedPrefix =
             rawSavedHistory.length >= 7 &&
             isSyntheticBrainHistoryLabel(rawSavedHistory[0]?.label);
@@ -1213,7 +1222,6 @@ function loadPersistedState(): void {
             (pt: any) => pt && !isSyntheticBrainHistoryLabel(pt.label)
           );
 
-          // Recalculate running cumulativeReward cleanly over real history points
           let runningCumReward = 0;
           const cleanHistory = cleanHistoryRaw.map((pt: any) => {
             const r = Number(pt.reward) || 0;
@@ -1238,27 +1246,45 @@ function loadPersistedState(): void {
           return {
             ...defaultAgent,
             ...saved,
-            // Enforce Variant 3 safe 3x-5x grid leverage (migrate legacy 8x/10x to 4x) and core liquid symbol list
+            strategyFamily: spec.strategyFamily,
+            preferredEvents: [...spec.preferredEvents],
+            directionBias: spec.directionBias,
+            targetTpPct:
+              typeof saved.targetTpPct === 'number' && Number.isFinite(saved.targetTpPct)
+                ? saved.targetTpPct
+                : spec.targetTpPct,
+            mutationCount: Math.max(0, Number(saved.mutationCount) || 0),
             leverage:
               typeof saved.leverage === 'number' && saved.leverage >= 2 && saved.leverage <= 5
                 ? saved.leverage
-                : 4,
-            allowedSymbols: [...TREND_GRID_CORE_SYMBOLS],
-            dynamicScreenerScan: false,
+                : spec.leverage,
+            allowedSymbols:
+              Array.isArray(saved.allowedSymbols) && saved.allowedSymbols.length > 0
+                ? saved.allowedSymbols
+                : [...spec.allowedSymbols],
+            dynamicScreenerScan:
+              typeof saved.dynamicScreenerScan === 'boolean'
+                ? saved.dynamicScreenerScan
+                : spec.dynamicScreenerScan,
             tradesCount: realAgentTrades.length,
             virtualBalance:
               isLegacy10k || typeof saved.virtualBalance !== 'number' || saved.virtualBalance > 500
-                ? 10.0
+                ? 20.0
                 : saved.virtualBalance,
-            name: sanitizeBotName(defaultAgent.agentId, saved.name),
-            // Keep deterministic baseline weights & threshold so past noisy RL updates do not distort entries
+            name: sanitizeBotName(defaultAgent.agentId, saved.name || spec.name),
             brain: saved.brain
               ? {
                   ...freshDefaultBrain,
                   ...saved.brain,
-                  weights: freshDefaultBrain.weights,
-                  confidenceThreshold: freshDefaultBrain.confidenceThreshold,
-                  atrMultiplier: freshDefaultBrain.atrMultiplier,
+                  weights: saved.brain.weights ? normalizeWeights(saved.brain.weights) : freshDefaultBrain.weights,
+                  confidenceThreshold:
+                    typeof saved.brain.confidenceThreshold === 'number'
+                      ? saved.brain.confidenceThreshold
+                      : freshDefaultBrain.confidenceThreshold,
+                  atrMultiplier:
+                    typeof saved.brain.atrMultiplier === 'number'
+                      ? saved.brain.atrMultiplier
+                      : freshDefaultBrain.atrMultiplier,
                   epochsTrained: hasLegacySeedPrefix
                     ? realEpochsCount
                     : Math.max(0, Number(saved.brain.epochsTrained) || 0),
@@ -5284,12 +5310,15 @@ async function runBotEngineCycle() {
       nightModeEnabled: systemState.nightModeEnabled !== false,
       baseMaxSpreadBps: 8.0,
     });
-    // On micro-balances (<= $50 USDT), strictly limit to 2 concurrent positions; Night Mode also caps at 2
-    const baseMaxAllowedOpen = effectiveCap <= 50 ? 2 : effectiveCap <= 200 ? 3 : 5;
-    const maxAllowedOpenPositions =
+    // On micro-balances (<= $50 USDT): max 2 positions; <= $150: max 3; <= $300+: max 5 (Night Mode up to 3, Rollover 2)
+    const baseMaxAllowedOpen = effectiveCap <= 50 ? 2 : effectiveCap <= 150 ? 3 : 5;
+    const nightAdjustedCap =
       sessionRisk.maxConcurrentPositionsCap !== null
-        ? Math.min(baseMaxAllowedOpen, sessionRisk.maxConcurrentPositionsCap)
+        ? effectiveCap > 150 && !sessionRisk.isRolloverWindow
+          ? Math.max(3, sessionRisk.maxConcurrentPositionsCap)
+          : sessionRisk.maxConcurrentPositionsCap
         : baseMaxAllowedOpen;
+    const maxAllowedOpenPositions = Math.min(baseMaxAllowedOpen, nightAdjustedCap);
 
     if (systemState.activePositions.length < maxAllowedOpenPositions) {
       // Macro News Blackout Window Guard (FOMC / CPI / NFP / Live Macro Shock)
@@ -5437,6 +5466,18 @@ async function runBotEngineCycle() {
 
         const btcMeta = systemState.screenerSymbols.find((s) => s.symbol === 'BTCUSDT');
         const btcChange24h = btcMeta?.priceChangePct || 0;
+        const [btcBook, btcKlines] = await Promise.all([
+          fetchRealBybitOrderbook('BTCUSDT'),
+          fetchRealBybitKlines('BTCUSDT', '15', 50),
+        ]);
+        const btcFeatures = extractMarketFeatures({
+          bids: btcBook.bids,
+          asks: btcBook.asks,
+          klines: btcKlines,
+          sentimentScore: 0,
+        });
+        const btcEmaTrendBps = btcFeatures.emaTrendBps;
+        const btcVwapDevPct = btcFeatures.vwapDeviationPct;
 
         // Evaluate all batch candidates on 15-minute klines (Freqtrade NFI timeframe) + L2 Orderbook + Live Telegram Signals
         const evaluatedBatch = await Promise.all(
@@ -5495,23 +5536,89 @@ async function runBotEngineCycle() {
           })
         );
 
-        // Sort candidates: actionable signals (LONG/SHORT) first, ranked by highest |compositeScore|
+        // Sort candidates: strategy-compatible actionable signals (LONG/SHORT) first, ranked by highest |compositeScore|
         evaluatedBatch.sort((a, b) => {
+          const aCompat =
+            a.evalResult.action !== 'SKIP' &&
+            evaluateStrategyDirectionBias(actingBot.directionBias, a.evalResult.action).allowed
+              ? 1
+              : 0;
+          const bCompat =
+            b.evalResult.action !== 'SKIP' &&
+            evaluateStrategyDirectionBias(actingBot.directionBias, b.evalResult.action).allowed
+              ? 1
+              : 0;
+          if (aCompat !== bCompat) return bCompat - aCompat;
           const aValid = a.evalResult.action !== 'SKIP' ? 1 : 0;
           const bValid = b.evalResult.action !== 'SKIP' ? 1 : 0;
           if (aValid !== bValid) return bValid - aValid;
           return Math.abs(b.evalResult.compositeScore) - Math.abs(a.evalResult.compositeScore);
         });
 
-        // Filter out crowded OKX Long/Short pairs if Crowd Guard is enabled, seamlessly falling back to the next valid candidate
-        let bestCandidate = evaluatedBatch[0];
-        if (systemState.crowdGuardEnabled !== false) {
-          let chosenCandidate: typeof bestCandidate | null = null;
-          for (const cand of evaluatedBatch) {
-            if (cand.evalResult.action === 'SKIP') {
-              if (!chosenCandidate) chosenCandidate = cand;
-              break;
-            }
+        // Filter candidates sequentially through Direction Bias, BTC Bounce Short Veto, Same-Direction Correlation Cap, and OKX Crowd L/S Guard
+        let chosenCandidate: (typeof evaluatedBatch)[number] | null = null;
+        for (const cand of evaluatedBatch) {
+          if (cand.evalResult.action === 'SKIP') {
+            if (!chosenCandidate) chosenCandidate = cand;
+            break;
+          }
+
+          const biasCheck = evaluateStrategyDirectionBias(actingBot.directionBias, cand.evalResult.action);
+          if (!biasCheck.allowed) {
+            addBotLog({
+              botId: actingBot.agentId,
+              botName: actingBot.name,
+              action: 'RISK_GUARD',
+              symbol: cand.symbol,
+              side: cand.evalResult.action,
+              price: cand.bestBid,
+              message: `${actingBot.name}: пропуск ${cand.evalResult.action} ${cand.symbol} — ${biasCheck.reason}`,
+              rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
+            });
+            continue;
+          }
+
+          const btcVeto = evaluateBtcBounceShortVeto({
+            symbol: cand.symbol,
+            side: cand.evalResult.action,
+            btcEmaTrendBps,
+            btcVwapDevPct,
+          });
+          if (!btcVeto.allowed) {
+            addBotLog({
+              botId: actingBot.agentId,
+              botName: actingBot.name,
+              action: 'RISK_GUARD',
+              symbol: cand.symbol,
+              side: cand.evalResult.action,
+              price: cand.bestBid,
+              message: `Защита от отскока BTC: ${btcVeto.reason}`,
+              rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
+            });
+            continue;
+          }
+
+          const corrCap = evaluateSameDirectionCorrelationCap({
+            symbol: cand.symbol,
+            side: cand.evalResult.action,
+            activePositions: systemState.activePositions,
+            maxSameDirectionCrypto: 2,
+          });
+          if (!corrCap.allowed) {
+            addBotLog({
+              botId: actingBot.agentId,
+              botName: actingBot.name,
+              action: 'RISK_GUARD',
+              symbol: cand.symbol,
+              side: cand.evalResult.action,
+              price: cand.bestBid,
+              message: `Лимит корреляции: отклонен ${cand.evalResult.action} ${cand.symbol} — ${corrCap.reason}`,
+              rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
+            });
+            continue;
+          }
+
+          if (systemState.crowdGuardEnabled !== false) {
             const candRatio = await fetchOkxLongShortRatio(cand.symbol);
             const crowdCheck = evaluateCrowdLongShortGuard({
               side: cand.evalResult.action,
@@ -5519,10 +5626,7 @@ async function runBotEngineCycle() {
               maxCrowdSharePct: systemState.maxCrowdSharePct || 78,
               crowdGuardEnabled: true,
             });
-            if (crowdCheck.allowed) {
-              chosenCandidate = cand;
-              break;
-            } else {
+            if (!crowdCheck.allowed) {
               addBotLog({
                 botId: actingBot.agentId,
                 botName: actingBot.name,
@@ -5533,13 +5637,17 @@ async function runBotEngineCycle() {
                 message: `Риск-Файрвол отклонил вход ${cand.evalResult.action} ${cand.symbol}: ${crowdCheck.reason}`,
                 rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
               });
+              continue;
             }
           }
-          if (!chosenCandidate) {
-            return;
-          }
-          bestCandidate = chosenCandidate;
+
+          chosenCandidate = cand;
+          break;
         }
+        if (!chosenCandidate) {
+          return;
+        }
+        const bestCandidate = chosenCandidate;
 
         const targetSymbol = bestCandidate.symbol;
         const book = bestCandidate.book;
@@ -5732,6 +5840,7 @@ async function runBotEngineCycle() {
         }
 
         // Build Variant 3 Trend-Grid & DCA Pullback Plan (Base Order 40% + Safety Order #1 30% + Safety Order #2 30%)
+        const strategyTpPct = typeof actingBot.targetTpPct === 'number' ? actingBot.targetTpPct : 2.0;
         const gridPlan = buildTrendGridPlan({
           side,
           entryPrice: topBookPrice,
@@ -5740,6 +5849,7 @@ async function runBotEngineCycle() {
           qtyStep: inst.qtyStep,
           minQty: inst.minQty,
           priceDecimals,
+          tpTargetPct: strategyTpPct,
         });
 
         let plannedQty = gridPlan.baseOrderQty;
@@ -5789,6 +5899,7 @@ async function runBotEngineCycle() {
           qtyStep: inst.qtyStep,
           minQty: inst.minQty,
           priceDecimals,
+          tpTargetPct: strategyTpPct,
         });
 
         let exchangeOrderId: string | undefined;
@@ -6348,8 +6459,288 @@ export async function analyzeMarketTrendsAndRetrainingNeeds(
   cachedMarketTrendAudit = auditResult;
   lastTrendAuditTs = now;
 
+  // Check if detected Primary Market Event shifted cleanly and run AI Conductor with >= 3 min cooldown
+  if (systemState.aiConductorEnabled !== false) {
+    const prevEvent = systemState.currentAiConductorDecision?.primaryEvent;
+    const msSinceLastAiRun = now - (systemState.lastAiConductorRunAt || 0);
+    if (msSinceLastAiRun >= 3 * 60 * 1000) {
+      computeLiveMarketSnapshotForAi(auditResult)
+        .then((snap) => {
+          if (prevEvent && snap.primaryEvent !== prevEvent) {
+            runAiConductorCycle({ force: true }).catch(() => {});
+          }
+        })
+        .catch(() => {});
+    }
+  }
+
   return auditResult;
 }
+
+let isAiConductorRunning = false;
+
+async function computeLiveMarketSnapshotForAi(
+  auditOverride?: MarketTrendAuditResult
+): Promise<MarketSnapshotForAi> {
+  const audit = auditOverride || cachedMarketTrendAudit || (await analyzeMarketTrendsAndRetrainingNeeds(false, false));
+  const [btcBook, btcKlines] = await Promise.all([
+    fetchRealBybitOrderbook('BTCUSDT'),
+    fetchRealBybitKlines('BTCUSDT', '15', 50),
+  ]);
+  const btcPrice =
+    btcBook.bids[0]?.price ||
+    systemState.screenerSymbols.find((s) => s.symbol === 'BTCUSDT')?.price ||
+    0;
+  const btcFeatures = extractMarketFeatures({
+    bids: btcBook.bids,
+    asks: btcBook.asks,
+    klines: btcKlines,
+    sentimentScore: 0,
+  });
+
+  const crowdList = getCrowdRatioSnapshotList();
+  let maxCrowdSharePct = 50;
+  const crowdedSymbols: string[] = [];
+  for (const item of crowdList) {
+    const dominantShare = Math.max(item.longSharePct, item.shortSharePct);
+    if (dominantShare > maxCrowdSharePct) maxCrowdSharePct = dominantShare;
+    if (dominantShare >= 75) {
+      crowdedSymbols.push(`${item.symbol} (${dominantShare.toFixed(0)}% ${item.crowdedSide})`);
+    }
+  }
+
+  const macroHeadline = getRecentMacroHeadlineFromFeed();
+  const macroWindow = evaluateMacroNewsWindow({
+    nowTs: Date.now(),
+    macroGuardEnabled: systemState.macroGuardEnabled !== false,
+    recentMacroHeadlineTs: macroHeadline.ts,
+    recentMacroHeadlineTitle: macroHeadline.title,
+  });
+  const sessionRisk = getMskSessionRiskProfile({
+    nowTs: Date.now(),
+    nightModeEnabled: systemState.nightModeEnabled !== false,
+  });
+
+  const eventDet = detectActiveMarketEvents({
+    btcChange24hPct: audit.btcChange24hPct || 0,
+    btcEmaTrendBps: btcFeatures.emaTrendBps,
+    btcVwapDevPct: btcFeatures.vwapDeviationPct,
+    marketBreadthPct: audit.marketBreadthPct || 50,
+    avgAtrPct: audit.avgAtrPct || 2.5,
+    maxCrowdSharePct,
+    isMacroBlocked: macroWindow.isBlocked,
+    isNightSession: sessionRisk.isNightSession,
+  });
+
+  const workingCapitalUsdt = Math.max(1, Number((systemState.capitalUsdt + systemState.totalRealizedPnlUsdt).toFixed(2)));
+
+  return {
+    regimeLabel: audit.regimeTitle || systemState.currentMarketRegime || 'RANGE_CHOP',
+    primaryEvent: eventDet.primaryEvent,
+    secondaryEvents: eventDet.secondaryEvents,
+    eventLabelRu: eventDet.eventLabelRu,
+    btcPrice,
+    btcChange24hPct: audit.btcChange24hPct || 0,
+    btcEmaTrendBps: btcFeatures.emaTrendBps,
+    btcVwapDevPct: btcFeatures.vwapDeviationPct,
+    marketBreadthPct: audit.marketBreadthPct || 50,
+    avgAtrPct: audit.avgAtrPct || 2.5,
+    maxCrowdSharePct,
+    crowdedSymbols,
+    isMacroBlocked: macroWindow.isBlocked,
+    isNightSession: sessionRisk.isNightSession,
+    openPositionsCount: systemState.activePositions.length,
+    workingCapitalUsdt,
+  };
+}
+
+function computeStrategyPerformanceInputs(): StrategyPerformanceInput[] {
+  return systemState.agents.map((agent) => {
+    const agentTrades = systemState.closedTrades.filter((t) => t.botId === agent.agentId);
+    const tradesCount = agentTrades.length;
+    const wins = agentTrades.filter((t) => (Number(t.netPnlUsdt) || 0) >= 0);
+    const losses = agentTrades.filter((t) => (Number(t.netPnlUsdt) || 0) < 0);
+    const winRatePct = tradesCount > 0 ? (wins.length / tradesCount) * 100 : 0;
+    const grossWin = wins.reduce((acc, t) => acc + (Number(t.netPnlUsdt) || 0), 0);
+    const grossLoss = Math.abs(losses.reduce((acc, t) => acc + (Number(t.netPnlUsdt) || 0), 0));
+    const realizedPnlUsdt = agentTrades.reduce((acc, t) => acc + (Number(t.netPnlUsdt) || 0), 0);
+    const profitFactor =
+      grossLoss > 0
+        ? grossWin / grossLoss
+        : grossWin > 0
+        ? 2.5
+        : Number(agent.profitFactor) || 1.5;
+
+    const brain = agent.brain || createDefaultBotBrain(agent.engineType, agent.agentId);
+
+    return {
+      agentId: agent.agentId,
+      name: agent.name,
+      strategyFamily: agent.strategyFamily,
+      preferredEvents: agent.preferredEvents,
+      directionBias: agent.directionBias,
+      isEnabled: agent.isEnabled !== false,
+      tradesCount,
+      winRatePct: Number(winRatePct.toFixed(1)),
+      profitFactor: Number(profitFactor.toFixed(2)),
+      realizedPnlUsdt: Number(realizedPnlUsdt.toFixed(2)),
+      riskPerTradePct: Number(agent.riskPerTradePct) || 1.3,
+      targetTpPct: Number(agent.targetTpPct) || 2.0,
+      confidenceThreshold: Number(brain.confidenceThreshold) || 0.21,
+      atrMultiplier: Number(brain.atrMultiplier) || 1.4,
+      weights: brain.weights,
+      mutationCount: Number(agent.mutationCount) || 0,
+    };
+  });
+}
+
+function buildAiConductorStatusPayload(snapshotOverride?: MarketSnapshotForAi): {
+  enabled: boolean;
+  intervalMinutes: number;
+  lastRunAt: number | null;
+  currentEvent: MarketEventKey;
+  currentEventLabelRu: string;
+  secondaryEvents: MarketEventKey[];
+  activeComboIds: string[];
+  totalStrategiesCount: number;
+  latestDecision: AiConductorDecision | null;
+  history: AiConductorDecision[];
+} {
+  const latest = systemState.currentAiConductorDecision || null;
+  const fallbackEvent = snapshotOverride?.primaryEvent || latest?.primaryEvent || 'LOW_VOL_RANGE';
+  const activeComboIds = systemState.agents
+    .filter((a) => a.isEnabled !== false)
+    .map((a) => a.agentId);
+
+  return {
+    enabled: systemState.aiConductorEnabled !== false,
+    intervalMinutes: 20,
+    lastRunAt: systemState.lastAiConductorRunAt ? systemState.lastAiConductorRunAt : null,
+    currentEvent: snapshotOverride?.primaryEvent || fallbackEvent,
+    currentEventLabelRu:
+      snapshotOverride?.eventLabelRu ||
+      latest?.eventLabelRu ||
+      EVENT_LABELS_RU[fallbackEvent],
+    secondaryEvents: snapshotOverride?.secondaryEvents || [],
+    activeComboIds: latest?.activeComboIds?.length ? latest.activeComboIds : activeComboIds,
+    totalStrategiesCount: systemState.agents.length,
+    latestDecision: latest,
+    history: (systemState.aiConductorHistory || []).slice(0, 12),
+  };
+}
+
+export async function runAiConductorCycle(options?: {
+  force?: boolean;
+  manualTrigger?: boolean;
+}): Promise<AiConductorDecision | null> {
+  if (isAiConductorRunning) {
+    return systemState.currentAiConductorDecision || null;
+  }
+  if (!options?.manualTrigger && !options?.force && systemState.aiConductorEnabled === false) {
+    return systemState.currentAiConductorDecision || null;
+  }
+
+  isAiConductorRunning = true;
+  const startedAt = Date.now();
+  try {
+    const snapshot = await computeLiveMarketSnapshotForAi();
+    const strategiesPerf = computeStrategyPerformanceInputs();
+    const prompt = buildAiConductorPrompt(snapshot, strategiesPerf);
+
+    const hasOllamaKeys = ollamaCloud.getPoolStatus().totalKeys > 0;
+    let decision: AiConductorDecision | null = null;
+
+    if (hasOllamaKeys) {
+      const targetModel = ollamaCloud.getSelectedModel() || 'nemotron-3-nano:30b';
+      const llmRes = await Promise.race([
+        callOllamaCloud(prompt, targetModel),
+        new Promise<{ text: string; latencyMs: number; ok: boolean; modelUsed?: string }>((resolve) =>
+          setTimeout(
+            () => resolve({ text: '', latencyMs: Date.now() - startedAt, ok: false, modelUsed: targetModel }),
+            24000
+          )
+        ),
+      ]);
+
+      if (llmRes.ok && llmRes.text) {
+        decision = parseAiConductorResponse(llmRes.text, strategiesPerf, snapshot, {
+          modelUsed: llmRes.modelUsed || targetModel,
+          latencyMs: llmRes.latencyMs,
+          nowTs: Date.now(),
+        });
+      }
+    }
+
+    if (!decision) {
+      decision = applyDeterministicEvolutionFallback(snapshot, strategiesPerf, {
+        modelUsed: hasOllamaKeys ? 'quant-rule-fallback' : 'quant-engine-local',
+        latencyMs: Date.now() - startedAt,
+        nowTs: Date.now(),
+      });
+    }
+
+    const applied = applyConductorDecisionToAgents(systemState.agents, decision);
+    systemState.lastAiConductorRunAt = decision.timestamp;
+    systemState.currentAiConductorDecision = decision;
+    systemState.aiConductorHistory = [decision, ...(systemState.aiConductorHistory || [])].slice(0, 24);
+
+    addBotLog({
+      botId: 'ai-conductor',
+      botName: decision.source === 'OLLAMA_AI' ? `Ollama (${decision.modelUsed})` : 'Квант-Дирижёр',
+      action: 'SCAN_PASS',
+      symbol: decision.primaryEvent,
+      message: `Событие «${decision.eventLabelRu}» -> связка ${decision.activeComboIds.length}/${systemState.agents.length} стратегий, мутаций: ${applied.mutatedIds.length}. ${decision.summary}`,
+      rttMs: decision.latencyMs || 15,
+    });
+
+    savePersistedState(true);
+    return decision;
+  } catch (err) {
+    console.warn('AI Conductor cycle warning:', err);
+    return systemState.currentAiConductorDecision || null;
+  } finally {
+    isAiConductorRunning = false;
+  }
+}
+
+app.get('/api/ai/conductor', async (_req: Request, res: Response) => {
+  try {
+    const snap = await computeLiveMarketSnapshotForAi().catch(() => undefined);
+    res.json(buildAiConductorStatusPayload(snap));
+  } catch (err: any) {
+    res.status(500).json({ error: `AI Conductor status error: ${err.message}` });
+  }
+});
+
+app.post('/api/ai/conductor/run', async (_req: Request, res: Response) => {
+  try {
+    const decision = await runAiConductorCycle({ force: true, manualTrigger: true });
+    const snap = await computeLiveMarketSnapshotForAi().catch(() => undefined);
+    res.json({
+      success: true,
+      decision,
+      status: buildAiConductorStatusPayload(snap),
+      agents: systemState.agents,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: `AI Conductor run error: ${err.message}` });
+  }
+});
+
+app.post('/api/ai/conductor/toggle', async (req: Request, res: Response) => {
+  const nextVal =
+    typeof req.body?.enabled === 'boolean'
+      ? req.body.enabled
+      : !(systemState.aiConductorEnabled !== false);
+  systemState.aiConductorEnabled = nextVal;
+  savePersistedState(true);
+  const snap = await computeLiveMarketSnapshotForAi().catch(() => undefined);
+  res.json({
+    success: true,
+    enabled: systemState.aiConductorEnabled,
+    status: buildAiConductorStatusPayload(snap),
+  });
+});
 
 app.get(['/api/ai/trend-audit', '/api/market/trend-audit'], async (_req: Request, res: Response) => {
   try {
@@ -10590,6 +10981,18 @@ async function startServer() {
     setInterval(() => {
       analyzeMarketTrendsAndRetrainingNeeds(true).catch(() => {});
     }, 15 * 60 * 1000);
+
+    // Background AI Strategy Conductor & Auto-Evolution (on boot after 25s + every 20 min)
+    setTimeout(() => {
+      if (systemState.aiConductorEnabled !== false) {
+        runAiConductorCycle({ force: true }).catch(() => {});
+      }
+    }, 25000);
+    setInterval(() => {
+      if (systemState.aiConductorEnabled !== false) {
+        runAiConductorCycle().catch(() => {});
+      }
+    }, 20 * 60 * 1000);
   });
 }
 

@@ -326,10 +326,56 @@ export interface XaiDecisionRecord {
   };
 }
 
+export type MarketEventKey =
+  | 'BTC_BOUNCE_REVERSAL'
+  | 'MARKET_FLUSH_SHORT'
+  | 'BULL_EXPANSION'
+  | 'LOW_VOL_RANGE'
+  | 'CROWD_EUPHORIA_COUNTER'
+  | 'MACRO_DEFENSE'
+  | 'NIGHT_ASIA_SAFE';
+
+export interface StrategyMutationRecord {
+  agentId: string;
+  reason: string;
+  confidenceThresholdDelta?: number;
+  riskPerTradePct?: number;
+  targetTpPct?: number;
+  atrMultiplier?: number;
+}
+
+export interface AiConductorDecisionItem {
+  timestamp: number;
+  source: 'OLLAMA_AI' | 'QUANT_FALLBACK';
+  modelUsed: string;
+  latencyMs: number;
+  primaryEvent: MarketEventKey;
+  eventLabelRu: string;
+  summary: string;
+  activeComboIds: string[];
+  mutations: StrategyMutationRecord[];
+}
+
+export interface AiConductorStatusPayload {
+  enabled: boolean;
+  intervalMinutes: number;
+  lastRunAt: number | null;
+  currentEvent: MarketEventKey;
+  currentEventLabelRu: string;
+  secondaryEvents: MarketEventKey[];
+  activeComboIds: string[];
+  totalStrategiesCount: number;
+  latestDecision: AiConductorDecisionItem | null;
+  history: AiConductorDecisionItem[];
+}
+
 export interface AgentItem {
   agentId: string;
   name: string;
   engineType: string;
+  strategyFamily?: string;
+  preferredEvents?: MarketEventKey[];
+  directionBias?: 'BOTH' | 'LONG_ONLY' | 'SHORT_ONLY';
   mode: 'SHADOW' | 'QUARANTINE' | 'LIVE' | 'DISABLED';
   sha256: string;
   tradesCount: number;
@@ -344,10 +390,14 @@ export interface AgentItem {
   allowedSymbols?: string[];
   dynamicScreenerScan?: boolean;
   tpSlRatio?: number;
+  targetTpPct?: number;
   maxConcurrentPositions?: number;
   autoMarketAdaptationEnabled?: boolean;
   lastAutoAdaptedAt?: number;
   currentRegime?: string;
+  mutationCount?: number;
+  lastMutatedReason?: string;
+  lastMutatedAt?: number;
   brain?: BotBrainState;
 }
 

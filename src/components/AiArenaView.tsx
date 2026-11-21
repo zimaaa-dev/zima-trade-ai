@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import type {
   AgentItem,
+  AiConductorStatusPayload,
   BotLogEntry,
   Position,
   XaiDecisionRecord,
@@ -229,6 +230,72 @@ export const AiArenaView: React.FC = () => {
   const [copiedCmd, setCopiedCmd] = useState<boolean>(false);
   const lastSlowMetaFetchTs = useRef<number>(0);
 
+  // AI Strategy Conductor (Ollama Cloud 14-Strategy Adaptive Portfolio Orchestrator)
+  const [conductorStatus, setConductorStatus] = useState<AiConductorStatusPayload | null>(null);
+  const [loadingConductor, setLoadingConductor] = useState<boolean>(true);
+  const [runningConductor, setRunningConductor] = useState<boolean>(false);
+  const [conductorError, setConductorError] = useState<string | null>(null);
+  const [showConductorHistory, setShowConductorHistory] = useState<boolean>(false);
+  const [strategyFilter, setStrategyFilter] = useState<'ALL' | 'COMBO' | 'STANDBY'>('ALL');
+
+  const fetchConductorStatus = async () => {
+    try {
+      const res = await fetch('/api/ai/conductor');
+      if (res.ok) {
+        const data: AiConductorStatusPayload = await res.json();
+        setConductorStatus(data);
+        setConductorError(null);
+      } else {
+        setConductorError('Не удалось получить статус ИИ-дирижёра');
+      }
+    } catch {
+      setConductorError('Ошибка соединения с ИИ-дирижёром');
+    } finally {
+      setLoadingConductor(false);
+    }
+  };
+
+  const handleRunConductorNow = async () => {
+    setRunningConductor(true);
+    setConductorError(null);
+    try {
+      const res = await fetch('/api/ai/conductor/run', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        setConductorError(data.error || 'Ошибка анализа ИИ');
+      } else {
+        if (data.status) setConductorStatus(data.status);
+        if (Array.isArray(data.agents)) setAgents(data.agents);
+        fetchAgentsAndBots();
+        setPromotionStatus({
+          type: 'success',
+          text: data.decision?.summary || 'ИИ-дирижёр обновил комбинацию стратегий и параметры.',
+        });
+      }
+    } catch (err: any) {
+      setConductorError(err.message || 'Ошибка запуска ИИ');
+    } finally {
+      setRunningConductor(false);
+    }
+  };
+
+  const handleToggleConductor = async () => {
+    const nextVal = !(conductorStatus?.enabled !== false);
+    try {
+      const res = await fetch('/api/ai/conductor/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: nextVal }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status) setConductorStatus(data.status);
+      }
+    } catch (err: any) {
+      setConductorError(err.message || 'Ошибка переключения авто-анализа ИИ');
+    }
+  };
+
   const fetchTrendAudit = async () => {
     try {
       const res = await fetch('/api/ai/trend-audit');
@@ -411,11 +478,14 @@ export const AiArenaView: React.FC = () => {
   useEffect(() => {
     fetchAgentsAndBots();
     fetchTrendAudit();
+    fetchConductorStatus();
     const timer = setInterval(fetchAgentsAndBots, 5000);
     const trendTimer = setInterval(fetchTrendAudit, 45000);
+    const conductorTimer = setInterval(fetchConductorStatus, 30000);
     return () => {
       clearInterval(timer);
       clearInterval(trendTimer);
+      clearInterval(conductorTimer);
     };
   }, []);
 
@@ -833,6 +903,28 @@ export const AiArenaView: React.FC = () => {
       ? xaiDecisions
       : xaiDecisions.filter((d) => d.botId === selectedXaiBot);
 
+  const activeComboSet = new Set<string>(
+    conductorStatus?.activeComboIds && conductorStatus.activeComboIds.length > 0
+      ? conductorStatus.activeComboIds
+      : agents.filter((a) => a.isEnabled !== false).map((a) => a.agentId)
+  );
+
+  const sortedAgents = [...agents].sort((a, b) => {
+    const aActive = a.isEnabled !== false ? 1 : 0;
+    const bActive = b.isEnabled !== false ? 1 : 0;
+    if (aActive !== bActive) return bActive - aActive;
+    return (b.tradesCount || 0) - (a.tradesCount || 0);
+  });
+
+  const filteredAgents = sortedAgents.filter((a) => {
+    if (strategyFilter === 'COMBO') return a.isEnabled !== false;
+    if (strategyFilter === 'STANDBY') return a.isEnabled === false;
+    return true;
+  });
+
+  const activeCount = agents.filter((a) => a.isEnabled !== false).length;
+  const standbyCount = Math.max(0, agents.length - activeCount);
+
   return (
     <div className="p-3 sm:p-4 space-y-6 max-w-[1600px] mx-auto overflow-x-hidden">
       {/* Top Banner */}
@@ -912,6 +1004,163 @@ export const AiArenaView: React.FC = () => {
             )}
           </button>
         </div>
+      </div>
+
+      {/* AI Strategy Conductor & Adaptive Event Combo Panel */}
+      <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 sm:p-5 space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-800 pb-3.5">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <h3 className="text-sm font-bold text-white">
+                ИИ-Дирижёр стратегий (Ollama Cloud · 14 стратегий)
+              </h3>
+              <span className="text-[11px] font-mono text-slate-400">
+                · цикл каждые {conductorStatus?.intervalMinutes ?? 20} мин и при смене события
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
+              Анализирует рыночное событие, подбирает связку из 3–5 подходящих стратегий и корректирует параметры слабых/лидеров.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handleToggleConductor}
+              className={`px-3 py-1.5 rounded-lg text-xs font-mono font-semibold border transition whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+                conductorStatus?.enabled !== false
+                  ? 'bg-emerald-950/70 hover:bg-emerald-900/80 border-emerald-500/40 text-emerald-300'
+                  : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-300'
+              }`}
+            >
+              <Zap className="w-3.5 h-3.5 shrink-0" />
+              <span>{conductorStatus?.enabled !== false ? 'Авто-ИИ: ВКЛ' : 'Авто-ИИ: ВЫКЛ'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleRunConductorNow}
+              disabled={runningConductor}
+              className="px-3 py-1.5 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 font-bold rounded-lg text-xs font-mono transition whitespace-nowrap shrink-0 flex items-center gap-1.5"
+            >
+              <Sparkles className={`w-3.5 h-3.5 shrink-0 ${runningConductor ? 'animate-spin' : ''}`} />
+              <span>{runningConductor ? 'Анализ ИИ...' : 'Запустить анализ ИИ'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowConductorHistory((prev) => !prev)}
+              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-mono font-semibold border border-slate-700 transition whitespace-nowrap shrink-0"
+            >
+              История ({conductorStatus?.history?.length || 0})
+            </button>
+          </div>
+        </div>
+
+        {loadingConductor ? (
+          <div className="py-4 text-xs font-mono text-slate-400">Загрузка состояния ИИ-дирижёра...</div>
+        ) : conductorError ? (
+          <div className="py-2 text-xs font-mono text-rose-400 flex items-center justify-between gap-2">
+            <span>{conductorError}</span>
+            <button
+              type="button"
+              onClick={fetchConductorStatus}
+              className="text-cyan-300 hover:underline whitespace-nowrap shrink-0"
+            >
+              Повторить
+            </button>
+          </div>
+        ) : conductorStatus ? (
+          <div className="space-y-3 font-mono text-xs tabular-nums">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border-b border-slate-800/80 pb-3">
+              <div>
+                <div className="text-[11px] text-slate-400">Текущее рыночное событие</div>
+                <div className="text-sm font-bold text-cyan-300 mt-0.5">
+                  {conductorStatus.currentEventLabelRu}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-0.5">
+                  Код: {conductorStatus.currentEvent}
+                  {conductorStatus.secondaryEvents.length > 0
+                    ? ` · фон: ${conductorStatus.secondaryEvents.join(', ')}`
+                    : ''}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-[11px] text-slate-400">Активная связка стратегий</div>
+                <div className="text-sm font-bold text-emerald-400 mt-0.5">
+                  {activeCount} из {agents.length || conductorStatus.totalStrategiesCount} в работе
+                </div>
+                <div className="text-[11px] text-slate-300 mt-0.5 truncate">
+                  {agents
+                    .filter((a) => a.isEnabled !== false)
+                    .map((a) => a.name.split('·')[0].trim())
+                    .join(' · ') || 'Нет активных стратегий'}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-[11px] text-slate-400">Последний вердикт</div>
+                <div className="text-sm font-bold text-white mt-0.5">
+                  {conductorStatus.latestDecision
+                    ? conductorStatus.latestDecision.source === 'OLLAMA_AI'
+                      ? `Ollama Cloud (${conductorStatus.latestDecision.modelUsed})`
+                      : `Квант-резерв (${conductorStatus.latestDecision.modelUsed})`
+                    : 'Ожидает первого запуска'}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-0.5">
+                  {conductorStatus.lastRunAt
+                    ? `${new Date(conductorStatus.lastRunAt).toLocaleTimeString()} · ${conductorStatus.latestDecision?.latencyMs || 0} мс`
+                    : 'Нажмите «Запустить анализ ИИ» или подождите цикл'}
+                </div>
+              </div>
+            </div>
+
+            {conductorStatus.latestDecision ? (
+              <div className="text-xs text-slate-200 leading-relaxed">
+                <span className="text-slate-400 font-semibold">Вывод ИИ: </span>
+                {conductorStatus.latestDecision.summary}
+                {conductorStatus.latestDecision.mutations.length > 0 && (
+                  <div className="mt-2 pt-2 border-t border-slate-800/70 space-y-1 text-[11px] text-slate-300">
+                    {conductorStatus.latestDecision.mutations.map((m) => {
+                      const stName = agents.find((a) => a.agentId === m.agentId)?.name || m.agentId;
+                      return (
+                        <div key={m.agentId}>
+                          <span className="text-amber-300 font-semibold">{stName.split('·')[0].trim()}</span>
+                          <span className="text-slate-500"> · </span>
+                          <span>{m.reason}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="text-xs text-slate-400">
+                Первый плановый анализ ИИ запустится автоматически или вручную кнопкой выше.
+              </div>
+            )}
+
+            {showConductorHistory && conductorStatus.history.length > 0 && (
+              <div className="pt-2 border-t border-slate-800 divide-y divide-slate-800/80 max-h-56 overflow-y-auto">
+                {conductorStatus.history.map((h, idx) => (
+                  <div key={`${h.timestamp}-${idx}`} className="py-2 text-[11px] space-y-0.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-slate-400">
+                      <span>
+                        [{new Date(h.timestamp).toLocaleTimeString()}] · {h.eventLabelRu} ·{' '}
+                        <strong className="text-slate-200">{h.modelUsed}</strong>
+                      </span>
+                      <span>
+                        связка: {h.activeComboIds.length} · мутаций: {h.mutations.length}
+                      </span>
+                    </div>
+                    <div className="text-slate-300">{h.summary}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : null}
       </div>
 
       {/* Market Regime Shift & Retraining Recommendation Monitor */}
@@ -1560,9 +1809,58 @@ export const AiArenaView: React.FC = () => {
         externalComparePair={comparePair}
       />
 
+      {/* 14-Strategy Portfolio Filter Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+        <div>
+          <h3 className="text-sm font-bold text-white">
+            Матрица 14 торговых стратегий
+          </h3>
+          <p className="text-xs text-slate-400">
+            Активные стратегии торгуют в текущей событийной связке; остальные находятся в резерве до смены фазы рынка.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5 font-mono text-xs">
+          <button
+            type="button"
+            onClick={() => setStrategyFilter('ALL')}
+            className={`px-3 py-1.5 rounded-lg border transition whitespace-nowrap shrink-0 ${
+              strategyFilter === 'ALL'
+                ? 'bg-cyan-500 text-slate-950 border-cyan-400 font-bold'
+                : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
+            }`}
+          >
+            Все ({agents.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setStrategyFilter('COMBO')}
+            className={`px-3 py-1.5 rounded-lg border transition whitespace-nowrap shrink-0 ${
+              strategyFilter === 'COMBO'
+                ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-bold'
+                : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
+            }`}
+          >
+            Активная связка ({activeCount})
+          </button>
+          <button
+            type="button"
+            onClick={() => setStrategyFilter('STANDBY')}
+            className={`px-3 py-1.5 rounded-lg border transition whitespace-nowrap shrink-0 ${
+              strategyFilter === 'STANDBY'
+                ? 'bg-slate-700 text-white border-slate-600 font-bold'
+                : 'bg-slate-900 text-slate-400 border-slate-800 hover:border-slate-700'
+            }`}
+          >
+            В резерве ({standbyCount})
+          </button>
+        </div>
+      </div>
+
       {/* Agents Cards Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        {agents.map((agent) => {
+        {filteredAgents.map((agent) => {
+          const isInCombo = activeComboSet.has(agent.agentId);
           const isLive = agent.mode === 'LIVE';
           const isQuarantined = agent.mode === 'QUARANTINE';
           const isBotEnabled = agent.isEnabled !== false;
@@ -1667,8 +1965,20 @@ export const AiArenaView: React.FC = () => {
                     <div>
                       <h3 className="font-bold text-sm text-white">{agent.name}</h3>
                       <div className="text-[11px] font-mono text-slate-400">
-                        {agent.engineType} · {isLive ? 'Допущен к реальным сделкам' : isQuarantined ? 'На обучении (Карантин)' : agent.mode}
+                        {agent.strategyFamily || agent.engineType} ·{' '}
+                        {agent.directionBias === 'LONG_ONLY'
+                          ? 'Только LONG'
+                          : agent.directionBias === 'SHORT_ONLY'
+                          ? 'Только SHORT'
+                          : 'LONG / SHORT'}{' '}
+                        · TP {(agent.targetTpPct ?? 2.0).toFixed(1)}% · Мутаций: {agent.mutationCount || 0}
+                        {isInCombo ? ' · В связке' : ''}
                       </div>
+                      {agent.lastMutatedReason && (
+                        <div className="text-[11px] text-amber-300/90 mt-0.5 line-clamp-1" title={agent.lastMutatedReason}>
+                          ИИ-правка: {agent.lastMutatedReason}
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -2217,12 +2527,12 @@ export const AiArenaView: React.FC = () => {
           </div>
 
           {bottomTab === 'XAI' && (
-            <div className="flex items-center gap-1.5 text-xs font-mono">
+            <div className="flex flex-wrap items-center gap-1.5 text-xs font-mono">
               <span className="text-slate-400">Фильтр:</span>
               <button
                 type="button"
                 onClick={() => setSelectedXaiBot('ALL')}
-                className={`px-2.5 py-1 rounded transition ${
+                className={`px-2.5 py-1 rounded transition whitespace-nowrap shrink-0 ${
                   selectedXaiBot === 'ALL'
                     ? 'bg-slate-800 text-cyan-300 font-bold border border-cyan-500/40'
                     : 'text-slate-400 hover:text-white'

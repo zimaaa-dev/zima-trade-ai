@@ -1695,6 +1695,7 @@ export function buildTrendGridPlan(params: {
   qtyStep: number;
   minQty: number;
   priceDecimals: number;
+  tpTargetPct?: number;
 }): TrendGridPlan {
   const { side, entryPrice, totalPlannedQty, atrPct, qtyStep, minQty, priceDecimals } = params;
   const dirSign = side === 'LONG' ? 1 : -1;
@@ -1705,7 +1706,11 @@ export function buildTrendGridPlan(params: {
     return Number(Math.max(minQty, stepped).toFixed(qtyDecimals));
   };
 
-  const { gridStepPct, tpTargetPct, catastrophicSlPct } = computeEffectiveGridRiskStopPct(atrPct);
+  const { gridStepPct, tpTargetPct: defaultTpTargetPct, catastrophicSlPct } = computeEffectiveGridRiskStopPct(atrPct);
+  const tpTargetPct =
+    typeof params.tpTargetPct === 'number' && Number.isFinite(params.tpTargetPct)
+      ? Number(clamp(params.tpTargetPct, 1.5, 3.0).toFixed(2))
+      : defaultTpTargetPct;
 
   // Split totalPlannedQty into 40% Base + 30% SO1 + 30% SO2 if divisible into >= 3 * minQty;
   // otherwise use minQty for Base and minQty for SO1 & SO2 so every coin supports grid averaging.
