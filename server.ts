@@ -47,8 +47,7 @@ export function isValidTelegramBotToken(token?: string): boolean {
 }
 
 export function isValidTelegramChatId(chatId?: string): boolean {
-  if (!chatId || !isKeyValid(chatId)) return false;
-  return /^(-?\d{5,20}|@[a-zA-Z0-9_]{4,64})$/.test(chatId.trim());
+  return isRealTelegramChatId(chatId) && isKeyValid(chatId);
 }
 
 // 2. Scan and auto-load keys from real .env files only (never from .env.example)
@@ -210,6 +209,9 @@ import {
   computeEffectiveGridRiskStopPct,
   evaluateTrendGridSafetyOrderFill,
   TREND_GRID_CORE_SYMBOLS,
+  resolveDynamicVolatilityLimitPct,
+  selectNextActingBot,
+  isRealTelegramChatId,
   type TrendGridSafetyOrder,
   type MarketRegimeType,
   type AdaptiveMarketProfile,
@@ -1809,7 +1811,7 @@ export async function dispatchTelegramNotification(params: {
     symbol: params.symbol,
     deliveredCount,
     status,
-    errorText: lastErr,
+    errorText: deliveredCount > 0 ? undefined : lastErr,
   };
 
   tg.recentMessages.unshift(msgEntry);
@@ -4876,6 +4878,7 @@ function addBotLog(entry: {
 }
 
 let tournamentScanCursor = 0;
+let botTurnCursor = 0;
 
 // Strict Institutional Top-20 Crypto Majors Whitelist (Passivbot / Freqtrade NFI Standard)
 // Completely eliminates newly listed meme coins, pre-market tokens, and US stock synthetics.
@@ -4888,6 +4891,7 @@ const INSTITUTIONAL_CRYPTO_WHITELIST = [
 ];
 const INSTITUTIONAL_WHITELIST_SET = new Set(INSTITUTIONAL_CRYPTO_WHITELIST);
 let lastMacroGuardLogTs = 0;
+let lastEmptyCandidatesLogTs = 0;
 
 // Autonomous Bot Trading Engine for Mode 1 (Shadow Forward-Testing)
 async function runBotEngineCycle() {
@@ -5319,23 +5323,15 @@ async function runBotEngineCycle() {
       );
 
       if (activeBots.length > 0 && systemState.activePositions.length < maxAllowedOpenPositions) {
-        // Prioritize Alpha-Signal (agent-tg-crypto-alpha) ONLY on real trading signal channels (exclude news feeds like @WatcherGuru)
         const NEWS_ONLY_HANDLES = new Set(['@WatcherGuru', '@WuBlockchain', '@Cointelegraph', 'announcements.bybit.com']);
         const isTradingSignalFeedItem = (f: any) => !NEWS_ONLY_HANDLES.has(String(f?.sourceHandle || ''));
-        const hasLiveTgSignals = systemState.parsedNewsFeed.some(
-          (f) =>
-            f.dataSource === 'LIVE_TELEGRAM_WEB' &&
-            isTradingSignalFeedItem(f) &&
-            Math.abs(Number(f.sentimentScore) || 0) >= 0.6
-        );
-        const tgBotAvailable = activeBots.find((a) => a.agentId === 'agent-tg-crypto-alpha');
-
-        const sortedBots = [...activeBots].sort(
-          (a, b) =>
-            (b.sharpeRatio || 1.5) * 0.5 + (b.brain?.cumulativeReward || 0) * 0.5 -
-            ((a.sharpeRatio || 1.5) * 0.5 + (a.brain?.cumulativeReward || 0) * 0.5)
-        );
-        const actingBot = hasLiveTgSignals && tgBotAvailable ? tgBotAvailable : sortedBots[0];
+        const botSelection = selectNextActingBot({
+          activeBots,
+          activePositions: systemState.activePositions,
+          cursor: botTurnCursor,
+        });
+        botTurnCursor = botSelection.nextCursor;
+        const actingBot = botSelection.bot;
         if (!actingBot.brain) {
           actingBot.brain = createDefaultBotBrain(actingBot.engineType, actingBot.agentId);
         }
@@ -5368,14 +5364,18 @@ async function runBotEngineCycle() {
           : baseAllowedSymbols
         ).filter((s) => goldAllowed || s !== 'XAUUSDT');
 
-        // Freqtrade Pairlist Pipeline: SpreadFilter -> VolatilityFilter -> PerformanceFilter
+        // Freqtrade Pairlist Pipeline: SpreadFilter -> Adaptive VolatilityFilter -> PerformanceFilter
+        const dynamicMaxVolPct = resolveDynamicVolatilityLimitPct({
+          currentMarketRegime: systemState.currentMarketRegime,
+          isNightSession: sessionRisk.isNightSession,
+        });
         const rankedPairlist = applyFreqtradePairlistPipeline({
           candidates: rawUniverse,
           screenerMeta: systemState.screenerSymbols,
           closedTrades: systemState.closedTrades,
           maxSpreadBps: effectiveBotSession.maxSpreadBpsLimit,
           minVolatilityPct: 0.35,
-          maxVolatilityPct: 6.5,
+          maxVolatilityPct: dynamicMaxVolPct,
         });
 
         // Freqtrade ProtectionManager: filter out symbols in position, CooldownPeriod, StoplossGuard, or LowProfitPairs
@@ -5395,6 +5395,17 @@ async function runBotEngineCycle() {
         });
 
         if (availableCandidates.length === 0) {
+          if (Date.now() - lastEmptyCandidatesLogTs > 5 * 60 * 1000) {
+            lastEmptyCandidatesLogTs = Date.now();
+            addBotLog({
+              botId: actingBot.agentId,
+              botName: actingBot.name,
+              action: 'RISK_GUARD',
+              symbol: 'SCAN',
+              message: `Сканер не нашел свободных пар (порог волатильности ≤ ${dynamicMaxVolPct.toFixed(1)}%, спред ≤ ${effectiveBotSession.maxSpreadBpsLimit.toFixed(1)} bps, прошли фильтр: ${rankedPairlist.length}).`,
+              rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
+            });
+          }
           return;
         }
 

@@ -1855,3 +1855,99 @@ export function evaluateTrendGridSafetyOrderFill(params: {
   };
 }
 
+/**
+ * Computes an adaptive 24h volatility ceiling (atrPct) for Freqtrade's VolatilityFilter
+ * so strong market moves (7%–13% daily range) do not starve all crypto pairs out of the scanner.
+ */
+export function resolveDynamicVolatilityLimitPct(params: {
+  currentMarketRegime?: string;
+  isNightSession?: boolean;
+}): number {
+  const { currentMarketRegime = '', isNightSession = false } = params;
+  if (isNightSession) {
+    return 10.5;
+  }
+  const upper = String(currentMarketRegime || '').toUpperCase();
+  const isHighVolRegime =
+    upper.includes('СБРОС') ||
+    upper.includes('FLUSH') ||
+    upper.includes('DUMP') ||
+    upper.includes('МЕДВЕЖ') ||
+    upper.includes('HIGH_VOL') ||
+    upper.includes('VOLATIL') ||
+    upper.includes('BULL_EXPANSION') ||
+    upper.includes('РАЛЛИ') ||
+    upper.includes('ПАМП');
+  return isHighVolRegime ? 14.0 : 10.0;
+}
+
+/**
+ * Selects the next acting bot fairly across enabled bots:
+ * 1. Prioritizes bots with the fewest active open positions (preventing one bot from starving others).
+ * 2. Rotates round-robin across equally-loaded bots using `cursor` and returns `nextCursor`.
+ */
+export function selectNextActingBot<
+  T extends { agentId: string; sharpeRatio?: number; brain?: { cumulativeReward?: number } }
+>(params: {
+  activeBots: T[];
+  activePositions: Array<{ botId?: string }>;
+  cursor: number;
+}): { bot: T; nextCursor: number } {
+  const { activeBots, activePositions, cursor } = params;
+  if (activeBots.length === 0) {
+    throw new Error('selectNextActingBot requires at least one active bot');
+  }
+
+  const openCounts = new Map<string, number>();
+  for (const pos of activePositions) {
+    if (!pos.botId) continue;
+    openCounts.set(pos.botId, (openCounts.get(pos.botId) || 0) + 1);
+  }
+
+  let minOpen = Infinity;
+  for (const bot of activeBots) {
+    const count = openCounts.get(bot.agentId) || 0;
+    if (count < minOpen) minOpen = count;
+  }
+
+  const leastLoaded = activeBots
+    .filter((b) => (openCounts.get(b.agentId) || 0) === minOpen)
+    .sort((a, b) => {
+      const scoreB = (b.sharpeRatio || 1.5) * 0.5 + (b.brain?.cumulativeReward || 0) * 0.5;
+      const scoreA = (a.sharpeRatio || 1.5) * 0.5 + (a.brain?.cumulativeReward || 0) * 0.5;
+      if (scoreB !== scoreA) return scoreB - scoreA;
+      return a.agentId.localeCompare(b.agentId);
+    });
+
+  const safeCursor = Math.max(0, Math.floor(cursor || 0));
+  const picked = leastLoaded[safeCursor % leastLoaded.length];
+  return {
+    bot: picked,
+    nextCursor: (safeCursor + 1) % Math.max(1, activeBots.length * 100),
+  };
+}
+
+const PLACEHOLDER_TELEGRAM_CHAT_IDS = new Set([
+  '12345',
+  '123456',
+  '1234567',
+  '12345678',
+  '123456789',
+  '1234567890',
+  '987654321',
+  '000000000',
+  '111111111',
+  '999999999',
+]);
+
+/**
+ * Validates Telegram Chat ID format while rejecting well-known UI placeholder / test IDs such as `123456789`.
+ */
+export function isRealTelegramChatId(chatId?: string): boolean {
+  if (!chatId || typeof chatId !== 'string') return false;
+  const trimmed = chatId.trim();
+  if (!/^(-?\d{5,20}|@[a-zA-Z0-9_]{4,64})$/.test(trimmed)) return false;
+  if (PLACEHOLDER_TELEGRAM_CHAT_IDS.has(trimmed)) return false;
+  if (/^-?(.)\1{4,}$/.test(trimmed)) return false;
+  return true;
+}

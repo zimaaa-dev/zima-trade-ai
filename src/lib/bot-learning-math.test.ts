@@ -22,6 +22,9 @@ import {
   computeEffectiveGridRiskStopPct,
   evaluateTrendGridSafetyOrderFill,
   TREND_GRID_CORE_SYMBOLS,
+  resolveDynamicVolatilityLimitPct,
+  selectNextActingBot,
+  isRealTelegramChatId,
   type SymbolCooldownEntry,
   type KlineBar,
 } from './bot-learning-math.ts';
@@ -494,8 +497,57 @@ test('computeEffectiveGridRiskStopPct caps full-grid SO1+SO2 worst-case SL loss 
   assert.equal(TREND_GRID_CORE_SYMBOLS.includes('ETHUSDT' as any), false);
 });
 
+test('resolveDynamicVolatilityLimitPct adapts cleanly to high-volatility flushes without blocking majors', () => {
+  assert.equal(resolveDynamicVolatilityLimitPct({ currentMarketRegime: 'Боковик', isNightSession: false }), 10.0);
+  assert.equal(
+    resolveDynamicVolatilityLimitPct({ currentMarketRegime: '📉 Общерыночный сброс (Market-Wide Flush)', isNightSession: false }),
+    14.0
+  );
+  assert.equal(
+    resolveDynamicVolatilityLimitPct({ currentMarketRegime: '📉 Общерыночный сброс (Market-Wide Flush)', isNightSession: true }),
+    10.5
+  );
+});
 
+test('selectNextActingBot gives priority to least-loaded bots and rotates round-robin when balanced', () => {
+  const bots = [
+    { agentId: 'agent-tg-crypto-alpha', sharpeRatio: 1.86, brain: { cumulativeReward: 5.5 } },
+    { agentId: 'agent-onnx-ppo-v2', sharpeRatio: 1.69, brain: { cumulativeReward: 2.6 } },
+    { agentId: 'agent-lgbm-nightly', sharpeRatio: 1.6, brain: { cumulativeReward: 0 } },
+  ];
 
+  // Alpha already holds XAUUSDT -> Delta-L2 and Momentum go first
+  const turn1 = selectNextActingBot({
+    activeBots: bots,
+    activePositions: [{ botId: 'agent-tg-crypto-alpha' }],
+    cursor: 0,
+  });
+  assert.equal(turn1.bot.agentId, 'agent-onnx-ppo-v2');
 
+  const turn2 = selectNextActingBot({
+    activeBots: bots,
+    activePositions: [{ botId: 'agent-tg-crypto-alpha' }],
+    cursor: turn1.nextCursor,
+  });
+  assert.equal(turn2.bot.agentId, 'agent-lgbm-nightly');
 
+  // When all bots hold 0 positions, cursor alternates across all 3 bots
+  const p0 = selectNextActingBot({ activeBots: bots, activePositions: [], cursor: 0 });
+  const p1 = selectNextActingBot({ activeBots: bots, activePositions: [], cursor: p0.nextCursor });
+  const p2 = selectNextActingBot({ activeBots: bots, activePositions: [], cursor: p1.nextCursor });
+  assert.deepEqual(
+    [p0.bot.agentId, p1.bot.agentId, p2.bot.agentId],
+    ['agent-tg-crypto-alpha', 'agent-onnx-ppo-v2', 'agent-lgbm-nightly']
+  );
+});
+
+test('isRealTelegramChatId blocks placeholder/fake chat IDs like 123456789 while allowing real IDs', () => {
+  assert.equal(isRealTelegramChatId('123456789'), false);
+  assert.equal(isRealTelegramChatId('987654321'), false);
+  assert.equal(isRealTelegramChatId('000000000'), false);
+  assert.equal(isRealTelegramChatId('111111111'), false);
+  assert.equal(isRealTelegramChatId('668067356'), true);
+  assert.equal(isRealTelegramChatId('-1001987654321'), true);
+  assert.equal(isRealTelegramChatId('@ivan_i_m'), true);
+});
 
