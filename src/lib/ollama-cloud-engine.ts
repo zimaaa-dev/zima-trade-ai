@@ -12,13 +12,23 @@
  */
 
 export const OLLAMA_CLOUD_MODELS = [
-  'nemotron-3-nano:30b',
+  'glm-5.3-flash:cloud',
   'gpt-oss:20b',
   'gemma4:31b',
   'nemotron-3-super',
   'gpt-oss:120b',
   'nemotron-3-ultra',
   'beam',
+  'nemotron-3-nano:30b',
+] as const;
+
+export const DEFAULT_OLLAMA_CLOUD_MODEL = 'glm-5.3-flash:cloud' as const;
+const RETIRED_OR_FALLBACK_MODELS = [
+  'glm-5.3-flash:cloud',
+  'gpt-oss:20b',
+  'gemma4:31b',
+  'nemotron-3-super',
+  'gpt-oss:120b',
 ] as const;
 
 export type OllamaCloudModel = (typeof OLLAMA_CLOUD_MODELS)[number] | (string & {});
@@ -62,10 +72,10 @@ export class OllamaCloudEngine {
     }
     this.host = cleanHost;
 
-    const reqModel = (options?.defaultModel || 'nemotron-3-nano:30b').trim();
+    const reqModel = (options?.defaultModel || DEFAULT_OLLAMA_CLOUD_MODEL).trim();
     this.selectedModel = (OLLAMA_CLOUD_MODELS as readonly string[]).includes(reqModel)
       ? (reqModel as OllamaCloudModel)
-      : 'nemotron-3-nano:30b';
+      : DEFAULT_OLLAMA_CLOUD_MODEL;
 
     if (options?.keys) {
       this.setKeys(options.keys);
@@ -93,14 +103,14 @@ export class OllamaCloudEngine {
       if ((OLLAMA_CLOUD_MODELS as readonly string[]).includes(trimmed)) {
         this.selectedModel = trimmed as OllamaCloudModel;
       } else {
-        this.selectedModel = 'nemotron-3-nano:30b';
+        this.selectedModel = DEFAULT_OLLAMA_CLOUD_MODEL;
       }
     }
   }
 
   public getSelectedModel(): OllamaCloudModel {
     if (!(OLLAMA_CLOUD_MODELS as readonly string[]).includes(this.selectedModel)) {
-      this.selectedModel = 'nemotron-3-nano:30b';
+      this.selectedModel = DEFAULT_OLLAMA_CLOUD_MODEL;
     }
     return this.selectedModel;
   }
@@ -309,6 +319,10 @@ export class OllamaCloudEngine {
     const timeoutMs = options?.timeoutMs || 8500;
     const temperature = options?.temperature ?? 0.15;
 
+    const candidateModels = Array.from(
+      new Set([targetModel, ...RETIRED_OR_FALLBACK_MODELS])
+    );
+
     const maxKeyAttempts = Math.max(1, Math.min(this.keys.length, 3));
     let lastError = 'No valid keys configured in Ollama Cloud pool';
 
@@ -316,77 +330,103 @@ export class OllamaCloudEngine {
       const keyItem = this.acquireNextKey();
       if (!keyItem) break;
 
-      try {
-        const payload: Record<string, any> = {
-          model: targetModel,
-          prompt,
-          stream: false,
-          options: { temperature },
-        };
-        if (options?.system) {
-          payload.system = options.system;
-        }
-
-        const res = await fetch(`${this.host}/api/generate`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${keyItem.rawKey}`,
-          },
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-
-        if (res.ok) {
-          const data = (await res.json()) as any;
-          const text = String(data?.response || '').trim();
-          this.reportKeySuccess(keyItem);
-          return {
-            text,
-            model: targetModel,
-            keyMasked: keyItem.masked,
-            latencyMs: Date.now() - t0,
-            ok: true,
+      let keyFailedAuthOrLimit = false;
+      for (const candidateModel of candidateModels) {
+        try {
+          const payload: Record<string, any> = {
+            model: candidateModel,
+            prompt,
+            stream: false,
+            options: { temperature },
           };
-        }
+          if (options?.system) {
+            payload.system = options.system;
+          }
 
-        // Fallback to OpenAI compatible /v1/chat/completions if /api/generate is 404
-        if (res.status === 404) {
-          const resV1 = await fetch(`${this.host}/v1/chat/completions`, {
+          const res = await fetch(`${this.host}/api/generate`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${keyItem.rawKey}`,
             },
-            body: JSON.stringify({
-              model: targetModel,
-              messages: [{ role: 'user', content: prompt }],
-              temperature,
-            }),
+            body: JSON.stringify(payload),
             signal: AbortSignal.timeout(timeoutMs),
           });
-          if (resV1.ok) {
-            const data = (await resV1.json()) as any;
-            const text = String(data?.choices?.[0]?.message?.content || '').trim();
+
+          if (res.ok) {
+            const data = (await res.json()) as any;
+            const text = String(data?.response || '').trim();
             this.reportKeySuccess(keyItem);
+            if (candidateModel !== this.selectedModel && !options?.model) {
+              this.selectedModel = candidateModel;
+            }
             return {
               text,
-              model: targetModel,
+              model: candidateModel,
               keyMasked: keyItem.masked,
               latencyMs: Date.now() - t0,
               ok: true,
             };
           }
+
+          // Fallback to OpenAI compatible /v1/chat/completions if /api/generate is 404
+          if (res.status === 404) {
+            const resV1 = await fetch(`${this.host}/v1/chat/completions`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${keyItem.rawKey}`,
+              },
+              body: JSON.stringify({
+                model: candidateModel,
+                messages: [{ role: 'user', content: prompt }],
+                temperature,
+              }),
+              signal: AbortSignal.timeout(timeoutMs),
+            });
+            if (resV1.ok) {
+              const data = (await resV1.json()) as any;
+              const text = String(data?.choices?.[0]?.message?.content || '').trim();
+              this.reportKeySuccess(keyItem);
+              if (candidateModel !== this.selectedModel && !options?.model) {
+                this.selectedModel = candidateModel;
+              }
+              return {
+                text,
+                model: candidateModel,
+                keyMasked: keyItem.masked,
+                latencyMs: Date.now() - t0,
+                ok: true,
+              };
+            }
+            if (resV1.status === 410 || resV1.status === 404) {
+              lastError = `HTTP ${resV1.status}: model ${candidateModel} unavailable`;
+              continue;
+            }
+          }
+
+          const errText = await res.text().catch(() => `HTTP ${res.status}`);
+          lastError = `HTTP ${res.status}: ${errText}`;
+
+          // HTTP 410 means model retired (e.g. nemotron-3-nano:30b) — try next fallback model without penalizing key
+          if (res.status === 410) {
+            continue;
+          }
+
+          this.reportKeyFailure(keyItem, res.status, errText);
+          keyFailedAuthOrLimit = true;
+          break;
+        } catch (err: any) {
+          lastError = err?.message || 'Network Timeout';
+          this.reportKeyFailure(keyItem, 504, lastError);
+          keyFailedAuthOrLimit = true;
+          break;
         }
+      }
 
-        const errText = await res.text().catch(() => `HTTP ${res.status}`);
-        lastError = `HTTP ${res.status}: ${errText}`;
-        this.reportKeyFailure(keyItem, res.status, errText);
-
-        // If rate limited or auth failed, loop will automatically try the next key in pool
-      } catch (err: any) {
-        lastError = err?.message || 'Network Timeout';
-        this.reportKeyFailure(keyItem, 504, lastError);
+      if (!keyFailedAuthOrLimit) {
+        // Exhausted all fallback models without auth error; don't retry same models on same pool unnecessarily
+        break;
       }
     }
 
@@ -422,6 +462,10 @@ export class OllamaCloudEngine {
     const timeoutMs = options?.timeoutMs || 9500;
     const temperature = options?.temperature ?? 0.3;
 
+    const candidateModels = Array.from(
+      new Set([targetModel, ...RETIRED_OR_FALLBACK_MODELS])
+    );
+
     const maxKeyAttempts = Math.max(1, Math.min(this.keys.length, 3));
     let lastError = 'No valid keys configured in Ollama Cloud pool';
 
@@ -429,70 +473,96 @@ export class OllamaCloudEngine {
       const keyItem = this.acquireNextKey();
       if (!keyItem) break;
 
-      try {
-        const res = await fetch(`${this.host}/api/chat`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${keyItem.rawKey}`,
-          },
-          body: JSON.stringify({
-            model: targetModel,
-            messages,
-            stream: false,
-            options: { temperature },
-          }),
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-
-        if (res.ok) {
-          const data = (await res.json()) as any;
-          const text = String(data?.message?.content || '').trim();
-          this.reportKeySuccess(keyItem);
-          return {
-            text,
-            model: targetModel,
-            keyMasked: keyItem.masked,
-            latencyMs: Date.now() - t0,
-            ok: true,
-          };
-        }
-
-        // Fallback to OpenAI compatible /v1/chat/completions if /api/chat is 404
-        if (res.status === 404) {
-          const resV1 = await fetch(`${this.host}/v1/chat/completions`, {
+      let keyFailedAuthOrLimit = false;
+      for (const candidateModel of candidateModels) {
+        try {
+          const res = await fetch(`${this.host}/api/chat`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${keyItem.rawKey}`,
             },
             body: JSON.stringify({
-              model: targetModel,
+              model: candidateModel,
               messages,
-              temperature,
+              stream: false,
+              options: { temperature },
             }),
             signal: AbortSignal.timeout(timeoutMs),
           });
-          if (resV1.ok) {
-            const data = (await resV1.json()) as any;
-            const text = String(data?.choices?.[0]?.message?.content || '').trim();
+
+          if (res.ok) {
+            const data = (await res.json()) as any;
+            const text = String(data?.message?.content || '').trim();
             this.reportKeySuccess(keyItem);
+            if (candidateModel !== this.selectedModel && !options?.model) {
+              this.selectedModel = candidateModel;
+            }
             return {
               text,
-              model: targetModel,
+              model: candidateModel,
               keyMasked: keyItem.masked,
               latencyMs: Date.now() - t0,
               ok: true,
             };
           }
-        }
 
-        const errText = await res.text().catch(() => `HTTP ${res.status}`);
-        lastError = `HTTP ${res.status}: ${errText}`;
-        this.reportKeyFailure(keyItem, res.status, errText);
-      } catch (err: any) {
-        lastError = err?.message || 'Network Timeout';
-        this.reportKeyFailure(keyItem, 504, lastError);
+          // Fallback to OpenAI compatible /v1/chat/completions if /api/chat is 404
+          if (res.status === 404) {
+            const resV1 = await fetch(`${this.host}/v1/chat/completions`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${keyItem.rawKey}`,
+              },
+              body: JSON.stringify({
+                model: candidateModel,
+                messages,
+                temperature,
+              }),
+              signal: AbortSignal.timeout(timeoutMs),
+            });
+            if (resV1.ok) {
+              const data = (await resV1.json()) as any;
+              const text = String(data?.choices?.[0]?.message?.content || '').trim();
+              this.reportKeySuccess(keyItem);
+              if (candidateModel !== this.selectedModel && !options?.model) {
+                this.selectedModel = candidateModel;
+              }
+              return {
+                text,
+                model: candidateModel,
+                keyMasked: keyItem.masked,
+                latencyMs: Date.now() - t0,
+                ok: true,
+              };
+            }
+            if (resV1.status === 410 || resV1.status === 404) {
+              lastError = `HTTP ${resV1.status}: model ${candidateModel} unavailable`;
+              continue;
+            }
+          }
+
+          const errText = await res.text().catch(() => `HTTP ${res.status}`);
+          lastError = `HTTP ${res.status}: ${errText}`;
+
+          if (res.status === 410) {
+            continue;
+          }
+
+          this.reportKeyFailure(keyItem, res.status, errText);
+          keyFailedAuthOrLimit = true;
+          break;
+        } catch (err: any) {
+          lastError = err?.message || 'Network Timeout';
+          this.reportKeyFailure(keyItem, 504, lastError);
+          keyFailedAuthOrLimit = true;
+          break;
+        }
+      }
+
+      if (!keyFailedAuthOrLimit) {
+        break;
       }
     }
 

@@ -121,9 +121,9 @@ function loadEnvFromFiles() {
     process.env.OLLAMA_HOST = 'https://ollama.com';
   }
 
-  // Ensure default model is one of the valid cloud models
+  // Ensure default model is one of the active cloud models (auto-migrate retired nemotron-3-nano:30b)
   const validModels = [
-    'nemotron-3-nano:30b',
+    'glm-5.3-flash:cloud',
     'gpt-oss:20b',
     'gemma4:31b',
     'nemotron-3-super',
@@ -132,7 +132,7 @@ function loadEnvFromFiles() {
     'beam',
   ];
   if (!process.env.OLLAMA_MODEL || !validModels.includes(process.env.OLLAMA_MODEL.trim())) {
-    process.env.OLLAMA_MODEL = 'nemotron-3-nano:30b';
+    process.env.OLLAMA_MODEL = 'glm-5.3-flash:cloud';
   }
 }
 loadEnvFromFiles();
@@ -276,15 +276,16 @@ const initialOllamaKeys = [
 export const ollamaCloud = new OllamaCloudEngine({
   host: process.env.OLLAMA_HOST || 'https://ollama.com',
   keys: initialOllamaKeys,
-  defaultModel: (process.env.OLLAMA_MODEL as OllamaCloudModel) || 'nemotron-3-nano:30b',
+  defaultModel: (process.env.OLLAMA_MODEL as OllamaCloudModel) || 'glm-5.3-flash:cloud',
 });
 
 // Ollama Cloud Client Helper with resilient multi-key rotation
 async function callOllamaCloud(
   prompt: string,
-  model?: OllamaCloudModel
+  model?: OllamaCloudModel,
+  timeoutMs?: number
 ): Promise<{ text: string; latencyMs: number; ok: boolean; modelUsed?: string; keyMasked?: string }> {
-  const res = await ollamaCloud.generate(prompt, { model });
+  const res = await ollamaCloud.generate(prompt, { model, timeoutMs });
   return {
     text: res.text,
     latencyMs: res.latencyMs,
@@ -3883,7 +3884,7 @@ function buildFullSystemHealthPayload() {
       baseCapitalUsdt: systemState.capitalUsdt,
     }),
     memoryRssMb: rssMb,
-    agentsOnline: systemState.agents.filter(a => a.status === 'RUNNING').length,
+    agentsOnline: systemState.agents.filter(a => a.isEnabled).length,
     totalAgents: systemState.agents.length,
     botTradingEnabled: systemState.botTradingEnabled,
     nightModeEnabled: systemState.nightModeEnabled !== false,
@@ -6651,9 +6652,9 @@ export async function runAiConductorCycle(options?: {
     let decision: AiConductorDecision | null = null;
 
     if (hasOllamaKeys) {
-      const targetModel = ollamaCloud.getSelectedModel() || 'nemotron-3-nano:30b';
+      const targetModel = ollamaCloud.getSelectedModel() || 'glm-5.3-flash:cloud';
       const llmRes = await Promise.race([
-        callOllamaCloud(prompt, targetModel),
+        callOllamaCloud(prompt, targetModel, 16000),
         new Promise<{ text: string; latencyMs: number; ok: boolean; modelUsed?: string }>((resolve) =>
           setTimeout(
             () => resolve({ text: '', latencyMs: Date.now() - startedAt, ok: false, modelUsed: targetModel }),
