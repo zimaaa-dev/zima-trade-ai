@@ -213,6 +213,8 @@ import {
   resolveDynamicVolatilityLimitPct,
   selectNextActingBot,
   isRealTelegramChatId,
+  computeFeedItemFreshnessWeight,
+  resolveDynamicCryptoUniverse,
   type TrendGridSafetyOrder,
   type MarketRegimeType,
   type AdaptiveMarketProfile,
@@ -341,45 +343,56 @@ async function callFreeCloudLlmFallback(
     }
   }
 
-  // 2. Groq Cloud Free API (llama-3.3-70b-versatile)
+  // 2. Groq Cloud Free API (prioritizes live Groq models: qwen/qwen3.8-27b, openai/gpt-oss-20b, openai/gpt-oss-120b)
   if (isKeyValid(process.env.GROQ_API_KEY)) {
-    try {
-      const groqModel = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
-      const messages = options?.systemInstruction
-        ? [
-            { role: 'system', content: options.systemInstruction },
-            { role: 'user', content: prompt },
-          ]
-        : [{ role: 'user', content: prompt }];
-      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.GROQ_API_KEY!.trim()}`,
-        },
-        body: JSON.stringify({
-          model: groqModel,
-          messages,
-          temperature: 0.2,
-          ...(options?.jsonMode ? { response_format: { type: 'json_object' } } : {}),
-        }),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (res.ok) {
-        const data = (await res.json()) as any;
-        const text = String(data?.choices?.[0]?.message?.content || '').trim();
-        if (text) {
-          return {
-            ok: true,
-            text,
-            source: 'GROQ_AI',
-            modelUsed: groqModel,
-            latencyMs: Date.now() - startedAt,
-          };
+    const groqCandidates = Array.from(
+      new Set([
+        ...(process.env.GROQ_MODEL ? [process.env.GROQ_MODEL.trim()] : []),
+        'qwen/qwen3.8-27b',
+        'openai/gpt-oss-20b',
+        'openai/gpt-oss-120b',
+        'llama-3.3-70b-versatile',
+      ])
+    );
+    const messages = options?.systemInstruction
+      ? [
+          { role: 'system', content: options.systemInstruction },
+          { role: 'user', content: prompt },
+        ]
+      : [{ role: 'user', content: prompt }];
+
+    for (const groqModel of groqCandidates) {
+      try {
+        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${process.env.GROQ_API_KEY!.trim()}`,
+          },
+          body: JSON.stringify({
+            model: groqModel,
+            messages,
+            temperature: 0.2,
+            ...(options?.jsonMode ? { response_format: { type: 'json_object' } } : {}),
+          }),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as any;
+          const text = String(data?.choices?.[0]?.message?.content || '').trim();
+          if (text) {
+            return {
+              ok: true,
+              text,
+              source: 'GROQ_AI',
+              modelUsed: groqModel,
+              latencyMs: Date.now() - startedAt,
+            };
+          }
         }
+      } catch (err: any) {
+        console.warn(`Groq Cloud AI (${groqModel}) warning:`, err?.message || err);
       }
-    } catch (err: any) {
-      console.warn('Groq Cloud AI warning:', err?.message || err);
     }
   }
 
@@ -5558,7 +5571,7 @@ async function runBotEngineCycle() {
           baseMaxSpreadBps: Math.min(8.0, actingBot.brain?.maxSpreadBps || 10.0),
         });
 
-        // Base configured symbols for the bot, strictly intersected with the Top-20 + Gold Whitelist
+        // Base configured symbols + Dynamic Top-35 liquid crypto movers (stocks/ETFs & stablecoins excluded)
         const goldAllowed = systemState.goldTradingEnabled !== false;
         const rawAllowed = Array.isArray(actingBot.allowedSymbols)
           ? actingBot.allowedSymbols.filter(
@@ -5575,10 +5588,18 @@ async function runBotEngineCycle() {
           (Array.isArray(actingBot.allowedSymbols) &&
             (actingBot.allowedSymbols.includes('ALL') || actingBot.allowedSymbols.includes('DYNAMIC_TRENDS')));
 
-        const rawUniverse = (isDynamicScanEnabled
-          ? Array.from(new Set([...baseAllowedSymbols, ...INSTITUTIONAL_CRYPTO_WHITELIST]))
-          : baseAllowedSymbols
-        ).filter((s) => goldAllowed || s !== 'XAUUSDT');
+        const dynamicUniverseRes = resolveDynamicCryptoUniverse({
+          baseAllowedSymbols,
+          coreWhitelist: INSTITUTIONAL_CRYPTO_WHITELIST,
+          screenerSymbols: systemState.screenerSymbols,
+          goldAllowed,
+          isDynamicScanEnabled,
+          maxDynamicExtras: isDynamicScanEnabled ? 15 : 0,
+          minTurnoverUsdt: 80_000_000,
+          maxSpreadBps: 3.0,
+        });
+        const rawUniverse = dynamicUniverseRes.universe;
+        const allowedUniverseSet = new Set(rawUniverse);
 
         // Freqtrade Pairlist Pipeline: SpreadFilter -> Adaptive VolatilityFilter -> PerformanceFilter
         const dynamicMaxVolPct = resolveDynamicVolatilityLimitPct({
@@ -5598,7 +5619,7 @@ async function runBotEngineCycle() {
         const nowCycleTs = Date.now();
         const openSymbols = new Set(systemState.activePositions.map((p) => p.symbol));
         const availableCandidates = rankedPairlist.filter((s) => {
-          if (!INSTITUTIONAL_WHITELIST_SET.has(s) || openSymbols.has(s)) return false;
+          if (!allowedUniverseSet.has(s) || openSymbols.has(s)) return false;
           if (!evaluateSymbolCooldownGuard(symbolCooldowns, s, nowCycleTs).allowed) return false;
           const lowProfitCheck = evaluateLowProfitPairsProtection({
             symbol: s,
@@ -5625,14 +5646,15 @@ async function runBotEngineCycle() {
           return;
         }
 
-        // Build a deterministic 4-symbol tournament batch per cycle:
-        // First, inject symbols with active Telegram signals (e.g. SOLUSDT, XRPUSDT, BTCUSDT from @ne_investor)
+        // Build an 8-symbol tournament batch per cycle:
+        // First inject fresh (<=12h) active Telegram signals, then #1 PerformanceFilter pair + rotating batch across Top-35
         const batchSet = new Set<string>();
         const tgSignalSymbols = systemState.parsedNewsFeed
           .filter(
             (f) =>
               f.dataSource === 'LIVE_TELEGRAM_WEB' &&
               isTradingSignalFeedItem(f) &&
+              computeFeedItemFreshnessWeight(Number(f.timestamp) || 0, nowCycleTs) > 0 &&
               Math.abs(Number(f.sentimentScore) || 0) >= 0.58
           )
           .map((f) => String(f.symbol || ''))
@@ -5642,13 +5664,13 @@ async function runBotEngineCycle() {
           if (batchSet.size < 3) batchSet.add(tgSym);
         }
         // Always include the #1 highest-performing available pair from PerformanceFilter
-        if (batchSet.size < 4) {
+        if (batchSet.size < 8) {
           batchSet.add(availableCandidates[0]);
         }
-        for (let i = 0; i < availableCandidates.length && batchSet.size < 4; i++) {
+        for (let i = 0; i < availableCandidates.length && batchSet.size < 8; i++) {
           batchSet.add(availableCandidates[(tournamentScanCursor + i) % availableCandidates.length]);
         }
-        tournamentScanCursor = (tournamentScanCursor + 3) % Math.max(1, availableCandidates.length);
+        tournamentScanCursor = (tournamentScanCursor + 5) % Math.max(1, availableCandidates.length);
         const batchSymbols = Array.from(batchSet);
 
         const btcMeta = systemState.screenerSymbols.find((s) => s.symbol === 'BTCUSDT');
@@ -5666,7 +5688,7 @@ async function runBotEngineCycle() {
         const btcEmaTrendBps = btcFeatures.emaTrendBps;
         const btcVwapDevPct = btcFeatures.vwapDeviationPct;
 
-        // Evaluate all batch candidates on 15-minute klines (Freqtrade NFI timeframe) + L2 Orderbook + Live Telegram Signals
+        // Evaluate all batch candidates on 15-minute klines (Freqtrade NFI timeframe) + L2 Orderbook + Fresh (<=12h) Telegram Signals
         const evaluatedBatch = await Promise.all(
           batchSymbols.map(async (sym) => {
             const [cBook, cKlines] = await Promise.all([
@@ -5676,33 +5698,46 @@ async function runBotEngineCycle() {
             const cBestBid = cBook.bids[0]?.price || priceMap[sym] || 100;
             const cBestAsk = cBook.asks[0]?.price || priceMap[sym] || 100;
 
-            // Prioritize exact symbol signals from real trading channels (@ne_investor); ignore generic news headlines (@WatcherGuru, etc.)
+            // Prioritize fresh (<=12h) exact symbol signals; ignore news headlines and stale (>12h) commentary
             const exactSymbolFeed = systemState.parsedNewsFeed.filter(
-              (item) => item.symbol === sym && isTradingSignalFeedItem(item)
+              (item) =>
+                item.symbol === sym &&
+                isTradingSignalFeedItem(item) &&
+                computeFeedItemFreshnessWeight(Number(item.timestamp) || 0, nowCycleTs) > 0
             );
             const recentSymbolFeed =
               exactSymbolFeed.length > 0
                 ? exactSymbolFeed
                 : systemState.parsedNewsFeed.filter(
-                    (item) => item.symbol === 'BTCUSDT' && isTradingSignalFeedItem(item)
+                    (item) =>
+                      item.symbol === 'BTCUSDT' &&
+                      isTradingSignalFeedItem(item) &&
+                      computeFeedItemFreshnessWeight(Number(item.timestamp) || 0, nowCycleTs) > 0
                   );
 
-            const feedBias =
-              recentSymbolFeed.length > 0
-                ? recentSymbolFeed
-                    .slice(0, 4)
-                    .reduce((acc, n) => acc + (Number(n.sentimentScore) || 0) * (Number(n.impactWeight) ?? 0.85), 0) /
-                  Math.min(4, recentSymbolFeed.length)
-                : 0;
+            let feedBias = 0;
+            if (recentSymbolFeed.length > 0) {
+              let weightedScoreSum = 0;
+              let weightSum = 0;
+              for (const n of recentSymbolFeed.slice(0, 4)) {
+                const freshness = computeFeedItemFreshnessWeight(Number(n.timestamp) || 0, nowCycleTs);
+                const w = (Number(n.impactWeight) ?? 0.85) * freshness;
+                weightedScoreSum += (Number(n.sentimentScore) || 0) * w;
+                weightSum += w;
+              }
+              feedBias = weightSum > 0 ? weightedScoreSum / weightSum : 0;
+            }
 
-            // Relative strength vs BTC + 24h momentum, giving dominant weight (80%) to direct @ne_investor channel signals when present
+            // Relative strength vs BTC + 24h momentum, giving dominant weight (80%) to fresh direct channel signals when present
             const symMeta = systemState.screenerSymbols.find((s) => s.symbol === sym);
             const symChange24h = symMeta?.priceChangePct || 0;
             const relStrengthScore = Math.tanh((symChange24h - btcChange24h * 0.5) / 4.5);
             const hasDirectTgSignal = exactSymbolFeed.some((f) => f.dataSource === 'LIVE_TELEGRAM_WEB');
             const rawSentiment = hasDirectTgSignal
               ? Math.max(-1, Math.min(1, feedBias * 0.8 + relStrengthScore * 0.2))
-              : Math.max(-1, Math.min(1, relStrengthScore * 0.45 + feedBias * 0.55));
+              : recentSymbolFeed.length > 0
+              ? Math.max(-1, Math.min(1, relStrengthScore * 0.55 + feedBias * 0.45))
+              : Math.max(-1, Math.min(1, relStrengthScore * 0.65));
 
             const cFeatures = extractMarketFeatures({
               bids: cBook.bids,
@@ -5710,7 +5745,11 @@ async function runBotEngineCycle() {
               klines: cKlines,
               sentimentScore: rawSentiment,
             });
-            const cEval = evaluateBotSignal(actingBot.brain!, cFeatures);
+            const cEval = evaluateBotSignal(actingBot.brain!, cFeatures, {
+              marketRegime: systemState.currentMarketRegime,
+              primaryEvent: systemState.currentAiConductorDecision?.primaryEvent,
+              strategyId: actingBot.agentId,
+            });
             return {
               symbol: sym,
               book: cBook,
@@ -9426,6 +9465,10 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
     tgId,
     tgApiHash,
     tgHash,
+    groqApiKey,
+    groqKey,
+    openrouterApiKey,
+    openrouterKey,
   } = req.body;
 
   const rawOllama = ollamaApiKeys ?? ollamaApiKey ?? ollamaKey ?? ollamaCloudKey;
@@ -9437,8 +9480,32 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
   const rawMexcKey = mexcApiKey ?? mexcKey;
   const rawTgId = tgApiId ?? tgId;
   const rawTgHash = tgApiHash ?? tgHash;
+  const rawGroqKey = groqApiKey ?? groqKey;
+  const rawOpenrouterKey = openrouterApiKey ?? openrouterKey;
 
   const updates: Record<string, string | undefined> = {};
+
+  if (rawGroqKey !== undefined) {
+    const val = typeof rawGroqKey === 'string' ? rawGroqKey.trim() : '';
+    if (val && isKeyValid(val)) {
+      process.env.GROQ_API_KEY = val;
+      updates.GROQ_API_KEY = val;
+    } else if (val === '') {
+      delete process.env.GROQ_API_KEY;
+      updates.GROQ_API_KEY = '';
+    }
+  }
+
+  if (rawOpenrouterKey !== undefined) {
+    const val = typeof rawOpenrouterKey === 'string' ? rawOpenrouterKey.trim() : '';
+    if (val && isKeyValid(val)) {
+      process.env.OPENROUTER_API_KEY = val;
+      updates.OPENROUTER_API_KEY = val;
+    } else if (val === '') {
+      delete process.env.OPENROUTER_API_KEY;
+      updates.OPENROUTER_API_KEY = '';
+    }
+  }
 
   if (rawOllama !== undefined) {
     const val = typeof rawOllama === 'string'
@@ -9542,9 +9609,11 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
 
   res.json({
     success: true,
-    message: 'Ключи бирж успешно обновлены и сохранены в конфигурации!',
+    message: 'Ключи бирж и ИИ-провайдеров успешно обновлены и сохранены в конфигурации!',
     ollamaConfigured: poolStatus.totalKeys > 0,
     ollamaPool: poolStatus,
+    groqConfigured: isKeyValid(process.env.GROQ_API_KEY),
+    openrouterConfigured: isKeyValid(process.env.OPENROUTER_API_KEY),
     bybitConfigured,
     okxConfigured,
     okxDemoTrading: systemState.okxDemoTrading,

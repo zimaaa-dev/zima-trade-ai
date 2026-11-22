@@ -25,6 +25,8 @@ import {
   resolveDynamicVolatilityLimitPct,
   selectNextActingBot,
   isRealTelegramChatId,
+  computeFeedItemFreshnessWeight,
+  resolveDynamicCryptoUniverse,
   type SymbolCooldownEntry,
   type KlineBar,
 } from './bot-learning-math.ts';
@@ -550,4 +552,82 @@ test('isRealTelegramChatId blocks placeholder/fake chat IDs like 123456789 while
   assert.equal(isRealTelegramChatId('-1001987654321'), true);
   assert.equal(isRealTelegramChatId('@ivan_i_m'), true);
 });
+
+test('[Option 1] computeFeedItemFreshnessWeight decays older Telegram signals cleanly to zero after 12 hours', () => {
+  const now = 1795345000000;
+  assert.equal(computeFeedItemFreshnessWeight(now - 2 * 3_600_000, now), 1.0);
+  assert.equal(computeFeedItemFreshnessWeight(now - 4 * 3_600_000, now), 1.0);
+  assert.equal(computeFeedItemFreshnessWeight(now - 8 * 3_600_000, now), 0.5);
+  assert.equal(computeFeedItemFreshnessWeight(now - 12 * 3_600_000, now), 0);
+  assert.equal(computeFeedItemFreshnessWeight(now - 137 * 3_600_000, now), 0);
+});
+
+test('[Option 1] resolveDynamicCryptoUniverse expands Top-35 liquid crypto coins while blocking US stock/ETF synthetics', () => {
+  const core = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XAUUSDT'];
+  const { universe, dynamicAdded } = resolveDynamicCryptoUniverse({
+    baseAllowedSymbols: ['BTCUSDT', 'SOLUSDT'],
+    coreWhitelist: core,
+    goldAllowed: true,
+    isDynamicScanEnabled: true,
+    maxDynamicExtras: 15,
+    screenerSymbols: [
+      { symbol: 'ZECUSDT', turnover24h: 293_000_000, spreadBps: 0.2 },
+      { symbol: 'SOXLUSDT', turnover24h: 207_000_000, spreadBps: 2.9 },
+      { symbol: 'SNDKUSDT', turnover24h: 150_000_000, spreadBps: 1.2 },
+      { symbol: 'NVDAUSDT', turnover24h: 400_000_000, spreadBps: 0.5 },
+      { symbol: 'HYPEUSDT', turnover24h: 185_000_000, spreadBps: 0.3 },
+      { symbol: 'PEPEUSDT', turnover24h: 140_000_000, spreadBps: 0.4 },
+      { symbol: 'LOWVOLUSDT', turnover24h: 25_000_000, spreadBps: 1.0 },
+      { symbol: 'WIDESPREADUSDT', turnover24h: 110_000_000, spreadBps: 6.5 },
+      { symbol: 'USDCUSDT', turnover24h: 900_000_000, spreadBps: 0.1 },
+    ],
+  });
+
+  assert.deepEqual(dynamicAdded, ['ZECUSDT', 'HYPEUSDT', 'PEPEUSDT']);
+  assert.ok(universe.includes('ZECUSDT'));
+  assert.ok(universe.includes('HYPEUSDT'));
+  assert.ok(universe.includes('PEPEUSDT'));
+  assert.ok(!universe.includes('SOXLUSDT'));
+  assert.ok(!universe.includes('SNDKUSDT'));
+  assert.ok(!universe.includes('NVDAUSDT'));
+  assert.ok(!universe.includes('LOWVOLUSDT'));
+  assert.ok(!universe.includes('WIDESPREADUSDT'));
+  assert.ok(!universe.includes('USDCUSDT'));
+});
+
+test('[Option 1] evaluateBotSignal unlocks trend breakouts up to RSI 74 / VWAP +1.95% in BULL_EXPANSION while keeping exhaustion block', () => {
+  const brain = createDefaultBotBrain('LGBM_QUANT', 'strat-bull-breakout-pro');
+  const rallyFeatures = {
+    obi: 0.26,
+    spreadBps: 1.2,
+    rsi14: 71.5,
+    emaTrendBps: 22.0,
+    momentumSignal: 0.62,
+    vwapDeviationPct: 1.50,
+    vwapSignal: 0.42,
+    atrPct: 1.15,
+    sentimentSignal: 0.0, // stale 137h TG veto decayed to 0
+  };
+
+  // Without trend context (strict default): still blocked
+  const strictRes = evaluateBotSignal(brain, rallyFeatures);
+  assert.equal(strictRes.action, 'SKIP');
+
+  // With trend breakout context (Option 1): enters LONG cleanly
+  const trendRes = evaluateBotSignal(brain, rallyFeatures, {
+    primaryEvent: 'BULL_EXPANSION',
+    strategyId: 'strat-bull-breakout-pro',
+  });
+  assert.equal(trendRes.action, 'LONG');
+
+  // Extreme blow-off top (RSI 78, VWAP +2.4%) is STILL blocked even in trend mode
+  const blowoffRes = evaluateBotSignal(
+    brain,
+    { ...rallyFeatures, rsi14: 78.0, vwapDeviationPct: 2.40 },
+    { primaryEvent: 'BULL_EXPANSION', strategyId: 'strat-bull-breakout-pro' }
+  );
+  assert.equal(blowoffRes.action, 'SKIP');
+  assert.match(blowoffRes.reasonSummary, /RSI Exhaustion/);
+});
+
 

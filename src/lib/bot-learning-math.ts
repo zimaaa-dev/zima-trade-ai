@@ -894,9 +894,48 @@ export function applyFreqtradePairlistPipeline(params: {
  * - Telegram Channel Veto & Conviction: prevents opening trades against strong Telegram channel signals (`|sentimentSignal| >= 0.35`),
  *   and allows `TG_CHANNEL` / channel-backed signals (`|sentimentSignal| >= 0.45`) to execute without waiting for extreme L2 OBI.
  */
+export interface SignalEvaluationContext {
+  marketRegime?: string;
+  primaryEvent?: string;
+  strategyId?: string;
+}
+
+const TREND_BREAKOUT_STRATEGY_IDS = new Set([
+  'strat-bull-breakout-pro',
+  'agent-lgbm-nightly',
+  'strat-alt-rotation-alpha',
+  'strat-volatility-squeeze',
+  'agent-mtf-scalper',
+  'agent-volume-spike',
+]);
+
+export function isTrendBreakoutContext(options?: SignalEvaluationContext): boolean {
+  if (!options) return false;
+  if (options.strategyId && TREND_BREAKOUT_STRATEGY_IDS.has(options.strategyId)) {
+    return true;
+  }
+  const ev = String(options.primaryEvent || '').toUpperCase();
+  if (ev === 'BULL_EXPANSION' || ev === 'BEAR_FLUSH' || ev === 'VOLATILITY_SPIKE') {
+    return true;
+  }
+  const reg = String(options.marketRegime || '').toUpperCase();
+  return (
+    reg.includes('BULL') ||
+    reg.includes('EXPANSION') ||
+    reg.includes('FLUSH') ||
+    reg.includes('DUMP') ||
+    reg.includes('БЫЧИЙ') ||
+    reg.includes('АЛЬТ-СЕЗОН') ||
+    reg.includes('РАЛЛИ') ||
+    reg.includes('ПАМП') ||
+    reg.includes('СБРОС')
+  );
+}
+
 export function evaluateBotSignal(
   brain: BotBrainState,
-  features: MarketFeatureVector
+  features: MarketFeatureVector,
+  options?: SignalEvaluationContext
 ): {
   action: 'LONG' | 'SHORT' | 'SKIP';
   compositeScore: number;
@@ -979,11 +1018,18 @@ export function evaluateBotSignal(
     };
   }
 
-  // 5. Freqtrade NFI Anti-Top-Chasing & Value-Zone VWAP Guard:
-  // Blocks chasing green candles > +0.58% above VWAP / RSI > 63 unless extreme institutional L2 absorption (OBI >= 0.72) AND positive TG sentiment
+  // 5. Freqtrade NFI Anti-Top-Chasing & Adaptive Trend Value-Zone VWAP Guard:
+  // Standard strict pullback window (RSI <= 63, VWAP <= +0.58%) vs balanced trend-breakout window (RSI <= 74, VWAP <= +1.95%).
+  const trendBreakout = isTrendBreakoutContext(options);
+  const maxRsiLong = trendBreakout ? 74 : 63;
+  const minRsiShort = trendBreakout ? 26 : 37;
+  const maxVwapDevLong = trendBreakout ? 1.95 : 0.58;
+  const minVwapDevShort = trendBreakout ? -1.95 : -0.58;
+  const diLimit = trendBreakout ? 2.25 : 1.85;
+
   if (
     compositeScore > 0 &&
-    (features.rsi14 > 63 || features.vwapDeviationPct > 0.58) &&
+    (features.rsi14 > maxRsiLong || features.vwapDeviationPct > maxVwapDevLong) &&
     (features.obi < 0.72 || features.sentimentSignal < 0)
   ) {
     return {
@@ -991,12 +1037,12 @@ export function evaluateBotSignal(
       compositeScore,
       slDistancePct,
       contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
-      reasonSummary: `Пропуск [RSI Exhaustion / VWAP Overextension]: Цена уже ушла вверх от справедливой стоимости (RSI=${features.rsi14.toFixed(1)}, VWAP=${features.vwapDeviationPct >= 0 ? '+' : ''}${features.vwapDeviationPct.toFixed(2)}% > +0.58%). Ждем отката к средней полосе Боллинджера.`,
+      reasonSummary: `Пропуск [RSI Exhaustion / VWAP Overextension]: Цена уже ушла вверх от справедливой стоимости (RSI=${features.rsi14.toFixed(1)}/${maxRsiLong}, VWAP=${features.vwapDeviationPct >= 0 ? '+' : ''}${features.vwapDeviationPct.toFixed(2)}% > +${maxVwapDevLong.toFixed(2)}%). Ждем отката к средней полосе Боллинджера.`,
     };
   }
   if (
     compositeScore < 0 &&
-    (features.rsi14 < 37 || features.vwapDeviationPct < -0.58) &&
+    (features.rsi14 < minRsiShort || features.vwapDeviationPct < minVwapDevShort) &&
     (features.obi > -0.72 || features.sentimentSignal > 0)
   ) {
     return {
@@ -1004,12 +1050,12 @@ export function evaluateBotSignal(
       compositeScore,
       slDistancePct,
       contributions: { obi: cObi, momentum: cMom, vwap: cVwap, sentiment: cSent },
-      reasonSummary: `Пропуск [RSI Exhaustion / VWAP Overextension]: Цена уже провалилась далеко ниже VWAP (RSI=${features.rsi14.toFixed(1)}, VWAP=${features.vwapDeviationPct.toFixed(2)}% < -0.58%). Ждем отскока к сопротивлению.`,
+      reasonSummary: `Пропуск [RSI Exhaustion / VWAP Overextension]: Цена уже провалилась далеко ниже VWAP (RSI=${features.rsi14.toFixed(1)}/${minRsiShort}, VWAP=${features.vwapDeviationPct.toFixed(2)}% < ${minVwapDevShort.toFixed(2)}%). Ждем отскока к сопротивлению.`,
     };
   }
 
   // 6. FreqAI Dissimilarity Index Outlier Guard (`DI_values`)
-  const diCheck = calculateFreqaiDissimilarityIndex(features, 1.85);
+  const diCheck = calculateFreqaiDissimilarityIndex(features, diLimit);
   if (!diCheck.doPredict) {
     return {
       action: 'SKIP',
@@ -1956,3 +2002,154 @@ export function isRealTelegramChatId(chatId?: string): boolean {
   if (/^-?(.)\1{4,}$/.test(trimmed)) return false;
   return true;
 }
+
+/**
+ * Time-decay freshness weight for parsed Telegram / news items:
+ * - <= 4h old: full weight 1.0
+ * - 4h..12h old: linear decay down to 0.0
+ * - > 12h old: 0.0 (stale macro commentary must never block live setups days later)
+ */
+export function computeFeedItemFreshnessWeight(timestampMs: number, nowTs: number = Date.now()): number {
+  if (!Number.isFinite(timestampMs) || timestampMs <= 0) return 0;
+  const ageHours = Math.max(0, (nowTs - timestampMs) / 3_600_000);
+  if (ageHours <= 4) return 1.0;
+  if (ageHours >= 12) return 0;
+  return Number((1 - (ageHours - 4) / 8).toFixed(4));
+}
+
+const EXCLUDED_STABLE_OR_METAL_SYMBOLS = new Set([
+  'USDCUSDT',
+  'FDUSDUSDT',
+  'USDEUSDT',
+  'DAIUSDT',
+  'TUSDUSDT',
+  'PYUSDUSDT',
+  'USD1USDT',
+  'EURUSDT',
+  'BUSDUSDT',
+  'USDPUSDT',
+  'XAUTUSDT',
+  'PAXGUSDT',
+  'AEURUSDT',
+]);
+
+const SYNTHETIC_EQUITY_OR_INDEX_BASES = new Set([
+  'SOXL',
+  'SNDK',
+  'NVDA',
+  'TSLA',
+  'AAPL',
+  'MSFT',
+  'AMZN',
+  'GOOGL',
+  'GOOG',
+  'META',
+  'COIN',
+  'MSTR',
+  'SPY',
+  'QQQ',
+  'IWM',
+  'BABA',
+  'AMD',
+  'INTC',
+  'NFLX',
+  'PYPL',
+  'CRCL',
+  'HOOD',
+  'PLTR',
+  'ORCL',
+  'IBM',
+  'ARM',
+  'AVGO',
+  'SMCI',
+  'GME',
+  'AMC',
+  'NKE',
+  'DIS',
+  'XAG',
+  'WTI',
+  'BRENT',
+  'SPX',
+  'NDX',
+  'NAS100',
+  'US30',
+  'UK100',
+]);
+
+export function isEligibleDynamicCryptoSymbol(symbol: string, goldAllowed: boolean = true): boolean {
+  const sym = String(symbol || '').toUpperCase().trim();
+  if (!sym.endsWith('USDT') || sym.length < 6) return false;
+  if (sym === 'XAUUSDT') return goldAllowed;
+  if (EXCLUDED_STABLE_OR_METAL_SYMBOLS.has(sym)) return false;
+  if (/(UP|DOWN|BULL|BEAR|[235][LS])USDT$/.test(sym)) return false;
+  const base = sym.slice(0, -4);
+  if (SYNTHETIC_EQUITY_OR_INDEX_BASES.has(base)) return false;
+  return /^[A-Z0-9]{2,12}$/.test(base);
+}
+
+/**
+ * Expands the core 20-coin whitelist dynamically with Top-35 high-liquidity crypto movers
+ * from the live screener while excluding US stock/ETF synthetics, stablecoins, and illiquid spreads.
+ */
+export function resolveDynamicCryptoUniverse(params: {
+  baseAllowedSymbols: string[];
+  coreWhitelist: string[];
+  screenerSymbols: Array<{
+    symbol: string;
+    turnover24h?: number;
+    spreadBps?: number;
+  }>;
+  goldAllowed?: boolean;
+  isDynamicScanEnabled?: boolean;
+  maxDynamicExtras?: number;
+  minTurnoverUsdt?: number;
+  maxSpreadBps?: number;
+}): { universe: string[]; dynamicAdded: string[] } {
+  const {
+    baseAllowedSymbols,
+    coreWhitelist,
+    screenerSymbols,
+    goldAllowed = true,
+    isDynamicScanEnabled = true,
+    maxDynamicExtras = 15,
+    minTurnoverUsdt = 80_000_000,
+    maxSpreadBps = 3.0,
+  } = params;
+
+  const baseFiltered = (baseAllowedSymbols.length > 0 ? baseAllowedSymbols : coreWhitelist).filter(
+    (s) => goldAllowed || s !== 'XAUUSDT'
+  );
+  if (!isDynamicScanEnabled) {
+    return { universe: Array.from(new Set(baseFiltered)), dynamicAdded: [] };
+  }
+
+  const universeSet = new Set<string>([
+    ...baseFiltered,
+    ...coreWhitelist.filter((s) => goldAllowed || s !== 'XAUUSDT'),
+  ]);
+
+  const dynamicAdded: string[] = [];
+  if (maxDynamicExtras > 0 && Array.isArray(screenerSymbols)) {
+    const sortedMovers = [...screenerSymbols].sort(
+      (a, b) => (Number(b.turnover24h) || 0) - (Number(a.turnover24h) || 0)
+    );
+    for (const meta of sortedMovers) {
+      if (dynamicAdded.length >= maxDynamicExtras) break;
+      const sym = String(meta?.symbol || '').toUpperCase().trim();
+      if (!sym || universeSet.has(sym)) continue;
+      if (!isEligibleDynamicCryptoSymbol(sym, goldAllowed)) continue;
+      const turnover = Number(meta?.turnover24h) || 0;
+      const spread = Number(meta?.spreadBps);
+      if (turnover < minTurnoverUsdt) continue;
+      if (Number.isFinite(spread) && spread > maxSpreadBps) continue;
+      universeSet.add(sym);
+      dynamicAdded.push(sym);
+    }
+  }
+
+  return {
+    universe: Array.from(universeSet),
+    dynamicAdded,
+  };
+}
+
