@@ -862,6 +862,43 @@ export const SettingsConfigView: React.FC = () => {
                 </td>
               </tr>
 
+              {/* Groq Cloud AI */}
+              <tr className="hover:bg-slate-800/30">
+                <td className="py-3 px-3">
+                  <div className="font-bold text-white">GROQ_API_KEY (Cloud LLM)</div>
+                  <span className="text-[10px] text-cyan-400">api.groq.com · Qwen 3.8 27B / GPT-OSS 20B</span>
+                </td>
+                <td className="py-3 px-3 text-slate-300 text-[11px]">
+                  Облачный ИИ-Дирижёр стратегий (анализ событий и мутации) и ИИ-аналитик
+                  {config?.credentials?.groqAiKey?.configured && (
+                    <span className="block text-[10px] text-emerald-400 mt-0.5">
+                      {config.credentials.groqAiKey.source}
+                    </span>
+                  )}
+                </td>
+                <td className="py-3 px-3">
+                  {config?.credentials?.groqAiKey?.configured ? (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 w-fit">
+                      <CheckCircle2 className="w-3 h-3" /> ПОДКЛЮЧЕН
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-950 text-amber-400 border border-amber-800/40 flex items-center gap-1 w-fit">
+                      <HelpCircle className="w-3 h-3" /> НЕ НАСТРОЕН
+                    </span>
+                  )}
+                </td>
+                <td className="py-3 px-3 text-right">
+                  <button
+                    type="button"
+                    onClick={() => runTest('groq')}
+                    disabled={testingTarget === 'groq'}
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-cyan-300 rounded text-[11px] transition"
+                  >
+                    {testingTarget === 'groq' ? 'Проверка...' : 'Проверить Groq'}
+                  </button>
+                </td>
+              </tr>
+
               {/* Telegram Userbot */}
               <tr className="hover:bg-slate-800/30">
                 <td className="py-3 px-3">
@@ -918,7 +955,7 @@ export const SettingsConfigView: React.FC = () => {
           <div className="flex items-center gap-2">
             <Key className="w-5 h-5 text-emerald-400" />
             <h3 className="font-extrabold text-sm text-white uppercase tracking-wider">
-              API ключи бирж Bybit V5 & OKX V5 (Live Mode)
+              API ключи бирж (Bybit / OKX) и ИИ-провайдера (Groq Cloud)
             </h3>
           </div>
         </div>
@@ -962,6 +999,7 @@ export const SettingsConfigView: React.FC = () => {
             const okxKey = getVal('okxKey');
             const okxSecret = getVal('okxSecret');
             const okxPassphrase = getVal('okxPassphrase');
+            const groqKey = getVal('groqKey');
 
             setIsSaving(true);
             setSaveStatus(null);
@@ -976,6 +1014,7 @@ export const SettingsConfigView: React.FC = () => {
                   okxApiKey: okxKey || undefined,
                   okxApiSecret: okxSecret || undefined,
                   okxPassphrase: okxPassphrase || undefined,
+                  groqApiKey: groqKey || undefined,
                 }),
               });
               const data = await res.json();
@@ -1084,6 +1123,22 @@ export const SettingsConfigView: React.FC = () => {
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
               />
             </div>
+          </div>
+
+          <div className="pt-2 border-t border-slate-800/80">
+            <label className="block text-slate-300 font-bold mb-1.5">
+              GROQ_API_KEY (ИИ-Дирижёр стратегий · Qwen 3.8 27B / GPT-OSS 20B)
+            </label>
+            <input
+              name="groqKey"
+              type="password"
+              placeholder={
+                config?.credentials?.groqAiKey?.configured
+                  ? `•••••••• (${config.credentials.groqAiKey.source})`
+                  : 'Вставьте ключ gsk_... для подключения облачного ИИ в .env сервера'
+              }
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
+            />
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800/80">

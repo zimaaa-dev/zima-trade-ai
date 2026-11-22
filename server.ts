@@ -8974,6 +8974,14 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
           : 'Не настроено',
         docsUrl: 'https://docs.ollama.com/cloud',
       },
+      groqAiKey: {
+        name: 'GROQ_API_KEY',
+        purpose: 'Облачный LLM ИИ-Дирижёр и аналитик (Qwen 3.8 27B / GPT-OSS 20B)',
+        configured: isKeyValid(process.env.GROQ_API_KEY),
+        source: isKeyValid(process.env.GROQ_API_KEY)
+          ? `Сохранено в .env (****${String(process.env.GROQ_API_KEY).slice(-4)})`
+          : 'Не настроено',
+      },
       bybitTrading: {
         name: 'BYBIT_API_KEY & SECRET',
         purpose: 'Боевое исполнение ордеров Bybit V5 (Live Mode)',
@@ -9416,6 +9424,55 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
         pool: ollamaCloud.getPoolStatus(),
       });
     }
+  } else if (target === 'groq') {
+    const groqKey = (process.env.GROQ_API_KEY || '').trim();
+    if (!isKeyValid(groqKey)) {
+      res.json({
+        success: false,
+        error: 'GROQ_API_KEY не задан. Вставьте ключ в форме ниже и нажмите «Сохранить ключи».',
+        statusText: 'Ключ Groq Cloud (GROQ_API_KEY) не настроен.',
+      });
+      return;
+    }
+    const t0 = Date.now();
+    const probeModels = ['qwen/qwen3.8-27b', 'openai/gpt-oss-20b'];
+    let lastErr = '';
+    for (const m of probeModels) {
+      try {
+        const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${groqKey}`,
+          },
+          body: JSON.stringify({
+            model: m,
+            messages: [{ role: 'user', content: 'Reply with OK' }],
+            temperature: 0.1,
+            max_tokens: 16,
+          }),
+          signal: AbortSignal.timeout(7000),
+        });
+        if (resp.ok) {
+          const latencyMs = Date.now() - t0;
+          res.json({
+            success: true,
+            latencyMs,
+            modelUsed: m,
+            statusText: `Groq Cloud API подключен (${latencyMs} мс)! Активная модель: ${m}.`,
+          });
+          return;
+        }
+        lastErr = `HTTP ${resp.status}`;
+      } catch (err: any) {
+        lastErr = err?.message || 'Timeout';
+      }
+    }
+    res.json({
+      success: false,
+      error: lastErr || 'Groq Cloud API error',
+      statusText: `Ошибка подключения Groq Cloud: ${lastErr || 'проверьте ключ'}.`,
+    });
   } else {
     res.status(400).json({ error: 'Unknown target' });
   }
