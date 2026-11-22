@@ -862,6 +862,43 @@ export const SettingsConfigView: React.FC = () => {
                 </td>
               </tr>
 
+              {/* OpenRouter Free Multi-Key Pool */}
+              <tr className="hover:bg-slate-800/30">
+                <td className="py-3 px-3">
+                  <div className="font-bold text-white">OPENROUTER_API_KEYS (Free Pool)</div>
+                  <span className="text-[10px] text-emerald-400">openrouter/free · Nemotron / Gemma / Ling · 50/день × ключи</span>
+                </td>
+                <td className="py-3 px-3 text-slate-300 text-[11px]">
+                  Бесплатный мульти-ключевой пул ИИ-Дирижёра с авто-ротацией при 429
+                  {config?.credentials?.openrouterAiKey?.configured && (
+                    <span className="block text-[10px] text-emerald-400 mt-0.5">
+                      {config.credentials.openrouterAiKey.source}
+                    </span>
+                  )}
+                </td>
+                <td className="py-3 px-3">
+                  {config?.credentials?.openrouterAiKey?.configured ? (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 w-fit">
+                      <CheckCircle2 className="w-3 h-3" /> ПОДКЛЮЧЕН
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-950 text-amber-400 border border-amber-800/40 flex items-center gap-1 w-fit">
+                      <HelpCircle className="w-3 h-3" /> НЕ НАСТРОЕН
+                    </span>
+                  )}
+                </td>
+                <td className="py-3 px-3 text-right">
+                  <button
+                    type="button"
+                    onClick={() => runTest('openrouter')}
+                    disabled={testingTarget === 'openrouter'}
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-emerald-300 rounded text-[11px] transition"
+                  >
+                    {testingTarget === 'openrouter' ? 'Проверка...' : 'Проверить OpenRouter'}
+                  </button>
+                </td>
+              </tr>
+
               {/* Groq Cloud AI */}
               <tr className="hover:bg-slate-800/30">
                 <td className="py-3 px-3">
@@ -955,7 +992,7 @@ export const SettingsConfigView: React.FC = () => {
           <div className="flex items-center gap-2">
             <Key className="w-5 h-5 text-emerald-400" />
             <h3 className="font-extrabold text-sm text-white uppercase tracking-wider">
-              API ключи бирж (Bybit / OKX) и ИИ-провайдера (Groq Cloud)
+              API ключи бирж (Bybit / OKX) и ИИ-провайдеров (OpenRouter Pool / Groq)
             </h3>
           </div>
         </div>
@@ -990,7 +1027,7 @@ export const SettingsConfigView: React.FC = () => {
             e.preventDefault();
             const form = e.currentTarget;
             const getVal = (name: string): string => {
-              const el = form.elements.namedItem(name) as HTMLInputElement | null;
+              const el = form.elements.namedItem(name) as HTMLInputElement | HTMLTextAreaElement | null;
               return el ? el.value.trim() : '';
             };
 
@@ -1000,6 +1037,7 @@ export const SettingsConfigView: React.FC = () => {
             const okxSecret = getVal('okxSecret');
             const okxPassphrase = getVal('okxPassphrase');
             const groqKey = getVal('groqKey');
+            const openrouterKeys = getVal('openrouterKeys');
 
             setIsSaving(true);
             setSaveStatus(null);
@@ -1015,6 +1053,7 @@ export const SettingsConfigView: React.FC = () => {
                   okxApiSecret: okxSecret || undefined,
                   okxPassphrase: okxPassphrase || undefined,
                   groqApiKey: groqKey || undefined,
+                  openrouterApiKeys: openrouterKeys || undefined,
                 }),
               });
               const data = await res.json();
@@ -1125,20 +1164,38 @@ export const SettingsConfigView: React.FC = () => {
             </div>
           </div>
 
-          <div className="pt-2 border-t border-slate-800/80">
-            <label className="block text-slate-300 font-bold mb-1.5">
-              GROQ_API_KEY (ИИ-Дирижёр стратегий · Qwen 3.8 27B / GPT-OSS 20B)
-            </label>
-            <input
-              name="groqKey"
-              type="password"
-              placeholder={
-                config?.credentials?.groqAiKey?.configured
-                  ? `•••••••• (${config.credentials.groqAiKey.source})`
-                  : 'Вставьте ключ gsk_... для подключения облачного ИИ в .env сервера'
-              }
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
-            />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-800/80">
+            <div>
+              <label className="block text-slate-300 font-bold mb-1.5">
+                OPENROUTER_API_KEYS (1 или несколько ключей через запятую / новую строку)
+              </label>
+              <textarea
+                name="openrouterKeys"
+                rows={2}
+                placeholder={
+                  config?.credentials?.openrouterAiKey?.configured
+                    ? `•••••••• (${config.credentials.openrouterAiKey.source})`
+                    : 'sk-or-v1-ключ1, sk-or-v1-ключ2 — 2 аккаунта = 100 бесплатных запр./сутки'
+                }
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500 resize-y"
+              />
+            </div>
+
+            <div>
+              <label className="block text-slate-300 font-bold mb-1.5">
+                GROQ_API_KEY (Резервный Cloud LLM · Qwen 3.8 27B / GPT-OSS 20B)
+              </label>
+              <input
+                name="groqKey"
+                type="password"
+                placeholder={
+                  config?.credentials?.groqAiKey?.configured
+                    ? `•••••••• (${config.credentials.groqAiKey.source})`
+                    : 'Вставьте ключ gsk_... для резервного облачного ИИ'
+                }
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
+              />
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800/80">

@@ -265,6 +265,12 @@ import {
   type NotificationCategory,
   type NotificationSeverity,
 } from './src/types.ts';
+import {
+  OpenRouterKeyPool,
+  OPENROUTER_FREE_MODELS,
+  extractOpenRouterReplyText,
+  parseOpenRouterKeys,
+} from './src/lib/openrouter-key-pool.ts';
 
 // Ollama Cloud Multi-Key Rotation & Model Orchestrator
 const initialOllamaKeys = [
@@ -282,6 +288,17 @@ export const ollamaCloud = new OllamaCloudEngine({
   keys: initialOllamaKeys,
   defaultModel: (process.env.OLLAMA_MODEL as OllamaCloudModel) || 'gpt-oss:20b',
 });
+
+// OpenRouter Multi-Key Pool (round-robin across 1..N accounts -> 50 free req/day per account)
+const initialOpenRouterKeys = [
+  process.env.OPENROUTER_API_KEYS,
+  process.env.OPENROUTER_API_KEY,
+]
+  .filter(Boolean)
+  .join(',');
+
+export const openRouterPool = new OpenRouterKeyPool(initialOpenRouterKeys);
+let groqGeoBlockedUntil = 0;
 
 // Ollama Cloud Client Helper with resilient multi-key rotation
 async function callOllamaCloud(
@@ -343,15 +360,14 @@ async function callFreeCloudLlmFallback(
     }
   }
 
-  // 2. Groq Cloud Free API (prioritizes live Groq models, with automatic Cloudflare Edge failover if VPS IP gets 403)
-  if (isKeyValid(process.env.GROQ_API_KEY)) {
+  // 2. Groq Cloud Free API (skipped temporarily for 15m if VPS IP is geo-blocked with HTTP 403)
+  if (isKeyValid(process.env.GROQ_API_KEY) && Date.now() >= groqGeoBlockedUntil) {
     const groqCandidates = Array.from(
       new Set([
         ...(process.env.GROQ_MODEL ? [process.env.GROQ_MODEL.trim()] : []),
         'qwen/qwen3.8-27b',
         'openai/gpt-oss-20b',
         'openai/gpt-oss-120b',
-        'llama-3.3-70b-versatile',
       ])
     );
     const groqBases = [
@@ -366,6 +382,7 @@ async function callFreeCloudLlmFallback(
         ]
       : [{ role: 'user', content: prompt }];
 
+    let allBasesGeoBlocked = true;
     for (const base of groqBases) {
       let baseGeoBlocked = false;
       for (const groqModel of groqCandidates) {
@@ -388,6 +405,7 @@ async function callFreeCloudLlmFallback(
             const data = (await res.json()) as any;
             const text = String(data?.choices?.[0]?.message?.content || '').trim();
             if (text) {
+              groqGeoBlockedUntil = 0;
               return {
                 ok: true,
                 text,
@@ -399,24 +417,32 @@ async function callFreeCloudLlmFallback(
           }
           if (res.status === 403 || res.status === 451) {
             baseGeoBlocked = true;
-            break; // try next base (Cloudflare proxy)
+            break; // try next base
           }
+          allBasesGeoBlocked = false;
         } catch (err: any) {
+          allBasesGeoBlocked = false;
           console.warn(`Groq Cloud AI (${groqModel} via ${base}) warning:`, err?.message || err);
         }
       }
       if (!baseGeoBlocked) {
+        allBasesGeoBlocked = false;
         break;
       }
     }
+    if (allBasesGeoBlocked) {
+      groqGeoBlockedUntil = Date.now() + 15 * 60_000;
+    }
   }
 
-  // 3. OpenRouter Free Models API (direct -> Cloudflare proxy failover)
-  if (isKeyValid(process.env.OPENROUTER_API_KEY)) {
-    const orModels = [
-      process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free',
-      'google/gemma-3-27b-it:free',
-    ];
+  // 3. OpenRouter Free Models API (multi-key round-robin pool with automatic 429 cooldown rotation)
+  if (openRouterPool.hasKeys()) {
+    const orModels = Array.from(
+      new Set([
+        ...(process.env.OPENROUTER_MODEL ? [process.env.OPENROUTER_MODEL.trim()] : []),
+        ...OPENROUTER_FREE_MODELS.slice(0, 4),
+      ])
+    );
     const orBases = [
       process.env.OPENROUTER_API_BASE?.replace(/\/$/, ''),
       'https://openrouter.ai/api/v1',
@@ -429,46 +455,67 @@ async function callFreeCloudLlmFallback(
         ]
       : [{ role: 'user', content: prompt }];
 
-    for (const base of orBases) {
-      let baseGeoBlocked = false;
-      for (const orModel of orModels) {
-        try {
-          const res = await fetch(`${base}/chat/completions`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${process.env.OPENROUTER_API_KEY!.trim()}`,
-            },
-            body: JSON.stringify({
-              model: orModel,
-              messages,
-              temperature: 0.2,
-            }),
-            signal: AbortSignal.timeout(timeoutMs),
-          });
-          if (res.ok) {
-            const data = (await res.json()) as any;
-            const text = String(data?.choices?.[0]?.message?.content || '').trim();
-            if (text) {
-              return {
-                ok: true,
-                text,
-                source: 'OPENROUTER_AI',
-                modelUsed: orModel,
-                latencyMs: Date.now() - startedAt,
-              };
+    const keySlots = openRouterPool.getAttemptOrder();
+    for (const slot of keySlots) {
+      for (const base of orBases) {
+        let baseGeoBlocked = false;
+        let keyExhausted = false;
+        for (const orModel of orModels) {
+          try {
+            const res = await fetch(`${base}/chat/completions`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${slot.key}`,
+                'HTTP-Referer': 'https://zima-trade-watchdog.zimaaa-lab.workers.dev',
+                'X-Title': 'ZimaTrade AI',
+              },
+              body: JSON.stringify({
+                model: orModel,
+                messages,
+                temperature: 0.2,
+              }),
+              signal: AbortSignal.timeout(Math.max(timeoutMs, 18000)),
+            });
+            if (res.ok) {
+              const data = (await res.json()) as any;
+              const text = extractOpenRouterReplyText(data);
+              if (text) {
+                openRouterPool.markSuccess(slot.key);
+                const resolvedModel = String(data?.model || orModel);
+                return {
+                  ok: true,
+                  text,
+                  source: 'OPENROUTER_AI',
+                  modelUsed: `${resolvedModel} (${slot.masked})`,
+                  latencyMs: Date.now() - startedAt,
+                };
+              }
+            } else if (res.status === 403 || res.status === 451) {
+              baseGeoBlocked = true;
+              break;
+            } else if (res.status === 401 || res.status === 402) {
+              openRouterPool.markRateLimited(slot.key, 30 * 60_000, `HTTP ${res.status}`);
+              keyExhausted = true;
+              break;
+            } else if (res.status === 429) {
+              const bodyTxt = await res.text().catch(() => '');
+              const isDailyLimit = /daily|free-models-per-day|limit/i.test(bodyTxt) && !/upstream/i.test(bodyTxt);
+              if (isDailyLimit) {
+                openRouterPool.markRateLimited(slot.key, 60 * 60_000, 'HTTP 429 Daily Free Limit');
+                keyExhausted = true;
+                break;
+              }
+              // Upstream model 429 -> try next free model on the same key
+              continue;
             }
+          } catch (err: any) {
+            console.warn(`OpenRouter AI (${orModel}, ${slot.masked}) warning:`, err?.message || err);
           }
-          if (res.status === 403 || res.status === 451) {
-            baseGeoBlocked = true;
-            break;
-          }
-        } catch (err: any) {
-          console.warn('OpenRouter AI warning:', err?.message || err);
         }
-      }
-      if (!baseGeoBlocked) {
-        break;
+        if (keyExhausted || !baseGeoBlocked) {
+          break;
+        }
       }
     }
   }
@@ -9013,6 +9060,14 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
           ? `Сохранено в .env (****${String(process.env.GROQ_API_KEY).slice(-4)})`
           : 'Не настроено',
       },
+      openrouterAiKey: {
+        name: 'OPENROUTER_API_KEYS',
+        purpose: 'Бесплатный пул OpenRouter (:free · Nemotron / Gemma / Ling · 50 запр./сутки на каждый ключ)',
+        configured: openRouterPool.hasKeys(),
+        source: openRouterPool.hasKeys()
+          ? `${openRouterPool.getSummary().activeKeys}/${openRouterPool.getSummary().totalKeys} ключ(ей) (${openRouterPool.getSummary().maskedKeys.join(', ')}) · ~${openRouterPool.getSummary().dailyFreeLimitEstimate} запр./сутки`
+          : 'Не настроено',
+      },
       bybitTrading: {
         name: 'BYBIT_API_KEY & SECRET',
         purpose: 'Боевое исполнение ордеров Bybit V5 (Live Mode)',
@@ -9049,6 +9104,7 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
       },
     },
     ollamaPool: ollamaCloud.getPoolStatus(),
+    openrouterPool: openRouterPool.getSummary(),
     availableOllamaModels: OLLAMA_CLOUD_MODELS,
   });
 });
@@ -9535,6 +9591,133 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
           ? 'Groq заблокировал IP сервера (HTTP 403 — региональный блок). Обновите ваш Cloudflare Worker (добавьте маршрут /groq/* из zima_trade_ai/watchdog_cf/worker.js) — после этого всё заработает автоматически.'
           : `Ошибка подключения Groq Cloud: ${lastErr || 'проверьте ключ'}.`,
     });
+  } else if (target === 'openrouter') {
+    const keys = openRouterPool.getAllKeys();
+    if (keys.length === 0) {
+      res.json({
+        success: false,
+        error: 'OPENROUTER_API_KEYS не заданы. Вставьте 1 или несколько ключей OpenRouter в форме ниже и нажмите «Сохранить ключи».',
+        statusText: 'Ключи OpenRouter (OPENROUTER_API_KEYS) не настроены.',
+        pool: openRouterPool.getSummary(),
+      });
+      return;
+    }
+
+    const t0 = Date.now();
+    const orBases = [
+      process.env.OPENROUTER_API_BASE?.replace(/\/$/, ''),
+      'https://openrouter.ai/api/v1',
+      'https://zima-trade-watchdog.zimaaa-lab.workers.dev/openrouter/api/v1',
+    ].filter(Boolean) as string[];
+
+    // 1. Check auth & remaining daily free quota across all configured OpenRouter keys
+    let totalRemaining = 0;
+    let totalLimit = 0;
+    let validKeysCount = 0;
+    let workingBase = orBases[0];
+    let authErr = '';
+
+    for (const key of keys) {
+      let keyChecked = false;
+      for (const base of orBases) {
+        try {
+          const authResp = await fetch(`${base}/auth/key`, {
+            headers: { Authorization: `Bearer ${key}` },
+            signal: AbortSignal.timeout(7000),
+          });
+          if (authResp.ok) {
+            const authJson = (await authResp.json().catch(() => null)) as any;
+            const freeQuota = authJson?.data?.free_model_daily_requests;
+            if (freeQuota) {
+              totalRemaining += Number(freeQuota.remaining || 0);
+              totalLimit += Number(freeQuota.limit || 50);
+            } else {
+              totalLimit += 50;
+            }
+            validKeysCount += 1;
+            workingBase = base;
+            keyChecked = true;
+            break;
+          }
+          authErr = `HTTP ${authResp.status}`;
+          if (authResp.status !== 403 && authResp.status !== 451) {
+            break;
+          }
+        } catch (err: any) {
+          authErr = err?.message || 'Timeout';
+        }
+      }
+      if (!keyChecked) {
+        openRouterPool.markFailure(key, authErr);
+      }
+    }
+
+    if (validKeysCount === 0) {
+      res.json({
+        success: false,
+        error: authErr || 'OpenRouter auth failed',
+        statusText: `Ошибка авторизации OpenRouter: ${authErr || 'проверьте ключи'}.`,
+        pool: openRouterPool.getSummary(),
+      });
+      return;
+    }
+
+    // 2. Run 1 live free-model completion probe
+    const probeKey = keys[0];
+    const probeModels = ['openrouter/free', 'nvidia/nemotron-3.5-lightning:free', 'inclusionai/ling-3.2-flash:free'];
+    let lastProbeErr = '';
+    for (const m of probeModels) {
+      try {
+        const resp = await fetch(`${workingBase}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${probeKey}`,
+            'HTTP-Referer': 'https://zima-trade-watchdog.zimaaa-lab.workers.dev',
+            'X-Title': 'ZimaTrade AI',
+          },
+          body: JSON.stringify({
+            model: m,
+            messages: [{ role: 'user', content: 'Reply with OK' }],
+            temperature: 0.1,
+            max_tokens: 256,
+          }),
+          signal: AbortSignal.timeout(14000),
+        });
+        if (resp.ok) {
+          const data = (await resp.json().catch(() => null)) as any;
+          const resolvedModel = String(data?.model || m);
+          const latencyMs = Date.now() - t0;
+          openRouterPool.markSuccess(probeKey);
+          const viaProxy = workingBase.includes('workers.dev') ? ' (через Cloudflare Edge)' : ' (напрямую с VPS)';
+          res.json({
+            success: true,
+            latencyMs,
+            modelUsed: resolvedModel,
+            validKeysCount,
+            totalKeysCount: keys.length,
+            remainingFreeRequests: totalRemaining,
+            dailyFreeLimit: totalLimit,
+            pool: openRouterPool.getSummary(),
+            statusText: `OpenRouter подключен${viaProxy} (${latencyMs} мс)! Ключей активно: ${validKeysCount}/${keys.length}, остаток бесплатных запросов: ${totalRemaining}/${totalLimit}. Модель: ${resolvedModel}.`,
+          });
+          return;
+        }
+        lastProbeErr = `HTTP ${resp.status}`;
+      } catch (err: any) {
+        lastProbeErr = err?.message || 'Timeout';
+      }
+    }
+
+    res.json({
+      success: false,
+      error: lastProbeErr || 'OpenRouter probe failed',
+      validKeysCount,
+      remainingFreeRequests: totalRemaining,
+      dailyFreeLimit: totalLimit,
+      pool: openRouterPool.getSummary(),
+      statusText: `Ключи OpenRouter валидны (${validKeysCount}/${keys.length}, остаток ${totalRemaining}/${totalLimit}), но пробный запрос вернул ${lastProbeErr || 'ошибку'}.`,
+    });
   } else {
     res.status(400).json({ error: 'Unknown target' });
   }
@@ -9597,6 +9780,8 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
     tgHash,
     groqApiKey,
     groqKey,
+    openrouterApiKeys,
+    openrouterKeys,
     openrouterApiKey,
     openrouterKey,
   } = req.body;
@@ -9611,7 +9796,7 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
   const rawTgId = tgApiId ?? tgId;
   const rawTgHash = tgApiHash ?? tgHash;
   const rawGroqKey = groqApiKey ?? groqKey;
-  const rawOpenrouterKey = openrouterApiKey ?? openrouterKey;
+  const rawOpenrouterKeys = openrouterApiKeys ?? openrouterKeys ?? openrouterApiKey ?? openrouterKey;
 
   const updates: Record<string, string | undefined> = {};
 
@@ -9620,19 +9805,27 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
     if (val && isKeyValid(val)) {
       process.env.GROQ_API_KEY = val;
       updates.GROQ_API_KEY = val;
+      groqGeoBlockedUntil = 0;
     } else if (val === '') {
       delete process.env.GROQ_API_KEY;
       updates.GROQ_API_KEY = '';
     }
   }
 
-  if (rawOpenrouterKey !== undefined) {
-    const val = typeof rawOpenrouterKey === 'string' ? rawOpenrouterKey.trim() : '';
-    if (val && isKeyValid(val)) {
-      process.env.OPENROUTER_API_KEY = val;
-      updates.OPENROUTER_API_KEY = val;
-    } else if (val === '') {
+  if (rawOpenrouterKeys !== undefined) {
+    const parsed = parseOpenRouterKeys(rawOpenrouterKeys);
+    if (parsed.length > 0) {
+      const joined = parsed.join(',');
+      openRouterPool.setKeys(parsed);
+      process.env.OPENROUTER_API_KEYS = joined;
+      process.env.OPENROUTER_API_KEY = parsed[0];
+      updates.OPENROUTER_API_KEYS = joined;
+      updates.OPENROUTER_API_KEY = parsed[0];
+    } else if (rawOpenrouterKeys === '') {
+      openRouterPool.setKeys([]);
+      delete process.env.OPENROUTER_API_KEYS;
       delete process.env.OPENROUTER_API_KEY;
+      updates.OPENROUTER_API_KEYS = '';
       updates.OPENROUTER_API_KEY = '';
     }
   }
@@ -9743,7 +9936,8 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
     ollamaConfigured: poolStatus.totalKeys > 0,
     ollamaPool: poolStatus,
     groqConfigured: isKeyValid(process.env.GROQ_API_KEY),
-    openrouterConfigured: isKeyValid(process.env.OPENROUTER_API_KEY),
+    openrouterConfigured: openRouterPool.hasKeys(),
+    openrouterPool: openRouterPool.getSummary(),
     bybitConfigured,
     okxConfigured,
     okxDemoTrading: systemState.okxDemoTrading,
