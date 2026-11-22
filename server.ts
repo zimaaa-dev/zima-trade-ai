@@ -6147,6 +6147,17 @@ async function runBotEngineCycle() {
               priceDecimals,
             });
             if (!liveRes.ok) {
+              const errMsg = String(liveRes.retMsg || '');
+              if (errMsg.includes('51001') || errMsg.toLowerCase().includes('instrument id')) {
+                const nowTs = Date.now();
+                symbolCooldowns[targetSymbol] = {
+                  symbol: targetSymbol,
+                  untilTs: nowTs + 12 * 60 * 60 * 1000,
+                  lastExitReason: 'SL_HIT',
+                  consecutiveSlCount: 0,
+                  lastClosedAt: nowTs,
+                };
+              }
               addBotLog({
                 botId: actingBot.agentId,
                 botName: actingBot.name,
