@@ -121,18 +121,18 @@ function loadEnvFromFiles() {
     process.env.OLLAMA_HOST = 'https://ollama.com';
   }
 
-  // Ensure default model is one of the active cloud models (auto-migrate retired nemotron-3-nano:30b)
+  // Ensure default model is one of the active cloud models (prioritize free/open gpt-oss:20b over retired nemotron-3-nano:30b)
   const validModels = [
-    'glm-5.3-flash:cloud',
     'gpt-oss:20b',
     'gemma4:31b',
     'nemotron-3-super',
     'gpt-oss:120b',
     'nemotron-3-ultra',
+    'glm-5.3-flash:cloud',
     'beam',
   ];
   if (!process.env.OLLAMA_MODEL || !validModels.includes(process.env.OLLAMA_MODEL.trim())) {
-    process.env.OLLAMA_MODEL = 'glm-5.3-flash:cloud';
+    process.env.OLLAMA_MODEL = 'gpt-oss:20b';
   }
 }
 loadEnvFromFiles();
@@ -228,6 +228,8 @@ import {
   evaluateBtcBounceShortVeto,
   evaluateSameDirectionCorrelationCap,
   evaluateStrategyDirectionBias,
+  evaluateStalePositionExit,
+  resolveCorrelationCapBySlots,
   buildAiConductorPrompt,
   parseAiConductorResponse,
   applyDeterministicEvolutionFallback,
@@ -276,7 +278,7 @@ const initialOllamaKeys = [
 export const ollamaCloud = new OllamaCloudEngine({
   host: process.env.OLLAMA_HOST || 'https://ollama.com',
   keys: initialOllamaKeys,
-  defaultModel: (process.env.OLLAMA_MODEL as OllamaCloudModel) || 'glm-5.3-flash:cloud',
+  defaultModel: (process.env.OLLAMA_MODEL as OllamaCloudModel) || 'gpt-oss:20b',
 });
 
 // Ollama Cloud Client Helper with resilient multi-key rotation
@@ -293,6 +295,141 @@ async function callOllamaCloud(
     modelUsed: res.model,
     keyMasked: res.keyMasked,
   };
+}
+
+async function callFreeCloudLlmFallback(
+  prompt: string,
+  options?: { timeoutMs?: number; jsonMode?: boolean; systemInstruction?: string }
+): Promise<{
+  ok: boolean;
+  text: string;
+  source: 'GEMINI_AI' | 'GROQ_AI' | 'OPENROUTER_AI';
+  modelUsed: string;
+  latencyMs: number;
+} | null> {
+  const timeoutMs = options?.timeoutMs || 14000;
+  const startedAt = Date.now();
+
+  // 1. Google Gemini API (gemini-4-hydrogen) via @google/genai
+  if (geminiAi && isKeyValid(process.env.GEMINI_API_KEY)) {
+    try {
+      const genRes = await Promise.race([
+        geminiAi.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: prompt,
+          config: {
+            ...(options?.systemInstruction ? { systemInstruction: options.systemInstruction } : {}),
+            ...(options?.jsonMode ? { responseMimeType: 'application/json' } : {}),
+          },
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Gemini timeout')), timeoutMs)
+        ),
+      ]);
+      const text = String(genRes?.text || '').trim();
+      if (text) {
+        return {
+          ok: true,
+          text,
+          source: 'GEMINI_AI',
+          modelUsed: 'gemini-4-hydrogen',
+          latencyMs: Date.now() - startedAt,
+        };
+      }
+    } catch (err: any) {
+      console.warn('Gemini AI Conductor fallback warning:', err?.message || err);
+    }
+  }
+
+  // 2. Groq Cloud Free API (llama-3.3-70b-versatile)
+  if (isKeyValid(process.env.GROQ_API_KEY)) {
+    try {
+      const groqModel = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+      const messages = options?.systemInstruction
+        ? [
+            { role: 'system', content: options.systemInstruction },
+            { role: 'user', content: prompt },
+          ]
+        : [{ role: 'user', content: prompt }];
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.GROQ_API_KEY!.trim()}`,
+        },
+        body: JSON.stringify({
+          model: groqModel,
+          messages,
+          temperature: 0.2,
+          ...(options?.jsonMode ? { response_format: { type: 'json_object' } } : {}),
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as any;
+        const text = String(data?.choices?.[0]?.message?.content || '').trim();
+        if (text) {
+          return {
+            ok: true,
+            text,
+            source: 'GROQ_AI',
+            modelUsed: groqModel,
+            latencyMs: Date.now() - startedAt,
+          };
+        }
+      }
+    } catch (err: any) {
+      console.warn('Groq Cloud AI warning:', err?.message || err);
+    }
+  }
+
+  // 3. OpenRouter Free Models API
+  if (isKeyValid(process.env.OPENROUTER_API_KEY)) {
+    const orModels = [
+      process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free',
+      'google/gemma-3-27b-it:free',
+    ];
+    for (const orModel of orModels) {
+      try {
+        const messages = options?.systemInstruction
+          ? [
+              { role: 'system', content: options.systemInstruction },
+              { role: 'user', content: prompt },
+            ]
+          : [{ role: 'user', content: prompt }];
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${process.env.OPENROUTER_API_KEY!.trim()}`,
+          },
+          body: JSON.stringify({
+            model: orModel,
+            messages,
+            temperature: 0.2,
+          }),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as any;
+          const text = String(data?.choices?.[0]?.message?.content || '').trim();
+          if (text) {
+            return {
+              ok: true,
+              text,
+              source: 'OPENROUTER_AI',
+              modelUsed: orModel,
+              latencyMs: Date.now() - startedAt,
+            };
+          }
+        }
+      } catch (err: any) {
+        console.warn('OpenRouter AI warning:', err?.message || err);
+      }
+    }
+  }
+
+  return null;
 }
 
 export interface TelegramSubscriberState {
@@ -1244,6 +1381,9 @@ function loadPersistedState(): void {
             (t) => t.botId === defaultAgent.agentId
           );
 
+          const rawMutationCount = Math.max(0, Number(saved.mutationCount) || 0);
+          const hasRunawayLegacyMutations = rawMutationCount > 10;
+
           return {
             ...defaultAgent,
             ...saved,
@@ -1252,9 +1392,16 @@ function loadPersistedState(): void {
             directionBias: spec.directionBias,
             targetTpPct:
               typeof saved.targetTpPct === 'number' && Number.isFinite(saved.targetTpPct)
-                ? saved.targetTpPct
+                ? hasRunawayLegacyMutations
+                  ? spec.targetTpPct
+                  : saved.targetTpPct
                 : spec.targetTpPct,
-            mutationCount: Math.max(0, Number(saved.mutationCount) || 0),
+            riskPerTradePct: hasRunawayLegacyMutations
+              ? spec.riskPerTradePct
+              : typeof saved.riskPerTradePct === 'number'
+              ? saved.riskPerTradePct
+              : spec.riskPerTradePct,
+            mutationCount: hasRunawayLegacyMutations ? 1 : rawMutationCount,
             leverage:
               typeof saved.leverage === 'number' && saved.leverage >= 2 && saved.leverage <= 5
                 ? saved.leverage
@@ -1280,7 +1427,9 @@ function loadPersistedState(): void {
                   weights: saved.brain.weights ? normalizeWeights(saved.brain.weights) : freshDefaultBrain.weights,
                   confidenceThreshold:
                     typeof saved.brain.confidenceThreshold === 'number'
-                      ? saved.brain.confidenceThreshold
+                      ? hasRunawayLegacyMutations
+                        ? Math.min(0.24, saved.brain.confidenceThreshold)
+                        : saved.brain.confidenceThreshold
                       : freshDefaultBrain.confidenceThreshold,
                   atrMultiplier:
                     typeof saved.brain.atrMultiplier === 'number'
@@ -5061,7 +5210,7 @@ async function runBotEngineCycle() {
         const diff = (pos.currentPrice - pos.entryVwap) * dirSign;
         pos.unrealizedPnl = Number((diff * pos.qty).toFixed(2));
 
-        // 2a. Breakeven & Trailing Stop Protection (activates at +1.30% from averaged entryVwap, locks >= +0.28% above fees and trails 72% of wave)
+        // 2a. Breakeven & Trailing Stop Protection (activates at +0.90% from averaged entryVwap, locks >= +0.25% above fees and trails 68% of wave)
         const trailUpdate = computeTrailingStopPrice({
           side: pos.side,
           entryPrice: pos.entryVwap,
@@ -5069,9 +5218,9 @@ async function runBotEngineCycle() {
           currentSlPrice: pos.slPrice,
           previousPeakPrice: pos.peakPrice,
           priceDecimals,
-          activationPct: 1.30,
-          feeBufferPct: 0.28,
-          lockFraction: 0.72,
+          activationPct: 0.90,
+          feeBufferPct: 0.25,
+          lockFraction: 0.68,
         });
         pos.peakPrice = trailUpdate.newPeakPrice;
         if (trailUpdate.updated) {
@@ -5156,7 +5305,7 @@ async function runBotEngineCycle() {
           }
         }
 
-        // 2d. Trend-Grid Minimum Harvest Check (raised to +1.65%..+2.20% so trailing stop at +1.05% can capture trend extensions)
+        // 2d. Trend-Grid Time-Decayed Harvest Check (rotates stagnant positions smoothly after 6h–12h)
         const ftExitCheck = evaluateFreqtradeShouldExit({
           side: pos.side,
           entryPrice: pos.entryVwap,
@@ -5167,8 +5316,10 @@ async function runBotEngineCycle() {
           openedAt: pos.openedAt || Date.now(),
           roiTable: {
             0: 0.0220,
-            60: 0.0185,
-            180: 0.0165,
+            60: 0.0175,
+            180: 0.0135,
+            360: 0.0085,
+            720: 0.0040,
           },
         });
 
@@ -5239,6 +5390,41 @@ async function runBotEngineCycle() {
             price: pos.currentPrice,
             pnl: tradeRecord.netPnlUsdt,
             message: `Ротация позиции по свежему встречному сигналу канала (${latestTgForPos?.sourceHandle || '@ne_investor'}): закрыт ${pos.side} ${pos.symbol} (${tradeRecord.netPnlUsdt >= 0 ? '+' : ''}$${tradeRecord.netPnlUsdt.toFixed(2)} USDT).`,
+            rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
+          });
+          continue;
+        }
+
+        // 2f. Stale Position Time-Stop Rotation (unlocks slots stuck 14h+ in flat chop or 20h+ counter-event)
+        const staleExitCheck = evaluateStalePositionExit({
+          symbol: pos.symbol,
+          side: pos.side,
+          entryPrice: pos.entryVwap,
+          currentPrice: pos.currentPrice,
+          openedAt: pos.openedAt || Date.now(),
+          primaryEvent: systemState.currentAiConductorDecision?.primaryEvent,
+        });
+        if (staleExitCheck.shouldExit) {
+          if (pos.mode === 'LIVE' && pos.exchange === 'OKX') {
+            await closeRealOkxLivePosition({
+              symbol: pos.symbol,
+              side: pos.side,
+              baseQty: pos.qty,
+              algoId: pos.exchangeAlgoId,
+            }).catch(() => {});
+          }
+          systemState.activePositions.splice(i, 1);
+          const exitCode = pos.unrealizedPnl >= 0 ? 'TP_HIT' : 'SL_HIT';
+          const tradeRecord = recordClosedPosition(pos, pos.currentPrice, exitCode);
+          addBotLog({
+            botId: pos.botId || 'agent-tp-grid',
+            botName: pos.botName || 'Ротация капитала',
+            action: exitCode,
+            symbol: pos.symbol,
+            side: pos.side,
+            price: pos.currentPrice,
+            pnl: tradeRecord.netPnlUsdt,
+            message: `${staleExitCheck.reason} Итог: ${tradeRecord.netPnlUsdt >= 0 ? '+' : ''}$${tradeRecord.netPnlUsdt.toFixed(2)} USDT.`,
             rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
           });
           continue;
@@ -5599,11 +5785,15 @@ async function runBotEngineCycle() {
             continue;
           }
 
+          const dynamicSameDirLimit = resolveCorrelationCapBySlots(
+            maxAllowedOpenPositions,
+            sessionRisk.isNightSession
+          );
           const corrCap = evaluateSameDirectionCorrelationCap({
             symbol: cand.symbol,
             side: cand.evalResult.action,
             activePositions: systemState.activePositions,
-            maxSameDirectionCrypto: 2,
+            maxSameDirectionCrypto: dynamicSameDirLimit,
           });
           if (!corrCap.allowed) {
             addBotLog({
@@ -6591,6 +6781,11 @@ function computeStrategyPerformanceInputs(): StrategyPerformanceInput[] {
       atrMultiplier: Number(brain.atrMultiplier) || 1.4,
       weights: brain.weights,
       mutationCount: Number(agent.mutationCount) || 0,
+      lastMutatedAt: agent.lastMutatedAt,
+      latestTradeClosedAt:
+        agentTrades.length > 0
+          ? Math.max(...agentTrades.map((t) => Number(t.closedAt) || 0))
+          : undefined,
     };
   });
 }
@@ -6652,7 +6847,7 @@ export async function runAiConductorCycle(options?: {
     let decision: AiConductorDecision | null = null;
 
     if (hasOllamaKeys) {
-      const targetModel = ollamaCloud.getSelectedModel() || 'glm-5.3-flash:cloud';
+      const targetModel = ollamaCloud.getSelectedModel() || 'gpt-oss:20b';
       const llmRes = await Promise.race([
         callOllamaCloud(prompt, targetModel, 16000),
         new Promise<{ text: string; latencyMs: number; ok: boolean; modelUsed?: string }>((resolve) =>
@@ -6668,6 +6863,22 @@ export async function runAiConductorCycle(options?: {
           modelUsed: llmRes.modelUsed || targetModel,
           latencyMs: llmRes.latencyMs,
           nowTs: Date.now(),
+          source: 'OLLAMA_AI',
+        });
+      }
+    }
+
+    if (!decision) {
+      const freeAiRes = await callFreeCloudLlmFallback(prompt, {
+        timeoutMs: 14000,
+        jsonMode: true,
+      });
+      if (freeAiRes && freeAiRes.ok && freeAiRes.text) {
+        decision = parseAiConductorResponse(freeAiRes.text, strategiesPerf, snapshot, {
+          modelUsed: freeAiRes.modelUsed,
+          latencyMs: freeAiRes.latencyMs,
+          nowTs: Date.now(),
+          source: freeAiRes.source,
         });
       }
     }
@@ -6685,9 +6896,20 @@ export async function runAiConductorCycle(options?: {
     systemState.currentAiConductorDecision = decision;
     systemState.aiConductorHistory = [decision, ...(systemState.aiConductorHistory || [])].slice(0, 24);
 
+    const botConductorLabel =
+      decision.source === 'OLLAMA_AI'
+        ? `Ollama (${decision.modelUsed})`
+        : decision.source === 'GEMINI_AI'
+        ? `Gemini (${decision.modelUsed})`
+        : decision.source === 'GROQ_AI'
+        ? `Groq (${decision.modelUsed})`
+        : decision.source === 'OPENROUTER_AI'
+        ? `OpenRouter (${decision.modelUsed})`
+        : 'Квант-Дирижёр';
+
     addBotLog({
       botId: 'ai-conductor',
-      botName: decision.source === 'OLLAMA_AI' ? `Ollama (${decision.modelUsed})` : 'Квант-Дирижёр',
+      botName: botConductorLabel,
       action: 'SCAN_PASS',
       symbol: decision.primaryEvent,
       message: `Событие «${decision.eventLabelRu}» -> связка ${decision.activeComboIds.length}/${systemState.agents.length} стратегий, мутаций: ${applied.mutatedIds.length}. ${decision.summary}`,
@@ -10206,7 +10428,7 @@ ${JSON.stringify(recentNewsFeed, null, 2)}
     }
   }
 
-  // 2. Secondary fallback: Google Gemini (if configured and Ollama did not answer)
+  // 2. Secondary fallback: Google Gemini (gemini-4-hydrogen) or Groq/OpenRouter if Ollama did not answer
   if (!responseText && geminiAi && isKeyValid(process.env.GEMINI_API_KEY)) {
     try {
       const formattedContents = messages.map((m: any) => ({
@@ -10215,16 +10437,15 @@ ${JSON.stringify(recentNewsFeed, null, 2)}
       }));
 
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Gemini API call timed out after 4500ms')), 4500)
+        setTimeout(() => reject(new Error('Gemini API call timed out after 7000ms')), 7000)
       );
 
       const genAiResult = await Promise.race([
         geminiAi.models.generateContent({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-4-hydrogen',
           contents: formattedContents,
           config: {
             systemInstruction,
-            temperature: 0.35,
           },
         }),
         timeoutPromise,
@@ -10232,9 +10453,21 @@ ${JSON.stringify(recentNewsFeed, null, 2)}
 
       responseText = genAiResult.text || '';
       latencyMs = Date.now() - t0;
-      modelUsed = 'gemini-2.5-flash';
+      modelUsed = 'gemini-4-hydrogen';
     } catch (err: any) {
-      console.warn('Gemini fallback to grounded live quant engine:', err?.message || err);
+      console.warn('Gemini fallback to Groq/OpenRouter/Quant:', err?.message || err);
+    }
+  }
+
+  if (!responseText) {
+    const freeRes = await callFreeCloudLlmFallback(latestUserMsg, {
+      systemInstruction,
+      timeoutMs: 9000,
+    });
+    if (freeRes && freeRes.ok && freeRes.text) {
+      responseText = freeRes.text;
+      latencyMs = Date.now() - t0;
+      modelUsed = `${freeRes.source} (${freeRes.modelUsed})`;
     }
   }
 

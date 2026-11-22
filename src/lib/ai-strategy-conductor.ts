@@ -47,6 +47,8 @@ export interface StrategyPerformanceInput {
   atrMultiplier: number;
   weights: BotFeatureWeights;
   mutationCount?: number;
+  lastMutatedAt?: number;
+  latestTradeClosedAt?: number;
 }
 
 export interface MarketSnapshotForAi {
@@ -78,9 +80,16 @@ export interface StrategyMutationAction {
   weightShift?: Partial<BotFeatureWeights>;
 }
 
+export type AiDecisionSource =
+  | 'OLLAMA_AI'
+  | 'GEMINI_AI'
+  | 'GROQ_AI'
+  | 'OPENROUTER_AI'
+  | 'QUANT_FALLBACK';
+
 export interface AiConductorDecision {
   timestamp: number;
-  source: 'OLLAMA_AI' | 'QUANT_FALLBACK';
+  source: AiDecisionSource;
   modelUsed: string;
   latencyMs: number;
   primaryEvent: MarketEventKey;
@@ -479,6 +488,95 @@ export function evaluateSameDirectionCorrelationCap(params: {
 }
 
 /**
+ * Dynamic same-direction crypto correlation cap scaled with total slot budget.
+ * When 5 slots are active ($300+ account), allows up to 4 same-direction crypto trades
+ * so 2 long-held positions do not freeze the remaining 3 slots during a broad rally.
+ */
+export function resolveCorrelationCapBySlots(
+  maxAllowedOpenPositions: number,
+  isNightSession?: boolean
+): number {
+  if (isNightSession) {
+    return maxAllowedOpenPositions >= 4 ? 3 : 2;
+  }
+  if (maxAllowedOpenPositions >= 5) return 4;
+  if (maxAllowedOpenPositions >= 4) return 3;
+  return 2;
+}
+
+/**
+ * Prevents positions from sitting open 14–40h+ in stagnation and locking up trading slots.
+ */
+export function evaluateStalePositionExit(params: {
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  entryPrice: number;
+  currentPrice: number;
+  openedAt: number;
+  nowTs?: number;
+  primaryEvent?: MarketEventKey;
+}): {
+  shouldExit: boolean;
+  reason?: string;
+  holdHours: number;
+  rawProfitPct: number;
+} {
+  const {
+    symbol,
+    side,
+    entryPrice,
+    currentPrice,
+    openedAt,
+    nowTs = Date.now(),
+    primaryEvent,
+  } = params;
+
+  const dirSign = side === 'LONG' ? 1 : -1;
+  const rawProfitPct =
+    entryPrice > 0 ? ((currentPrice - entryPrice) / entryPrice) * dirSign * 100 : 0;
+  const holdHours = Math.max(0, (nowTs - (openedAt || nowTs)) / (1000 * 3600));
+
+  // 1. 14h+ flat/near-breakeven stagnation: free slot for active trend strategies
+  if (holdHours >= 14 && rawProfitPct >= -0.35 && rawProfitPct <= 0.65) {
+    return {
+      shouldExit: true,
+      reason: `Ротация зависшей позиции ${symbol} (${holdHours.toFixed(1)}ч в зоне ${rawProfitPct >= 0 ? '+' : ''}${rawProfitPct.toFixed(2)}%): освобождение слота.`,
+      holdHours,
+      rawProfitPct,
+    };
+  }
+
+  // 2. 20h+ counter-event deadweight (e.g. XAU SHORT during BULL_EXPANSION)
+  const isCounterEvent =
+    (primaryEvent === 'BULL_EXPANSION' && side === 'SHORT') ||
+    (primaryEvent === 'MARKET_FLUSH_SHORT' && side === 'LONG');
+  if (holdHours >= 20 && isCounterEvent && rawProfitPct >= -0.75 && rawProfitPct <= 0.4) {
+    return {
+      shouldExit: true,
+      reason: `Ротация контр-трендовой позиции ${symbol} (${holdHours.toFixed(1)}ч против события ${primaryEvent}).`,
+      holdHours,
+      rawProfitPct,
+    };
+  }
+
+  // 3. 36h+ hard stagnation cap if not in deep DCA recovery
+  if (holdHours >= 36 && rawProfitPct > -1.2) {
+    return {
+      shouldExit: true,
+      reason: `Тайм-стоп застоя ${symbol} (${holdHours.toFixed(1)}ч удержания): возврат капитала в оборот.`,
+      holdHours,
+      rawProfitPct,
+    };
+  }
+
+  return {
+    shouldExit: false,
+    holdHours,
+    rawProfitPct,
+  };
+}
+
+/**
  * Enforces directional constraint on specialized strategies (e.g., Bounce-Hunter LONG_ONLY vs Flush-Rider SHORT_ONLY).
  */
 export function evaluateStrategyDirectionBias(
@@ -534,7 +632,12 @@ export function parseAiConductorResponse(
   rawText: string,
   strategies: StrategyPerformanceInput[],
   snapshot: MarketSnapshotForAi,
-  meta: { modelUsed: string; latencyMs: number; nowTs?: number }
+  meta: {
+    modelUsed: string;
+    latencyMs: number;
+    nowTs?: number;
+    source?: AiDecisionSource;
+  }
 ): AiConductorDecision | null {
   if (!rawText || typeof rawText !== 'string') return null;
   const cleaned = rawText
@@ -595,7 +698,7 @@ export function parseAiConductorResponse(
 
     return {
       timestamp: meta.nowTs ?? Date.now(),
-      source: 'OLLAMA_AI',
+      source: meta.source || 'OLLAMA_AI',
       modelUsed: meta.modelUsed,
       latencyMs: meta.latencyMs,
       primaryEvent: snapshot.primaryEvent,
@@ -638,6 +741,12 @@ export function applyDeterministicEvolutionFallback(
 
   const mutations: StrategyMutationAction[] = [];
   for (const s of strategies) {
+    // Only mutate when a strategy has new closed trades since its previous mutation (prevents runaway loops on old losses)
+    const hasNewTradesSinceMutation =
+      !s.lastMutatedAt ||
+      (typeof s.latestTradeClosedAt === 'number' && s.latestTradeClosedAt > s.lastMutatedAt);
+    if (!hasNewTradesSinceMutation) continue;
+
     if (s.tradesCount >= 2 && (s.realizedPnlUsdt < -0.8 || s.winRatePct < 45)) {
       mutations.push({
         agentId: s.agentId,

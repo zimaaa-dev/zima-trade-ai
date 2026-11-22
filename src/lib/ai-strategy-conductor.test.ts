@@ -6,6 +6,8 @@ import {
   evaluateBtcBounceShortVeto,
   evaluateSameDirectionCorrelationCap,
   evaluateStrategyDirectionBias,
+  evaluateStalePositionExit,
+  resolveCorrelationCapBySlots,
   buildAiConductorPrompt,
   parseAiConductorResponse,
   applyDeterministicEvolutionFallback,
@@ -271,4 +273,74 @@ test('applyDeterministicEvolutionFallback and applyConductorDecisionToAgents upd
 
   const enabledCount = agents.filter((a) => a.isEnabled).length;
   assert.equal(enabledCount, 4);
+
+  // Repeated fallback cycle WITHOUT any new closed trade must NOT mutate again
+  const perfAfterMutation: StrategyPerformanceInput[] = agents.map((a) => ({
+    agentId: a.agentId,
+    name: a.name,
+    strategyFamily: a.strategyFamily,
+    preferredEvents: a.preferredEvents,
+    directionBias: a.directionBias,
+    isEnabled: Boolean(a.isEnabled),
+    tradesCount: a.agentId === 'agent-onnx-ppo-v2' ? 3 : 0,
+    winRatePct: a.agentId === 'agent-onnx-ppo-v2' ? 33 : 0,
+    profitFactor: a.agentId === 'agent-onnx-ppo-v2' ? 0.45 : 0,
+    realizedPnlUsdt: a.agentId === 'agent-onnx-ppo-v2' ? -1.89 : 0,
+    riskPerTradePct: a.riskPerTradePct,
+    targetTpPct: a.targetTpPct,
+    confidenceThreshold: a.brain.confidenceThreshold,
+    atrMultiplier: a.brain.atrMultiplier,
+    weights: a.brain.weights,
+    lastMutatedAt: a.lastMutatedAt,
+    latestTradeClosedAt: a.agentId === 'agent-onnx-ppo-v2' ? 1795270500000 : undefined,
+  }));
+  const repeatFallback = applyDeterministicEvolutionFallback(snapshot, perfAfterMutation, {
+    nowTs: 1795272200000,
+  });
+  assert.equal(repeatFallback.mutations.length, 0);
 });
+
+test('resolveCorrelationCapBySlots and evaluateStalePositionExit prevent multi-day slot lockups', () => {
+  assert.equal(resolveCorrelationCapBySlots(5, false), 4);
+  assert.equal(resolveCorrelationCapBySlots(4, false), 3);
+  assert.equal(resolveCorrelationCapBySlots(3, true), 2);
+  assert.equal(resolveCorrelationCapBySlots(2, false), 2);
+
+  const now = 1795341600000;
+  // 18h held near-flat ETHUSDT (+0.28%) should rotate out to free slot
+  const ethFlatStale = evaluateStalePositionExit({
+    symbol: 'ETHUSDT',
+    side: 'LONG',
+    entryPrice: 1681.2,
+    currentPrice: 1686.0,
+    openedAt: now - 18 * 3600 * 1000,
+    nowTs: now,
+    primaryEvent: 'BULL_EXPANSION',
+  });
+  assert.equal(ethFlatStale.shouldExit, true);
+
+  // 40h held XAUUSDT SHORT during BULL_EXPANSION (-0.54%) should rotate out
+  const xauCounterStale = evaluateStalePositionExit({
+    symbol: 'XAUUSDT',
+    side: 'SHORT',
+    entryPrice: 3544.9,
+    currentPrice: 3564.0,
+    openedAt: now - 40 * 3600 * 1000,
+    nowTs: now,
+    primaryEvent: 'BULL_EXPANSION',
+  });
+  assert.equal(xauCounterStale.shouldExit, true);
+
+  // Fresh 2h trade must stay open
+  const freshTrade = evaluateStalePositionExit({
+    symbol: 'SOLUSDT',
+    side: 'LONG',
+    entryPrice: 100,
+    currentPrice: 100.2,
+    openedAt: now - 2 * 3600 * 1000,
+    nowTs: now,
+    primaryEvent: 'BULL_EXPANSION',
+  });
+  assert.equal(freshTrade.shouldExit, false);
+});
+

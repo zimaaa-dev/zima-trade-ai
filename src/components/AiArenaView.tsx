@@ -1105,6 +1105,12 @@ export const AiArenaView: React.FC = () => {
                   {conductorStatus.latestDecision
                     ? conductorStatus.latestDecision.source === 'OLLAMA_AI'
                       ? `Ollama Cloud (${conductorStatus.latestDecision.modelUsed})`
+                      : conductorStatus.latestDecision.source === 'GEMINI_AI'
+                      ? `Gemini AI (${conductorStatus.latestDecision.modelUsed})`
+                      : conductorStatus.latestDecision.source === 'GROQ_AI'
+                      ? `Groq AI (${conductorStatus.latestDecision.modelUsed})`
+                      : conductorStatus.latestDecision.source === 'OPENROUTER_AI'
+                      ? `OpenRouter AI (${conductorStatus.latestDecision.modelUsed})`
                       : `Квант-резерв (${conductorStatus.latestDecision.modelUsed})`
                     : 'Ожидает первого запуска'}
                 </div>

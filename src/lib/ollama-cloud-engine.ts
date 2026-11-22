@@ -12,23 +12,24 @@
  */
 
 export const OLLAMA_CLOUD_MODELS = [
-  'glm-5.3-flash:cloud',
   'gpt-oss:20b',
   'gemma4:31b',
   'nemotron-3-super',
   'gpt-oss:120b',
   'nemotron-3-ultra',
+  'glm-5.3-flash:cloud',
   'beam',
   'nemotron-3-nano:30b',
 ] as const;
 
-export const DEFAULT_OLLAMA_CLOUD_MODEL = 'glm-5.3-flash:cloud' as const;
+export const DEFAULT_OLLAMA_CLOUD_MODEL = 'gpt-oss:20b' as const;
 const RETIRED_OR_FALLBACK_MODELS = [
-  'glm-5.3-flash:cloud',
   'gpt-oss:20b',
   'gemma4:31b',
   'nemotron-3-super',
   'gpt-oss:120b',
+  'nemotron-3-ultra',
+  'glm-5.3-flash:cloud',
 ] as const;
 
 export type OllamaCloudModel = (typeof OLLAMA_CLOUD_MODELS)[number] | (string & {});
@@ -408,8 +409,8 @@ export class OllamaCloudEngine {
           const errText = await res.text().catch(() => `HTTP ${res.status}`);
           lastError = `HTTP ${res.status}: ${errText}`;
 
-          // HTTP 410 means model retired (e.g. nemotron-3-nano:30b) — try next fallback model without penalizing key
-          if (res.status === 410) {
+          // HTTP 410 or 402 on a specific model — try remaining fallback models on the same key before reporting failure
+          if (res.status === 410 || res.status === 402) {
             continue;
           }
 
@@ -422,6 +423,11 @@ export class OllamaCloudEngine {
           keyFailedAuthOrLimit = true;
           break;
         }
+      }
+
+      if (!keyFailedAuthOrLimit && lastError.includes('402')) {
+        this.reportKeyFailure(keyItem, 402, lastError);
+        continue;
       }
 
       if (!keyFailedAuthOrLimit) {
@@ -546,7 +552,7 @@ export class OllamaCloudEngine {
           const errText = await res.text().catch(() => `HTTP ${res.status}`);
           lastError = `HTTP ${res.status}: ${errText}`;
 
-          if (res.status === 410) {
+          if (res.status === 410 || res.status === 402) {
             continue;
           }
 
@@ -559,6 +565,11 @@ export class OllamaCloudEngine {
           keyFailedAuthOrLimit = true;
           break;
         }
+      }
+
+      if (!keyFailedAuthOrLimit && lastError.includes('402')) {
+        this.reportKeyFailure(keyItem, 402, lastError);
+        continue;
       }
 
       if (!keyFailedAuthOrLimit) {

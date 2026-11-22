@@ -346,7 +346,7 @@ export interface StrategyMutationRecord {
 
 export interface AiConductorDecisionItem {
   timestamp: number;
-  source: 'OLLAMA_AI' | 'QUANT_FALLBACK';
+  source: 'OLLAMA_AI' | 'GEMINI_AI' | 'GROQ_AI' | 'OPENROUTER_AI' | 'QUANT_FALLBACK';
   modelUsed: string;
   latencyMs: number;
   primaryEvent: MarketEventKey;
