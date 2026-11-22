@@ -343,7 +343,7 @@ async function callFreeCloudLlmFallback(
     }
   }
 
-  // 2. Groq Cloud Free API (prioritizes live Groq models: qwen/qwen3.8-27b, openai/gpt-oss-20b, openai/gpt-oss-120b)
+  // 2. Groq Cloud Free API (prioritizes live Groq models, with automatic Cloudflare Edge failover if VPS IP gets 403)
   if (isKeyValid(process.env.GROQ_API_KEY)) {
     const groqCandidates = Array.from(
       new Set([
@@ -354,6 +354,11 @@ async function callFreeCloudLlmFallback(
         'llama-3.3-70b-versatile',
       ])
     );
+    const groqBases = [
+      process.env.GROQ_API_BASE?.replace(/\/$/, ''),
+      'https://api.groq.com/openai/v1',
+      'https://zima-trade-watchdog.zimaaa-lab.workers.dev/groq/openai/v1',
+    ].filter(Boolean) as string[];
     const messages = options?.systemInstruction
       ? [
           { role: 'system', content: options.systemInstruction },
@@ -361,83 +366,109 @@ async function callFreeCloudLlmFallback(
         ]
       : [{ role: 'user', content: prompt }];
 
-    for (const groqModel of groqCandidates) {
-      try {
-        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${process.env.GROQ_API_KEY!.trim()}`,
-          },
-          body: JSON.stringify({
-            model: groqModel,
-            messages,
-            temperature: 0.2,
-            ...(options?.jsonMode ? { response_format: { type: 'json_object' } } : {}),
-          }),
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-        if (res.ok) {
-          const data = (await res.json()) as any;
-          const text = String(data?.choices?.[0]?.message?.content || '').trim();
-          if (text) {
-            return {
-              ok: true,
-              text,
-              source: 'GROQ_AI',
-              modelUsed: groqModel,
-              latencyMs: Date.now() - startedAt,
-            };
+    for (const base of groqBases) {
+      let baseGeoBlocked = false;
+      for (const groqModel of groqCandidates) {
+        try {
+          const res = await fetch(`${base}/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${process.env.GROQ_API_KEY!.trim()}`,
+            },
+            body: JSON.stringify({
+              model: groqModel,
+              messages,
+              temperature: 0.2,
+              ...(options?.jsonMode ? { response_format: { type: 'json_object' } } : {}),
+            }),
+            signal: AbortSignal.timeout(timeoutMs),
+          });
+          if (res.ok) {
+            const data = (await res.json()) as any;
+            const text = String(data?.choices?.[0]?.message?.content || '').trim();
+            if (text) {
+              return {
+                ok: true,
+                text,
+                source: 'GROQ_AI',
+                modelUsed: groqModel,
+                latencyMs: Date.now() - startedAt,
+              };
+            }
           }
+          if (res.status === 403 || res.status === 451) {
+            baseGeoBlocked = true;
+            break; // try next base (Cloudflare proxy)
+          }
+        } catch (err: any) {
+          console.warn(`Groq Cloud AI (${groqModel} via ${base}) warning:`, err?.message || err);
         }
-      } catch (err: any) {
-        console.warn(`Groq Cloud AI (${groqModel}) warning:`, err?.message || err);
+      }
+      if (!baseGeoBlocked) {
+        break;
       }
     }
   }
 
-  // 3. OpenRouter Free Models API
+  // 3. OpenRouter Free Models API (direct -> Cloudflare proxy failover)
   if (isKeyValid(process.env.OPENROUTER_API_KEY)) {
     const orModels = [
       process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free',
       'google/gemma-3-27b-it:free',
     ];
-    for (const orModel of orModels) {
-      try {
-        const messages = options?.systemInstruction
-          ? [
-              { role: 'system', content: options.systemInstruction },
-              { role: 'user', content: prompt },
-            ]
-          : [{ role: 'user', content: prompt }];
-        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${process.env.OPENROUTER_API_KEY!.trim()}`,
-          },
-          body: JSON.stringify({
-            model: orModel,
-            messages,
-            temperature: 0.2,
-          }),
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-        if (res.ok) {
-          const data = (await res.json()) as any;
-          const text = String(data?.choices?.[0]?.message?.content || '').trim();
-          if (text) {
-            return {
-              ok: true,
-              text,
-              source: 'OPENROUTER_AI',
-              modelUsed: orModel,
-              latencyMs: Date.now() - startedAt,
-            };
+    const orBases = [
+      process.env.OPENROUTER_API_BASE?.replace(/\/$/, ''),
+      'https://openrouter.ai/api/v1',
+      'https://zima-trade-watchdog.zimaaa-lab.workers.dev/openrouter/api/v1',
+    ].filter(Boolean) as string[];
+    const messages = options?.systemInstruction
+      ? [
+          { role: 'system', content: options.systemInstruction },
+          { role: 'user', content: prompt },
+        ]
+      : [{ role: 'user', content: prompt }];
+
+    for (const base of orBases) {
+      let baseGeoBlocked = false;
+      for (const orModel of orModels) {
+        try {
+          const res = await fetch(`${base}/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${process.env.OPENROUTER_API_KEY!.trim()}`,
+            },
+            body: JSON.stringify({
+              model: orModel,
+              messages,
+              temperature: 0.2,
+            }),
+            signal: AbortSignal.timeout(timeoutMs),
+          });
+          if (res.ok) {
+            const data = (await res.json()) as any;
+            const text = String(data?.choices?.[0]?.message?.content || '').trim();
+            if (text) {
+              return {
+                ok: true,
+                text,
+                source: 'OPENROUTER_AI',
+                modelUsed: orModel,
+                latencyMs: Date.now() - startedAt,
+              };
+            }
           }
+          if (res.status === 403 || res.status === 451) {
+            baseGeoBlocked = true;
+            break;
+          }
+        } catch (err: any) {
+          console.warn('OpenRouter AI warning:', err?.message || err);
         }
-      } catch (err: any) {
-        console.warn('OpenRouter AI warning:', err?.message || err);
+      }
+      if (!baseGeoBlocked) {
+        break;
       }
     }
   }
@@ -9436,42 +9467,73 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
     }
     const t0 = Date.now();
     const probeModels = ['qwen/qwen3.8-27b', 'openai/gpt-oss-20b'];
+    const groqBases = [
+      process.env.GROQ_API_BASE?.replace(/\/$/, ''),
+      'https://api.groq.com/openai/v1',
+      'https://zima-trade-watchdog.zimaaa-lab.workers.dev/groq/openai/v1',
+    ].filter(Boolean) as string[];
+
     let lastErr = '';
-    for (const m of probeModels) {
-      try {
-        const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${groqKey}`,
-          },
-          body: JSON.stringify({
-            model: m,
-            messages: [{ role: 'user', content: 'Reply with OK' }],
-            temperature: 0.1,
-            max_tokens: 16,
-          }),
-          signal: AbortSignal.timeout(7000),
-        });
-        if (resp.ok) {
-          const latencyMs = Date.now() - t0;
-          res.json({
-            success: true,
-            latencyMs,
-            modelUsed: m,
-            statusText: `Groq Cloud API подключен (${latencyMs} мс)! Активная модель: ${m}.`,
+    let directGeoBlocked = false;
+    for (const base of groqBases) {
+      let baseBlocked = false;
+      for (const m of probeModels) {
+        try {
+          const resp = await fetch(`${base}/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${groqKey}`,
+            },
+            body: JSON.stringify({
+              model: m,
+              messages: [{ role: 'user', content: 'Reply with OK' }],
+              temperature: 0.1,
+              max_tokens: 16,
+            }),
+            signal: AbortSignal.timeout(7000),
           });
-          return;
+          if (resp.ok) {
+            const payload = (await resp.json().catch(() => null)) as any;
+            if (payload?.choices?.[0]?.message) {
+              const latencyMs = Date.now() - t0;
+              const viaProxy = base.includes('workers.dev') ? ' (через Cloudflare Edge)' : '';
+              res.json({
+                success: true,
+                latencyMs,
+                modelUsed: m,
+                statusText: `Groq Cloud API подключен${viaProxy} (${latencyMs} мс)! Модель: ${m}.`,
+              });
+              return;
+            }
+          }
+          lastErr = `HTTP ${resp.status}`;
+          if (resp.status === 403 || resp.status === 451) {
+            if (!base.includes('workers.dev')) {
+              directGeoBlocked = true;
+            }
+            baseBlocked = true;
+            break; // try next base (Cloudflare proxy)
+          }
+          if (base.includes('workers.dev') && resp.status === 404) {
+            lastErr = directGeoBlocked ? 'HTTP 403 (прямой IP) / Worker не обновлён (404)' : 'HTTP 404 (Worker /groq не настроен)';
+            break;
+          }
+        } catch (err: any) {
+          lastErr = err?.message || 'Timeout';
         }
-        lastErr = `HTTP ${resp.status}`;
-      } catch (err: any) {
-        lastErr = err?.message || 'Timeout';
+      }
+      if (!baseBlocked && !directGeoBlocked) {
+        break;
       }
     }
     res.json({
       success: false,
       error: lastErr || 'Groq Cloud API error',
-      statusText: `Ошибка подключения Groq Cloud: ${lastErr || 'проверьте ключ'}.`,
+      statusText:
+        directGeoBlocked || lastErr.includes('403')
+          ? 'Groq заблокировал IP сервера (HTTP 403 — региональный блок). Обновите ваш Cloudflare Worker (добавьте маршрут /groq/* из zima_trade_ai/watchdog_cf/worker.js) — после этого всё заработает автоматически.'
+          : `Ошибка подключения Groq Cloud: ${lastErr || 'проверьте ключ'}.`,
     });
   } else {
     res.status(400).json({ error: 'Unknown target' });

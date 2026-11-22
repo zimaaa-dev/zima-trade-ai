@@ -22,7 +22,7 @@ export default {
           subdomain: 'zimaaa-lab.workers.dev',
           target_node_a: 'http://194.113.34.230:3000',
           timestamp: Date.now(),
-          features: ['terminal_reverse_proxy', 'dead_mans_switch_cron', 'bybit_v5_proxy', 'telegram_proxy'],
+          features: ['terminal_reverse_proxy', 'dead_mans_switch_cron', 'bybit_v5_proxy', 'telegram_proxy', 'groq_proxy', 'openrouter_proxy'],
         }),
         {
           headers: { 'Content-Type': 'application/json' },
@@ -57,6 +57,50 @@ export default {
 
       const headers = new Headers(request.headers);
       headers.set('Host', 'api.telegram.org');
+
+      const proxyReq = new Request(targetUrl, {
+        method: request.method,
+        headers,
+        body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body,
+        redirect: 'follow',
+      });
+
+      return await fetch(proxyReq);
+    }
+
+    // 3b. Groq Cloud API Reverse Proxy (/groq/openai/v1/...) — bypasses regional IP blocks (HTTP 403)
+    if (url.pathname.startsWith('/groq/')) {
+      const targetPath = url.pathname.replace('/groq', '') + url.search;
+      const targetUrl = `https://api.groq.com${targetPath}`;
+
+      const headers = new Headers(request.headers);
+      headers.set('Host', 'api.groq.com');
+      headers.delete('cf-connecting-ip');
+      headers.delete('cf-ray');
+      headers.delete('x-forwarded-for');
+      headers.delete('x-real-ip');
+
+      const proxyReq = new Request(targetUrl, {
+        method: request.method,
+        headers,
+        body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body,
+        redirect: 'follow',
+      });
+
+      return await fetch(proxyReq);
+    }
+
+    // 3c. OpenRouter API Reverse Proxy (/openrouter/api/v1/...)
+    if (url.pathname.startsWith('/openrouter/')) {
+      const targetPath = url.pathname.replace('/openrouter', '') + url.search;
+      const targetUrl = `https://openrouter.ai${targetPath}`;
+
+      const headers = new Headers(request.headers);
+      headers.set('Host', 'openrouter.ai');
+      headers.delete('cf-connecting-ip');
+      headers.delete('cf-ray');
+      headers.delete('x-forwarded-for');
+      headers.delete('x-real-ip');
 
       const proxyReq = new Request(targetUrl, {
         method: request.method,
