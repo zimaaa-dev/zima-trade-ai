@@ -936,6 +936,43 @@ export const SettingsConfigView: React.FC = () => {
                 </td>
               </tr>
 
+              {/* AI Proxy Gateway (Hugging Face Spaces / Custom) */}
+              <tr className="hover:bg-slate-800/30">
+                <td className="py-3 px-3">
+                  <div className="font-bold text-white">AI_PROXY_URL (Обход 403)</div>
+                  <span className="text-[10px] text-violet-400">Hugging Face Space · проксирует Groq + OpenRouter</span>
+                </td>
+                <td className="py-3 px-3 text-slate-300 text-[11px]">
+                  Внешний шлюз для обхода регионального блока 403 с российского VPS
+                  {config?.credentials?.aiProxy?.configured && (
+                    <span className="block text-[10px] text-emerald-400 mt-0.5 truncate max-w-[300px]">
+                      {config.credentials.aiProxy.source}
+                    </span>
+                  )}
+                </td>
+                <td className="py-3 px-3">
+                  {config?.credentials?.aiProxy?.configured ? (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 w-fit">
+                      <CheckCircle2 className="w-3 h-3" /> АКТИВЕН
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700 flex items-center gap-1 w-fit">
+                      <Info className="w-3 h-3 text-violet-400" /> ПРЯМОЙ
+                    </span>
+                  )}
+                </td>
+                <td className="py-3 px-3 text-right">
+                  <button
+                    type="button"
+                    onClick={() => runTest('ai_proxy')}
+                    disabled={testingTarget === 'ai_proxy'}
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-violet-300 rounded text-[11px] transition"
+                  >
+                    {testingTarget === 'ai_proxy' ? 'Проверка...' : 'Проверить Proxy'}
+                  </button>
+                </td>
+              </tr>
+
               {/* Telegram Userbot */}
               <tr className="hover:bg-slate-800/30">
                 <td className="py-3 px-3">
@@ -1038,6 +1075,7 @@ export const SettingsConfigView: React.FC = () => {
             const okxPassphrase = getVal('okxPassphrase');
             const groqKey = getVal('groqKey');
             const openrouterKeys = getVal('openrouterKeys');
+            const aiProxyUrl = getVal('aiProxyUrl');
 
             setIsSaving(true);
             setSaveStatus(null);
@@ -1054,6 +1092,7 @@ export const SettingsConfigView: React.FC = () => {
                   okxPassphrase: okxPassphrase || undefined,
                   groqApiKey: groqKey || undefined,
                   openrouterApiKeys: openrouterKeys || undefined,
+                  aiProxyUrl: aiProxyUrl || undefined,
                 }),
               });
               const data = await res.json();
@@ -1196,6 +1235,22 @@ export const SettingsConfigView: React.FC = () => {
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
               />
             </div>
+          </div>
+
+          <div className="pt-2 border-t border-slate-800/80">
+            <label className="block text-slate-300 font-bold mb-1.5">
+              AI_PROXY_URL (Hugging Face Space для обхода HTTP 403 на Groq и OpenRouter)
+            </label>
+            <input
+              name="aiProxyUrl"
+              type="url"
+              placeholder={
+                config?.credentials?.aiProxy?.configured
+                  ? config.credentials.aiProxy.source
+                  : 'https://ваш-ник-ai-proxy.hf.space'
+              }
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-violet-500"
+            />
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800/80">

@@ -78,6 +78,53 @@ export function parseOpenRouterKeys(raw?: string | string[] | null): string[] {
   return result;
 }
 
+export function normalizeAiProxyUrl(raw?: string | null): string {
+  if (!raw) return '';
+  let clean = String(raw).trim();
+  if (!clean) return '';
+  if (!/^https?:\/\//i.test(clean)) {
+    clean = `https://${clean}`;
+  }
+  clean = clean.replace(/\/+$/, '');
+  try {
+    const parsed = new URL(clean);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return '';
+  }
+}
+
+export function buildAiProviderBases(
+  provider: 'groq' | 'openrouter',
+  opts: {
+    explicitBase?: string | null;
+    aiProxyUrl?: string | null;
+    cfWorkerOrigin?: string;
+  }
+): string[] {
+  const proxy = normalizeAiProxyUrl(opts.aiProxyUrl);
+  const explicit = normalizeAiProxyUrl(opts.explicitBase);
+  const cf = (opts.cfWorkerOrigin || 'https://zima-trade-watchdog.zimaaa-lab.workers.dev').replace(/\/+$/, '');
+
+  const candidates =
+    provider === 'groq'
+      ? [
+          explicit,
+          proxy ? `${proxy}/groq/openai/v1` : '',
+          'https://api.groq.com/openai/v1',
+          `${cf}/groq/openai/v1`,
+        ]
+      : [
+          explicit,
+          proxy ? `${proxy}/openrouter/api/v1` : '',
+          'https://openrouter.ai/api/v1',
+          `${cf}/openrouter/api/v1`,
+        ];
+
+  return Array.from(new Set(candidates.filter(Boolean)));
+}
+
 export function extractOpenRouterReplyText(payload: any): string {
   const msg = payload?.choices?.[0]?.message;
   if (!msg) return '';

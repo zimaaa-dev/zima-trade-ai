@@ -270,6 +270,8 @@ import {
   OPENROUTER_FREE_MODELS,
   extractOpenRouterReplyText,
   parseOpenRouterKeys,
+  normalizeAiProxyUrl,
+  buildAiProviderBases,
 } from './src/lib/openrouter-key-pool.ts';
 
 // Ollama Cloud Multi-Key Rotation & Model Orchestrator
@@ -370,11 +372,10 @@ async function callFreeCloudLlmFallback(
         'openai/gpt-oss-120b',
       ])
     );
-    const groqBases = [
-      process.env.GROQ_API_BASE?.replace(/\/$/, ''),
-      'https://api.groq.com/openai/v1',
-      'https://zima-trade-watchdog.zimaaa-lab.workers.dev/groq/openai/v1',
-    ].filter(Boolean) as string[];
+    const groqBases = buildAiProviderBases('groq', {
+      explicitBase: process.env.GROQ_API_BASE,
+      aiProxyUrl: process.env.AI_PROXY_URL,
+    });
     const messages = options?.systemInstruction
       ? [
           { role: 'system', content: options.systemInstruction },
@@ -443,11 +444,10 @@ async function callFreeCloudLlmFallback(
         ...OPENROUTER_FREE_MODELS.slice(0, 4),
       ])
     );
-    const orBases = [
-      process.env.OPENROUTER_API_BASE?.replace(/\/$/, ''),
-      'https://openrouter.ai/api/v1',
-      'https://zima-trade-watchdog.zimaaa-lab.workers.dev/openrouter/api/v1',
-    ].filter(Boolean) as string[];
+    const orBases = buildAiProviderBases('openrouter', {
+      explicitBase: process.env.OPENROUTER_API_BASE,
+      aiProxyUrl: process.env.AI_PROXY_URL,
+    });
     const messages = options?.systemInstruction
       ? [
           { role: 'system', content: options.systemInstruction },
@@ -9068,6 +9068,12 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
           ? `${openRouterPool.getSummary().activeKeys}/${openRouterPool.getSummary().totalKeys} ключ(ей) (${openRouterPool.getSummary().maskedKeys.join(', ')}) · ~${openRouterPool.getSummary().dailyFreeLimitEstimate} запр./сутки`
           : 'Не настроено',
       },
+      aiProxy: {
+        name: 'AI_PROXY_URL',
+        purpose: 'Внешний AI-шлюз (Hugging Face Space / зарубежный прокси для обхода 403 на Groq и OpenRouter)',
+        configured: Boolean(normalizeAiProxyUrl(process.env.AI_PROXY_URL)),
+        source: normalizeAiProxyUrl(process.env.AI_PROXY_URL) || 'Не задан (прямые запросы)',
+      },
       bybitTrading: {
         name: 'BYBIT_API_KEY & SECRET',
         purpose: 'Боевое исполнение ордеров Bybit V5 (Live Mode)',
@@ -9523,11 +9529,10 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
     }
     const t0 = Date.now();
     const probeModels = ['qwen/qwen3.8-27b', 'openai/gpt-oss-20b'];
-    const groqBases = [
-      process.env.GROQ_API_BASE?.replace(/\/$/, ''),
-      'https://api.groq.com/openai/v1',
-      'https://zima-trade-watchdog.zimaaa-lab.workers.dev/groq/openai/v1',
-    ].filter(Boolean) as string[];
+    const groqBases = buildAiProviderBases('groq', {
+      explicitBase: process.env.GROQ_API_BASE,
+      aiProxyUrl: process.env.AI_PROXY_URL,
+    });
 
     let lastErr = '';
     let directGeoBlocked = false;
@@ -9547,13 +9552,18 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
               temperature: 0.1,
               max_tokens: 16,
             }),
-            signal: AbortSignal.timeout(7000),
+            signal: AbortSignal.timeout(10000),
           });
           if (resp.ok) {
             const payload = (await resp.json().catch(() => null)) as any;
             if (payload?.choices?.[0]?.message) {
               const latencyMs = Date.now() - t0;
-              const viaProxy = base.includes('workers.dev') ? ' (через Cloudflare Edge)' : '';
+              groqGeoBlockedUntil = 0;
+              const viaProxy = base.includes('api.groq.com')
+                ? ''
+                : base.includes('workers.dev')
+                ? ' (через Cloudflare Edge)'
+                : ' (через AI Proxy)';
               res.json({
                 success: true,
                 latencyMs,
@@ -9604,11 +9614,10 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
     }
 
     const t0 = Date.now();
-    const orBases = [
-      process.env.OPENROUTER_API_BASE?.replace(/\/$/, ''),
-      'https://openrouter.ai/api/v1',
-      'https://zima-trade-watchdog.zimaaa-lab.workers.dev/openrouter/api/v1',
-    ].filter(Boolean) as string[];
+    const orBases = buildAiProviderBases('openrouter', {
+      explicitBase: process.env.OPENROUTER_API_BASE,
+      aiProxyUrl: process.env.AI_PROXY_URL,
+    });
 
     // 1. Check auth & remaining daily free quota across all configured OpenRouter keys
     let totalRemaining = 0;
@@ -9623,7 +9632,7 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
         try {
           const authResp = await fetch(`${base}/auth/key`, {
             headers: { Authorization: `Bearer ${key}` },
-            signal: AbortSignal.timeout(7000),
+            signal: AbortSignal.timeout(9000),
           });
           if (authResp.ok) {
             const authJson = (await authResp.json().catch(() => null)) as any;
@@ -9640,7 +9649,7 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
             break;
           }
           authErr = `HTTP ${authResp.status}`;
-          if (authResp.status !== 403 && authResp.status !== 451) {
+          if (authResp.status !== 403 && authResp.status !== 451 && authResp.status !== 502 && authResp.status !== 503) {
             break;
           }
         } catch (err: any) {
@@ -9682,14 +9691,18 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
             temperature: 0.1,
             max_tokens: 256,
           }),
-          signal: AbortSignal.timeout(14000),
+          signal: AbortSignal.timeout(15000),
         });
         if (resp.ok) {
           const data = (await resp.json().catch(() => null)) as any;
           const resolvedModel = String(data?.model || m);
           const latencyMs = Date.now() - t0;
           openRouterPool.markSuccess(probeKey);
-          const viaProxy = workingBase.includes('workers.dev') ? ' (через Cloudflare Edge)' : ' (напрямую с VPS)';
+          const viaProxy = workingBase.includes('openrouter.ai')
+            ? ' (напрямую с VPS)'
+            : workingBase.includes('workers.dev')
+            ? ' (через Cloudflare Edge)'
+            : ' (через AI Proxy)';
           res.json({
             success: true,
             latencyMs,
@@ -9718,6 +9731,41 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
       pool: openRouterPool.getSummary(),
       statusText: `Ключи OpenRouter валидны (${validKeysCount}/${keys.length}, остаток ${totalRemaining}/${totalLimit}), но пробный запрос вернул ${lastProbeErr || 'ошибку'}.`,
     });
+  } else if (target === 'ai_proxy') {
+    const proxy = normalizeAiProxyUrl(process.env.AI_PROXY_URL);
+    if (!proxy) {
+      res.json({
+        success: false,
+        error: 'AI_PROXY_URL не задан.',
+        statusText: 'Укажите URL вашего Hugging Face Space (https://....hf.space) в поле AI_PROXY_URL и нажмите «Сохранить ключи».',
+      });
+      return;
+    }
+    try {
+      const t0 = Date.now();
+      const resp = await fetch(`${proxy}/health`, { signal: AbortSignal.timeout(8000) });
+      const latencyMs = Date.now() - t0;
+      if (resp.ok) {
+        const body = await resp.text().catch(() => 'OK');
+        res.json({
+          success: true,
+          latencyMs,
+          statusText: `AI Proxy (${proxy}) доступен (${latencyMs} мс)! Ответ: ${body.slice(0, 120)}`,
+        });
+      } else {
+        res.json({
+          success: false,
+          error: `HTTP ${resp.status}`,
+          statusText: `AI Proxy (${proxy}) вернул HTTP ${resp.status}. Проверьте, что Space в статусе Running.`,
+        });
+      }
+    } catch (err: any) {
+      res.json({
+        success: false,
+        error: err?.message || 'Timeout',
+        statusText: `Не удалось подключиться к AI Proxy (${proxy}): ${err?.message || 'Timeout'}`,
+      });
+    }
   } else {
     res.status(400).json({ error: 'Unknown target' });
   }
@@ -9784,6 +9832,7 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
     openrouterKeys,
     openrouterApiKey,
     openrouterKey,
+    aiProxyUrl,
   } = req.body;
 
   const rawOllama = ollamaApiKeys ?? ollamaApiKey ?? ollamaKey ?? ollamaCloudKey;
@@ -9799,6 +9848,19 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
   const rawOpenrouterKeys = openrouterApiKeys ?? openrouterKeys ?? openrouterApiKey ?? openrouterKey;
 
   const updates: Record<string, string | undefined> = {};
+
+  if (aiProxyUrl !== undefined) {
+    const normalizedProxy = normalizeAiProxyUrl(typeof aiProxyUrl === 'string' ? aiProxyUrl : '');
+    if (normalizedProxy) {
+      process.env.AI_PROXY_URL = normalizedProxy;
+      updates.AI_PROXY_URL = normalizedProxy;
+      groqGeoBlockedUntil = 0;
+    } else if (aiProxyUrl === '') {
+      delete process.env.AI_PROXY_URL;
+      updates.AI_PROXY_URL = '';
+      groqGeoBlockedUntil = 0;
+    }
+  }
 
   if (rawGroqKey !== undefined) {
     const val = typeof rawGroqKey === 'string' ? rawGroqKey.trim() : '';

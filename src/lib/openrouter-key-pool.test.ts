@@ -6,6 +6,8 @@ import {
   parseOpenRouterKeys,
   maskOpenRouterKey,
   extractOpenRouterReplyText,
+  normalizeAiProxyUrl,
+  buildAiProviderBases,
 } from './openrouter-key-pool';
 
 test('parseOpenRouterKeys splits comma/newline lists, strips quotes, deduplicates, and rejects placeholders', () => {
@@ -76,4 +78,18 @@ test('OPENROUTER_FREE_MODELS prioritizes openrouter/free and extractOpenRouterRe
     }),
     'Thinking... {"ok":true}'
   );
+});
+
+test('normalizeAiProxyUrl and buildAiProviderBases prioritize custom HF Space proxy before direct & Cloudflare', () => {
+  assert.equal(normalizeAiProxyUrl('zimaaa-ai-proxy.hf.space/'), 'https://zimaaa-ai-proxy.hf.space');
+  assert.equal(normalizeAiProxyUrl('https://zimaaa-ai-proxy.hf.space///'), 'https://zimaaa-ai-proxy.hf.space');
+  assert.equal(normalizeAiProxyUrl(''), '');
+
+  const groqBases = buildAiProviderBases('groq', { aiProxyUrl: 'https://zimaaa-ai-proxy.hf.space/' });
+  assert.equal(groqBases[0], 'https://zimaaa-ai-proxy.hf.space/groq/openai/v1');
+  assert.equal(groqBases[1], 'https://api.groq.com/openai/v1');
+
+  const orBases = buildAiProviderBases('openrouter', { aiProxyUrl: 'zimaaa-ai-proxy.hf.space' });
+  assert.equal(orBases[0], 'https://zimaaa-ai-proxy.hf.space/openrouter/api/v1');
+  assert.equal(orBases[1], 'https://openrouter.ai/api/v1');
 });
