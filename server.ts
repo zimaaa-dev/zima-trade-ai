@@ -273,6 +273,12 @@ import {
   normalizeAiProxyUrl,
   buildAiProviderBases,
 } from './src/lib/openrouter-key-pool.ts';
+import {
+  callGigaChatCompletion,
+  callZhipuCompletion,
+  normalizeGigaChatAuthKey,
+  gigaChatTokenCache,
+} from './src/lib/direct-ru-llm.ts';
 
 // Ollama Cloud Multi-Key Rotation & Model Orchestrator
 const initialOllamaKeys = [
@@ -324,12 +330,51 @@ async function callFreeCloudLlmFallback(
 ): Promise<{
   ok: boolean;
   text: string;
-  source: 'GEMINI_AI' | 'GROQ_AI' | 'OPENROUTER_AI';
+  source: 'GEMINI_AI' | 'GIGACHAT_AI' | 'ZHIPU_AI' | 'GROQ_AI' | 'OPENROUTER_AI';
   modelUsed: string;
   latencyMs: number;
 } | null> {
   const timeoutMs = options?.timeoutMs || 14000;
   const startedAt = Date.now();
+
+  // 0a. Sber GigaChat (direct Russian servers, ~5ms from Cloud.ru, zero geo-blocks)
+  const gigaAuthKey = normalizeGigaChatAuthKey(process.env.GIGACHAT_AUTH_KEY);
+  if (gigaAuthKey) {
+    const gigaRes = await callGigaChatCompletion(gigaAuthKey, prompt, {
+      systemInstruction: options?.systemInstruction,
+      model: process.env.GIGACHAT_MODEL,
+      scope: process.env.GIGACHAT_SCOPE,
+      timeoutMs,
+    });
+    if (gigaRes.ok && gigaRes.text) {
+      return {
+        ok: true,
+        text: gigaRes.text,
+        source: 'GIGACHAT_AI',
+        modelUsed: gigaRes.modelUsed || 'GigaChat-2',
+        latencyMs: gigaRes.latencyMs,
+      };
+    }
+  }
+
+  // 0b. Zhipu AI / Z.AI GLM-4-Flash (free tier, non-Cloudflare China/Alibaba servers, works directly from RU VPS)
+  if (isKeyValid(process.env.ZHIPU_API_KEY)) {
+    const zhipuRes = await callZhipuCompletion(process.env.ZHIPU_API_KEY!, prompt, {
+      systemInstruction: options?.systemInstruction,
+      model: process.env.ZHIPU_MODEL,
+      explicitBase: process.env.ZHIPU_API_BASE,
+      timeoutMs: Math.max(timeoutMs, 15000),
+    });
+    if (zhipuRes.ok && zhipuRes.text) {
+      return {
+        ok: true,
+        text: zhipuRes.text,
+        source: 'ZHIPU_AI',
+        modelUsed: zhipuRes.modelUsed || 'glm-4.5-flash',
+        latencyMs: zhipuRes.latencyMs,
+      };
+    }
+  }
 
   // 1. Google Gemini API (gemini-4-hydrogen) via @google/genai
   if (geminiAi && isKeyValid(process.env.GEMINI_API_KEY)) {
@@ -7029,6 +7074,10 @@ export async function runAiConductorCycle(options?: {
         ? `Ollama (${decision.modelUsed})`
         : decision.source === 'GEMINI_AI'
         ? `Gemini (${decision.modelUsed})`
+        : decision.source === 'GIGACHAT_AI'
+        ? `GigaChat (${decision.modelUsed})`
+        : decision.source === 'ZHIPU_AI'
+        ? `Zhipu GLM (${decision.modelUsed})`
         : decision.source === 'GROQ_AI'
         ? `Groq (${decision.modelUsed})`
         : decision.source === 'OPENROUTER_AI'
@@ -9060,6 +9109,22 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
           ? `Сохранено в .env (****${String(process.env.GROQ_API_KEY).slice(-4)})`
           : 'Не настроено',
       },
+      gigachatKey: {
+        name: 'GIGACHAT_AUTH_KEY',
+        purpose: 'GigaChat Сбер (прямой доступ с РФ VPS · 1M бесплатных токенов · без прокси)',
+        configured: Boolean(normalizeGigaChatAuthKey(process.env.GIGACHAT_AUTH_KEY)),
+        source: normalizeGigaChatAuthKey(process.env.GIGACHAT_AUTH_KEY)
+          ? `Сохранено в .env (****${normalizeGigaChatAuthKey(process.env.GIGACHAT_AUTH_KEY).slice(-4)})`
+          : 'Не настроено',
+      },
+      zhipuKey: {
+        name: 'ZHIPU_API_KEY',
+        purpose: 'Zhipu AI / Z.AI GLM-4-Flash (бесплатно · работает напрямую из РФ без прокси)',
+        configured: isKeyValid(process.env.ZHIPU_API_KEY),
+        source: isKeyValid(process.env.ZHIPU_API_KEY)
+          ? `Сохранено в .env (****${String(process.env.ZHIPU_API_KEY).slice(-4)})`
+          : 'Не настроено',
+      },
       openrouterAiKey: {
         name: 'OPENROUTER_API_KEYS',
         purpose: 'Бесплатный пул OpenRouter (:free · Nemotron / Gemma / Ling · 50 запр./сутки на каждый ключ)',
@@ -9731,6 +9796,68 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
       pool: openRouterPool.getSummary(),
       statusText: `Ключи OpenRouter валидны (${validKeysCount}/${keys.length}, остаток ${totalRemaining}/${totalLimit}), но пробный запрос вернул ${lastProbeErr || 'ошибку'}.`,
     });
+  } else if (target === 'gigachat') {
+    const authKey = normalizeGigaChatAuthKey(process.env.GIGACHAT_AUTH_KEY);
+    if (!authKey) {
+      res.json({
+        success: false,
+        error: 'GIGACHAT_AUTH_KEY не задан.',
+        statusText: 'Укажите Authorization Key из developers.sber.ru/studio в поле GIGACHAT_AUTH_KEY и нажмите «Сохранить ключи».',
+      });
+      return;
+    }
+    const probe = await callGigaChatCompletion(authKey, 'Ответь одним словом: OK', {
+      model: process.env.GIGACHAT_MODEL,
+      scope: process.env.GIGACHAT_SCOPE,
+      timeoutMs: 12000,
+      maxTokens: 32,
+    });
+    if (probe.ok) {
+      res.json({
+        success: true,
+        latencyMs: probe.latencyMs,
+        modelUsed: probe.modelUsed,
+        scope: probe.scope,
+        statusText: `GigaChat Сбер подключен напрямую (${probe.latencyMs} мс)! Модель: ${probe.modelUsed} (${probe.scope}).`,
+      });
+    } else {
+      res.json({
+        success: false,
+        error: probe.error || 'GigaChat error',
+        statusText: `Ошибка подключения GigaChat Сбер: ${probe.error || 'проверьте Authorization Key'}.`,
+      });
+    }
+  } else if (target === 'zhipu') {
+    const key = (process.env.ZHIPU_API_KEY || '').trim();
+    if (!isKeyValid(key)) {
+      res.json({
+        success: false,
+        error: 'ZHIPU_API_KEY не задан.',
+        statusText: 'Укажите API ключ Zhipu AI (open.bigmodel.cn или z.ai) в поле ZHIPU_API_KEY и нажмите «Сохранить ключи».',
+      });
+      return;
+    }
+    const probe = await callZhipuCompletion(key, 'Reply with OK', {
+      model: process.env.ZHIPU_MODEL,
+      explicitBase: process.env.ZHIPU_API_BASE,
+      timeoutMs: 14000,
+      maxTokens: 32,
+    });
+    if (probe.ok) {
+      res.json({
+        success: true,
+        latencyMs: probe.latencyMs,
+        modelUsed: probe.modelUsed,
+        baseUsed: probe.baseUsed,
+        statusText: `Zhipu GLM подключен напрямую (${probe.latencyMs} мс)! Модель: ${probe.modelUsed} (${probe.baseUsed}).`,
+      });
+    } else {
+      res.json({
+        success: false,
+        error: probe.error || 'Zhipu error',
+        statusText: `Ошибка подключения Zhipu AI: ${probe.error || 'проверьте ключ'}.`,
+      });
+    }
   } else if (target === 'ai_proxy') {
     const proxy = normalizeAiProxyUrl(process.env.AI_PROXY_URL);
     if (!proxy) {
@@ -9833,6 +9960,10 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
     openrouterApiKey,
     openrouterKey,
     aiProxyUrl,
+    gigachatAuthKey,
+    gigachatKey,
+    zhipuApiKey,
+    zhipuKey,
   } = req.body;
 
   const rawOllama = ollamaApiKeys ?? ollamaApiKey ?? ollamaKey ?? ollamaCloudKey;
@@ -9846,8 +9977,34 @@ app.post('/api/config/save-keys', (req: Request, res: Response) => {
   const rawTgHash = tgApiHash ?? tgHash;
   const rawGroqKey = groqApiKey ?? groqKey;
   const rawOpenrouterKeys = openrouterApiKeys ?? openrouterKeys ?? openrouterApiKey ?? openrouterKey;
+  const rawGigaChatKey = gigachatAuthKey ?? gigachatKey;
+  const rawZhipuKey = zhipuApiKey ?? zhipuKey;
 
   const updates: Record<string, string | undefined> = {};
+
+  if (rawGigaChatKey !== undefined) {
+    const normalized = normalizeGigaChatAuthKey(typeof rawGigaChatKey === 'string' ? rawGigaChatKey : '');
+    if (normalized) {
+      process.env.GIGACHAT_AUTH_KEY = normalized;
+      updates.GIGACHAT_AUTH_KEY = normalized;
+      gigaChatTokenCache.clear();
+    } else if (rawGigaChatKey === '') {
+      delete process.env.GIGACHAT_AUTH_KEY;
+      updates.GIGACHAT_AUTH_KEY = '';
+      gigaChatTokenCache.clear();
+    }
+  }
+
+  if (rawZhipuKey !== undefined) {
+    const val = typeof rawZhipuKey === 'string' ? rawZhipuKey.trim() : '';
+    if (val && isKeyValid(val)) {
+      process.env.ZHIPU_API_KEY = val;
+      updates.ZHIPU_API_KEY = val;
+    } else if (val === '') {
+      delete process.env.ZHIPU_API_KEY;
+      updates.ZHIPU_API_KEY = '';
+    }
+  }
 
   if (aiProxyUrl !== undefined) {
     const normalizedProxy = normalizeAiProxyUrl(typeof aiProxyUrl === 'string' ? aiProxyUrl : '');

@@ -862,6 +862,80 @@ export const SettingsConfigView: React.FC = () => {
                 </td>
               </tr>
 
+              {/* GigaChat Sber (Direct RU, 0 proxy) */}
+              <tr className="hover:bg-slate-800/30">
+                <td className="py-3 px-3">
+                  <div className="font-bold text-white">GIGACHAT_AUTH_KEY (Сбер · РФ)</div>
+                  <span className="text-[10px] text-emerald-400">GigaChat-2 · 1M токенов бесплатно · без прокси</span>
+                </td>
+                <td className="py-3 px-3 text-slate-300 text-[11px]">
+                  Прямой ИИ-Дирижёр на российских серверах Сбера (пинг ~5 мс с Cloud.ru)
+                  {config?.credentials?.gigachatKey?.configured && (
+                    <span className="block text-[10px] text-emerald-400 mt-0.5">
+                      {config.credentials.gigachatKey.source}
+                    </span>
+                  )}
+                </td>
+                <td className="py-3 px-3">
+                  {config?.credentials?.gigachatKey?.configured ? (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 w-fit">
+                      <CheckCircle2 className="w-3 h-3" /> ПОДКЛЮЧЕН
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-950 text-amber-400 border border-amber-800/40 flex items-center gap-1 w-fit">
+                      <HelpCircle className="w-3 h-3" /> НЕ НАСТРОЕН
+                    </span>
+                  )}
+                </td>
+                <td className="py-3 px-3 text-right">
+                  <button
+                    type="button"
+                    onClick={() => runTest('gigachat')}
+                    disabled={testingTarget === 'gigachat'}
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-emerald-300 rounded text-[11px] transition"
+                  >
+                    {testingTarget === 'gigachat' ? 'Проверка...' : 'Проверить GigaChat'}
+                  </button>
+                </td>
+              </tr>
+
+              {/* Zhipu AI / Z.AI GLM-4-Flash (Direct RU, free forever) */}
+              <tr className="hover:bg-slate-800/30">
+                <td className="py-3 px-3">
+                  <div className="font-bold text-white">ZHIPU_API_KEY (GLM-4-Flash)</div>
+                  <span className="text-[10px] text-sky-400">open.bigmodel.cn / z.ai · бесплатно · без прокси</span>
+                </td>
+                <td className="py-3 px-3 text-slate-300 text-[11px]">
+                  Бесплатная китайская LLM (Alibaba Cloud, без блокировок РФ)
+                  {config?.credentials?.zhipuKey?.configured && (
+                    <span className="block text-[10px] text-emerald-400 mt-0.5">
+                      {config.credentials.zhipuKey.source}
+                    </span>
+                  )}
+                </td>
+                <td className="py-3 px-3">
+                  {config?.credentials?.zhipuKey?.configured ? (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 w-fit">
+                      <CheckCircle2 className="w-3 h-3" /> ПОДКЛЮЧЕН
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-950 text-amber-400 border border-amber-800/40 flex items-center gap-1 w-fit">
+                      <HelpCircle className="w-3 h-3" /> НЕ НАСТРОЕН
+                    </span>
+                  )}
+                </td>
+                <td className="py-3 px-3 text-right">
+                  <button
+                    type="button"
+                    onClick={() => runTest('zhipu')}
+                    disabled={testingTarget === 'zhipu'}
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-sky-300 rounded text-[11px] transition"
+                  >
+                    {testingTarget === 'zhipu' ? 'Проверка...' : 'Проверить Zhipu'}
+                  </button>
+                </td>
+              </tr>
+
               {/* OpenRouter Free Multi-Key Pool */}
               <tr className="hover:bg-slate-800/30">
                 <td className="py-3 px-3">
@@ -1076,6 +1150,8 @@ export const SettingsConfigView: React.FC = () => {
             const groqKey = getVal('groqKey');
             const openrouterKeys = getVal('openrouterKeys');
             const aiProxyUrl = getVal('aiProxyUrl');
+            const gigachatKey = getVal('gigachatKey');
+            const zhipuKey = getVal('zhipuKey');
 
             setIsSaving(true);
             setSaveStatus(null);
@@ -1093,6 +1169,8 @@ export const SettingsConfigView: React.FC = () => {
                   groqApiKey: groqKey || undefined,
                   openrouterApiKeys: openrouterKeys || undefined,
                   aiProxyUrl: aiProxyUrl || undefined,
+                  gigachatAuthKey: gigachatKey || undefined,
+                  zhipuApiKey: zhipuKey || undefined,
                 }),
               });
               const data = await res.json();
@@ -1199,6 +1277,40 @@ export const SettingsConfigView: React.FC = () => {
                     : 'Пароль API ключа OKX'
                 }
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-800/80">
+            <div>
+              <label className="block text-emerald-300 font-bold mb-1.5">
+                GIGACHAT_AUTH_KEY (Сбер · прямой доступ из РФ без прокси · 1M бесплатно)
+              </label>
+              <input
+                name="gigachatKey"
+                type="password"
+                placeholder={
+                  config?.credentials?.gigachatKey?.configured
+                    ? `•••••••• (${config.credentials.gigachatKey.source})`
+                    : 'Вставьте Authorization Key из developers.sber.ru/studio'
+                }
+                className="w-full bg-slate-950 border border-emerald-800/60 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-400"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sky-300 font-bold mb-1.5">
+                ZHIPU_API_KEY (GLM-4-Flash · бесплатно · работает из РФ без прокси)
+              </label>
+              <input
+                name="zhipuKey"
+                type="password"
+                placeholder={
+                  config?.credentials?.zhipuKey?.configured
+                    ? `•••••••• (${config.credentials.zhipuKey.source})`
+                    : 'Вставьте API-ключ с open.bigmodel.cn или z.ai'
+                }
+                className="w-full bg-slate-950 border border-sky-800/60 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-sky-400"
               />
             </div>
           </div>

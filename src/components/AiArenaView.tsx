@@ -1107,6 +1107,10 @@ export const AiArenaView: React.FC = () => {
                       ? `Ollama Cloud (${conductorStatus.latestDecision.modelUsed})`
                       : conductorStatus.latestDecision.source === 'GEMINI_AI'
                       ? `Gemini AI (${conductorStatus.latestDecision.modelUsed})`
+                      : conductorStatus.latestDecision.source === 'GIGACHAT_AI'
+                      ? `GigaChat Сбер (${conductorStatus.latestDecision.modelUsed})`
+                      : conductorStatus.latestDecision.source === 'ZHIPU_AI'
+                      ? `Zhipu GLM (${conductorStatus.latestDecision.modelUsed})`
                       : conductorStatus.latestDecision.source === 'GROQ_AI'
                       ? `Groq AI (${conductorStatus.latestDecision.modelUsed})`
                       : conductorStatus.latestDecision.source === 'OPENROUTER_AI'

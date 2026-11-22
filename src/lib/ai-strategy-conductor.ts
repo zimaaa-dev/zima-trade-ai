@@ -83,6 +83,8 @@ export interface StrategyMutationAction {
 export type AiDecisionSource =
   | 'OLLAMA_AI'
   | 'GEMINI_AI'
+  | 'GIGACHAT_AI'
+  | 'ZHIPU_AI'
   | 'GROQ_AI'
   | 'OPENROUTER_AI'
   | 'QUANT_FALLBACK';
