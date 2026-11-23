@@ -6,6 +6,8 @@ import {
   releaseBotCycleLock,
   runWithHardTimeout,
   reconcileOkxLivePositions,
+  normalizeOkxOpenPositions,
+  buildOkxPositionDiff,
 } from './bot-engine-resilience.ts';
 
 test('bot cycle watchdog lock recovers stale stuck lock without letting old run clear new run', () => {
@@ -102,4 +104,44 @@ test('reconcileOkxLivePositions detects phantom LIVE OKX slots after consecutive
     ['BCHUSDT']
   );
   assert.equal(pass2.updatedStreaks['pos-bch'], undefined);
+});
+
+test('buildOkxPositionDiff identifies stray exchange-only positions and normalizes net_mode shorts', () => {
+  const normalized = normalizeOkxOpenPositions(
+    [
+      { instId: 'BTC-USDT-SWAP', pos: '-2', posSide: 'net', avgPx: '63100', markPx: '63050', upl: '1.0', lever: '4' },
+      { instId: 'SOL-USDT-SWAP', pos: '0', posSide: 'net', avgPx: '0', markPx: '76.5', upl: '0' },
+      { instId: 'XAU-USDT-SWAP', pos: '13', posSide: 'net', avgPx: '3620', markPx: '3640', upl: '0.26', lever: '4' },
+    ],
+    'net_mode'
+  );
+  assert.equal(normalized.length, 2);
+  assert.equal(normalized[0].symbol, 'BTCUSDT');
+  assert.equal(normalized[0].side, 'SHORT');
+  assert.equal(normalized[1].symbol, 'XAUUSDT');
+  assert.equal(normalized[1].side, 'LONG');
+
+  const diff = buildOkxPositionDiff({
+    activePositions: [
+      { id: 'pos-btc', symbol: 'BTCUSDT', side: 'SHORT', mode: 'LIVE', exchange: 'OKX', openedAt: 1000 },
+      { id: 'pos-eth', symbol: 'ETHUSDT', side: 'LONG', mode: 'LIVE', exchange: 'OKX', openedAt: 2000 },
+    ],
+    okxOpenPositions: [
+      { instId: 'BTC-USDT-SWAP', pos: '-2', posSide: 'net', avgPx: '63100', markPx: '63050', upl: '1.0' },
+      { instId: 'XAU-USDT-SWAP', pos: '13', posSide: 'net', avgPx: '3620', markPx: '3640', upl: '0.26' },
+    ],
+    okxPosMode: 'net_mode',
+    missingStreaks: { 'pos-eth': 1 },
+  });
+
+  assert.equal(diff.okxPositions.length, 2);
+  assert.equal(diff.okxPositions[0].inTerminal, true);
+  assert.equal(diff.okxPositions[0].terminalPositionId, 'pos-btc');
+  assert.equal(diff.okxPositions[1].inTerminal, false);
+  assert.deepEqual(
+    diff.strayExchangePositions.map((p) => p.symbol),
+    ['XAUUSDT']
+  );
+  assert.equal(diff.terminalLiveOkxPositions.find((p) => p.symbol === 'ETHUSDT')?.onExchange, false);
+  assert.equal(diff.terminalLiveOkxPositions.find((p) => p.symbol === 'ETHUSDT')?.missingStreak, 1);
 });

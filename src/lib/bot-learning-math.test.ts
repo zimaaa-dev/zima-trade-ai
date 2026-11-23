@@ -575,6 +575,9 @@ test('[Option 1] resolveDynamicCryptoUniverse expands Top-35 liquid crypto coins
       { symbol: 'SOXLUSDT', turnover24h: 207_000_000, spreadBps: 2.9 },
       { symbol: 'SNDKUSDT', turnover24h: 150_000_000, spreadBps: 1.2 },
       { symbol: 'NVDAUSDT', turnover24h: 400_000_000, spreadBps: 0.5 },
+      { symbol: 'ANTHROPICUSDT', turnover24h: 180_000_000, spreadBps: 0.8 },
+      { symbol: 'MUUSDT', turnover24h: 160_000_000, spreadBps: 0.9 },
+      { symbol: 'OPENAIUSDT', turnover24h: 190_000_000, spreadBps: 0.7 },
       { symbol: 'HYPEUSDT', turnover24h: 185_000_000, spreadBps: 0.3 },
       { symbol: 'PEPEUSDT', turnover24h: 140_000_000, spreadBps: 0.4 },
       { symbol: 'LOWVOLUSDT', turnover24h: 25_000_000, spreadBps: 1.0 },
@@ -590,6 +593,9 @@ test('[Option 1] resolveDynamicCryptoUniverse expands Top-35 liquid crypto coins
   assert.ok(!universe.includes('SOXLUSDT'));
   assert.ok(!universe.includes('SNDKUSDT'));
   assert.ok(!universe.includes('NVDAUSDT'));
+  assert.ok(!universe.includes('ANTHROPICUSDT'));
+  assert.ok(!universe.includes('MUUSDT'));
+  assert.ok(!universe.includes('OPENAIUSDT'));
   assert.ok(!universe.includes('LOWVOLUSDT'));
   assert.ok(!universe.includes('WIDESPREADUSDT'));
   assert.ok(!universe.includes('USDCUSDT'));

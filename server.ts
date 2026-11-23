@@ -285,6 +285,8 @@ import {
   releaseBotCycleLock,
   runWithHardTimeout,
   reconcileOkxLivePositions,
+  normalizeOkxOpenPositions,
+  buildOkxPositionDiff,
 } from './src/lib/bot-engine-resilience.ts';
 
 // Ollama Cloud Multi-Key Rotation & Model Orchestrator
@@ -3747,12 +3749,14 @@ async function syncOkxAccountState(options?: { forceReconcile?: boolean }): Prom
 
 async function fetchOkxPendingAlgoId(symbol: string): Promise<string | undefined> {
   const instId = toOkxSwapInstId(symbol);
-  const res = await executeOkxPrivateRequest({
-    method: 'GET',
-    requestPath: `/api/v5/trade/orders-algo-pending?instType=SWAP&instId=${encodeURIComponent(instId)}&ordType=oco,conditional`,
-  });
-  if (res.ok && Array.isArray(res.data) && res.data.length > 0) {
-    return res.data[0]?.algoId;
+  for (const ordType of ['oco', 'conditional'] as const) {
+    const res = await executeOkxPrivateRequest({
+      method: 'GET',
+      requestPath: `/api/v5/trade/orders-algo-pending?instType=SWAP&instId=${encodeURIComponent(instId)}&ordType=${ordType}`,
+    });
+    if (res.ok && Array.isArray(res.data) && res.data.length > 0) {
+      return res.data[0]?.algoId;
+    }
   }
   return undefined;
 }
@@ -4403,6 +4407,117 @@ app.post('/api/exchange/okx-mode', async (req: Request, res: Response) => {
     sync: syncRes,
     health: buildFullSystemHealthPayload(),
   });
+});
+
+// Read-only diagnostic inspection of live/demo OKX SWAP positions, order history, and terminal diff
+app.get('/api/exchange/okx-positions', async (_req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  if (!areOkxKeysConfigured()) {
+    res.status(400).json({ ok: false, error: 'OKX ключи не настроены' });
+    return;
+  }
+
+  try {
+    const [balRes, cfgRes, posRes, ordHistRes, posHistRes, ocoRes, condRes] = await Promise.all([
+      executeOkxPrivateRequest({ method: 'GET', requestPath: '/api/v5/account/balance?ccy=USDT' }),
+      executeOkxPrivateRequest({ method: 'GET', requestPath: '/api/v5/account/config' }),
+      executeOkxPrivateRequest({ method: 'GET', requestPath: '/api/v5/account/positions?instType=SWAP' }),
+      executeOkxPrivateRequest({ method: 'GET', requestPath: '/api/v5/trade/orders-history?instType=SWAP&limit=20' }),
+      executeOkxPrivateRequest({ method: 'GET', requestPath: '/api/v5/account/positions-history?instType=SWAP&limit=20' }),
+      executeOkxPrivateRequest({ method: 'GET', requestPath: '/api/v5/trade/orders-algo-pending?instType=SWAP&ordType=oco' }),
+      executeOkxPrivateRequest({ method: 'GET', requestPath: '/api/v5/trade/orders-algo-pending?instType=SWAP&ordType=conditional' }),
+    ]);
+
+    const balRoot = Array.isArray(balRes.data) ? balRes.data[0] : null;
+    const usdtDetail = Array.isArray(balRoot?.details)
+      ? balRoot.details.find((d: any) => d.ccy === 'USDT')
+      : null;
+    const equityUsdt = parseFloat(usdtDetail?.eq || balRoot?.totalEq || '0');
+    const availUsdt = parseFloat(usdtDetail?.availEq || usdtDetail?.cashBal || '0');
+    const posMode: OkxPositionMode =
+      cfgRes.ok && Array.isArray(cfgRes.data) && cfgRes.data[0]?.posMode === 'long_short_mode'
+        ? 'long_short_mode'
+        : systemState.okxPosMode || 'net_mode';
+    const acctLv = cfgRes.ok && Array.isArray(cfgRes.data) && cfgRes.data[0]?.acctLv
+      ? String(cfgRes.data[0].acctLv)
+      : systemState.okxAccountLevel;
+
+    const rawOpen = Array.isArray(posRes.data)
+      ? posRes.data.filter((p: any) => Math.abs(parseFloat(p?.pos || '0')) > 0)
+      : [];
+
+    const diff = buildOkxPositionDiff({
+      activePositions: systemState.activePositions,
+      okxOpenPositions: rawOpen,
+      okxPosMode: posMode,
+      missingStreaks: okxMissingStreaks,
+    });
+
+    const recentOrdersHistory = (ordHistRes.ok && Array.isArray(ordHistRes.data) ? ordHistRes.data : []).map((o: any) => ({
+      ordId: String(o?.ordId || ''),
+      clOrdId: String(o?.clOrdId || ''),
+      instId: String(o?.instId || ''),
+      side: String(o?.side || ''),
+      posSide: String(o?.posSide || ''),
+      tdMode: String(o?.tdMode || ''),
+      ordType: String(o?.ordType || ''),
+      sz: String(o?.sz || ''),
+      fillSz: String(o?.fillSz || ''),
+      avgPx: String(o?.avgPx || ''),
+      state: String(o?.state || ''),
+      reduceOnly: String(o?.reduceOnly || ''),
+      cancelSource: o?.cancelSource ? String(o.cancelSource) : undefined,
+      cancelSourceReason: o?.cancelSourceReason ? String(o.cancelSourceReason) : undefined,
+      cTime: Number(o?.cTime || 0) || 0,
+      uTime: Number(o?.uTime || 0) || 0,
+    }));
+
+    const recentPositionsHistory = (posHistRes.ok && Array.isArray(posHistRes.data) ? posHistRes.data : []).map((h: any) => ({
+      posId: String(h?.posId || ''),
+      instId: String(h?.instId || ''),
+      direction: String(h?.direction || ''),
+      openAvgPx: parseFloat(String(h?.openAvgPx || '0')) || 0,
+      closeAvgPx: parseFloat(String(h?.closeAvgPx || '0')) || 0,
+      realizedPnl: parseFloat(String(h?.realizedPnl || h?.pnl || '0')) || 0,
+      cTime: Number(h?.cTime || 0) || 0,
+      uTime: Number(h?.uTime || 0) || 0,
+    }));
+
+    const pendingAlgos = [
+      ...(ocoRes.ok && Array.isArray(ocoRes.data) ? ocoRes.data : []),
+      ...(condRes.ok && Array.isArray(condRes.data) ? condRes.data : []),
+    ].map((a: any) => ({
+      algoId: String(a?.algoId || ''),
+      instId: String(a?.instId || ''),
+      ordType: String(a?.ordType || ''),
+      side: String(a?.side || ''),
+      posSide: String(a?.posSide || ''),
+      sz: String(a?.sz || ''),
+      tpTriggerPx: a?.tpTriggerPx ? String(a.tpTriggerPx) : undefined,
+      slTriggerPx: a?.slTriggerPx ? String(a.slTriggerPx) : undefined,
+      state: String(a?.state || ''),
+    }));
+
+    res.json({
+      ok: posRes.ok,
+      demoTrading: systemState.okxDemoTrading !== false,
+      posMode,
+      acctLv,
+      equityUsdt: Number((equityUsdt || 0).toFixed(2)),
+      availUsdt: Number((availUsdt || 0).toFixed(2)),
+      positionsCount: diff.okxPositions.length,
+      terminalLiveOkxCount: diff.terminalLiveOkxPositions.length,
+      strayCount: diff.strayExchangePositions.length,
+      ...diff,
+      recentOrdersHistory,
+      recentPositionsHistory,
+      pendingAlgos,
+      rawPositionsError: posRes.ok ? undefined : posRes.retMsg,
+    });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err?.message || 'OKX diagnostic error' });
+  }
 });
 
 // REST Endpoints
@@ -5848,8 +5963,13 @@ async function runBotEngineCycle() {
         // Freqtrade ProtectionManager: filter out symbols in position, CooldownPeriod, StoplossGuard, or LowProfitPairs
         const nowCycleTs = Date.now();
         const openSymbols = new Set(systemState.activePositions.map((p) => p.symbol));
+        const hasLiveOkxCatalog =
+          systemState.activeExchange === 'OKX' &&
+          lastOkxInstrumentsFetchTs > 0 &&
+          Object.keys(okxSwapInstrumentsCache).length > 30;
         const availableCandidates = rankedPairlist.filter((s) => {
           if (!allowedUniverseSet.has(s) || openSymbols.has(s)) return false;
+          if (hasLiveOkxCatalog && !okxSwapInstrumentsCache[s]) return false;
           if (!evaluateSymbolCooldownGuard(symbolCooldowns, s, nowCycleTs).allowed) return false;
           const lowProfitCheck = evaluateLowProfitPairsProtection({
             symbol: s,
@@ -9501,7 +9621,7 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
       });
       return;
     }
-    const sync = await syncOkxAccountState({ forceReconcile: true });
+    const sync = await syncOkxAccountState();
     const envName = systemState.okxDemoTrading !== false ? 'OKX Demo Trading (x-simulated-trading: 1)' : 'OKX Live Real Account';
     if (sync.ok && sync.acctLv === '1') {
       savePersistedState(true);

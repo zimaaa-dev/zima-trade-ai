@@ -111,9 +111,79 @@ export interface OkxRawPositionItem {
   instId: string;
   pos: string;
   posSide?: string;
+  mgnMode?: string;
   avgPx?: string;
   markPx?: string;
   upl?: string;
+  uplRatio?: string;
+  margin?: string;
+  imr?: string;
+  lever?: string;
+  cTime?: string;
+  uTime?: string;
+}
+
+export interface NormalizedOkxOpenPosition {
+  instId: string;
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  posSide: string;
+  mgnMode: string;
+  posContracts: number;
+  avgPx: number;
+  markPx: number;
+  uplUsdt: number;
+  marginUsdt: number;
+  lever: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export function normalizeOkxOpenPositions(
+  okxOpenPositions: OkxRawPositionItem[],
+  okxPosMode: OkxPositionMode
+): NormalizedOkxOpenPosition[] {
+  const result: NormalizedOkxOpenPosition[] = [];
+  for (const raw of okxOpenPositions) {
+    const posQty = parseFloat(String(raw?.pos || '0'));
+    if (!Number.isFinite(posQty) || Math.abs(posQty) <= 0) continue;
+
+    const symbol = fromOkxSwapInstId(raw.instId);
+    if (!symbol) continue;
+
+    const rawPosSide = String(raw.posSide || 'net').toLowerCase();
+    const side: 'LONG' | 'SHORT' =
+      okxPosMode === 'long_short_mode'
+        ? rawPosSide === 'short'
+          ? 'SHORT'
+          : 'LONG'
+        : posQty >= 0
+        ? 'LONG'
+        : 'SHORT';
+
+    const avgPx = parseFloat(String(raw.avgPx || '0'));
+    const markPx = parseFloat(String(raw.markPx || raw.avgPx || '0'));
+    const upl = parseFloat(String(raw.upl || '0'));
+    const margin = parseFloat(String(raw.margin || raw.imr || '0'));
+    const lever = parseFloat(String(raw.lever || '0'));
+
+    result.push({
+      instId: String(raw.instId || '').toUpperCase(),
+      symbol,
+      side,
+      posSide: rawPosSide,
+      mgnMode: String(raw.mgnMode || 'isolated'),
+      posContracts: posQty,
+      avgPx: Number.isFinite(avgPx) && avgPx > 0 ? avgPx : 0,
+      markPx: Number.isFinite(markPx) && markPx > 0 ? markPx : 0,
+      uplUsdt: Number.isFinite(upl) ? Number(upl.toFixed(4)) : 0,
+      marginUsdt: Number.isFinite(margin) ? Number(margin.toFixed(4)) : 0,
+      lever: Number.isFinite(lever) && lever > 0 ? lever : 0,
+      createdAt: Number(raw.cTime || 0) || 0,
+      updatedAt: Number(raw.uTime || 0) || 0,
+    });
+  }
+  return result;
 }
 
 export interface ReconcileablePosition {
@@ -152,30 +222,13 @@ export function reconcileOkxLivePositions<T extends ReconcileablePosition>(param
     nowTs = Date.now(),
   } = params;
 
+  const normalized = normalizeOkxOpenPositions(okxOpenPositions, okxPosMode);
   const liveMap = new Map<string, { side: 'LONG' | 'SHORT'; markPx: number }>();
 
-  for (const raw of okxOpenPositions) {
-    const posQty = parseFloat(String(raw?.pos || '0'));
-    if (!Number.isFinite(posQty) || Math.abs(posQty) <= 0) continue;
-
-    const symbol = fromOkxSwapInstId(raw.instId);
-    if (!symbol) continue;
-
-    const rawPosSide = String(raw.posSide || '').toLowerCase();
-    const side: 'LONG' | 'SHORT' =
-      okxPosMode === 'long_short_mode'
-        ? rawPosSide === 'short'
-          ? 'SHORT'
-          : 'LONG'
-        : posQty >= 0
-        ? 'LONG'
-        : 'SHORT';
-
-    const key = okxPosMode === 'long_short_mode' ? `${symbol}:${side}` : `${symbol}:${side}`;
-    const markPx = parseFloat(String(raw.markPx || raw.avgPx || '0'));
-    liveMap.set(key, {
-      side,
-      markPx: Number.isFinite(markPx) && markPx > 0 ? markPx : 0,
+  for (const item of normalized) {
+    liveMap.set(`${item.symbol}:${item.side}`, {
+      side: item.side,
+      markPx: item.markPx,
     });
   }
 
@@ -216,5 +269,63 @@ export function reconcileOkxLivePositions<T extends ReconcileablePosition>(param
     syncedMarkPrices,
     updatedStreaks,
     activeExchangeKeys: Array.from(liveMap.keys()),
+  };
+}
+
+export function buildOkxPositionDiff<T extends ReconcileablePosition>(params: {
+  activePositions: T[];
+  okxOpenPositions: OkxRawPositionItem[];
+  okxPosMode: OkxPositionMode;
+  missingStreaks?: Record<string, number>;
+}): {
+  okxPositions: Array<NormalizedOkxOpenPosition & { inTerminal: boolean; terminalPositionId?: string }>;
+  strayExchangePositions: NormalizedOkxOpenPosition[];
+  terminalLiveOkxPositions: Array<{
+    id: string;
+    symbol: string;
+    side: 'LONG' | 'SHORT';
+    openedAt: number;
+    onExchange: boolean;
+    missingStreak: number;
+  }>;
+} {
+  const { activePositions, okxOpenPositions, okxPosMode, missingStreaks = {} } = params;
+  const normalized = normalizeOkxOpenPositions(okxOpenPositions, okxPosMode);
+
+  const terminalByKey = new Map<string, T>();
+  const liveOkxPosList: T[] = [];
+  for (const p of activePositions) {
+    if (p.mode === 'LIVE' && p.exchange === 'OKX') {
+      liveOkxPosList.push(p);
+      terminalByKey.set(`${p.symbol}:${p.side}`, p);
+    }
+  }
+
+  const exchangeKeys = new Set<string>();
+  const okxPositions = normalized.map((item) => {
+    const key = `${item.symbol}:${item.side}`;
+    exchangeKeys.add(key);
+    const term = terminalByKey.get(key);
+    return {
+      ...item,
+      inTerminal: Boolean(term),
+      terminalPositionId: term?.id,
+    };
+  });
+
+  const strayExchangePositions = normalized.filter((item) => !terminalByKey.has(`${item.symbol}:${item.side}`));
+  const terminalLiveOkxPositions = liveOkxPosList.map((p) => ({
+    id: p.id,
+    symbol: p.symbol,
+    side: p.side,
+    openedAt: Number(p.openedAt || 0),
+    onExchange: exchangeKeys.has(`${p.symbol}:${p.side}`),
+    missingStreak: missingStreaks[p.id] || 0,
+  }));
+
+  return {
+    okxPositions,
+    strayExchangePositions,
+    terminalLiveOkxPositions,
   };
 }
