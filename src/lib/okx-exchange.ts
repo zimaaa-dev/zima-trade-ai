@@ -1,6 +1,62 @@
 import crypto from 'node:crypto';
 import type { InstrumentRules } from './engine-math.ts';
 
+export const OKX_PRIMARY_API_BASE = 'https://www.okx.com';
+
+const TRANSIENT_OKX_CODES = new Set([
+  '50001', // Service temporarily unavailable
+  '50004', // Endpoint request timeout
+  '50011', // Rate limit reached
+  '50013', // Systems are busy
+  '50026', // System error, please try again later
+]);
+
+const TRANSIENT_NET_CODES = new Set([
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ESOCKETTIMEDOUT',
+  'EAI_AGAIN',
+  'EPIPE',
+  'ECONNREFUSED',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT_TIMEOUT',
+]);
+
+/**
+ * Determines whether an OKX REST failure (HTTP status, OKX error code, message, or network error)
+ * is a transient busy/timeout condition safe to retry with backoff, vs a deterministic rejection.
+ */
+export function isTransientOkxRetryable(params: {
+  status?: number;
+  code?: string | number | null;
+  msg?: string | null;
+  netCode?: string | null;
+}): boolean {
+  const netCode = String(params.netCode || '').trim().toUpperCase();
+  if (netCode && TRANSIENT_NET_CODES.has(netCode)) return true;
+
+  const code = String(params.code ?? '').trim();
+  if (code && TRANSIENT_OKX_CODES.has(code)) return true;
+
+  if (typeof params.status === 'number' && (params.status >= 500 || params.status === 429 || params.status === 408)) {
+    return true;
+  }
+
+  const msgLower = String(params.msg || '').toLowerCase();
+  if (
+    msgLower.includes('systems are busy') ||
+    msgLower.includes('service temporarily unavailable') ||
+    msgLower.includes('too many requests') ||
+    msgLower.includes('request timeout') ||
+    msgLower.includes('econnreset') ||
+    msgLower.includes('etimedout')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 export interface OkxSwapInstrument {
   instId: string;
   symbol: string;

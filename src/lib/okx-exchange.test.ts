@@ -13,6 +13,8 @@ import {
   buildOkxSetLeveragePayload,
   buildOkxMarketOrderPayload,
   buildOkxAmendAlgoPayload,
+  OKX_PRIMARY_API_BASE,
+  isTransientOkxRetryable,
 } from './okx-exchange.ts';
 
 test('OKX instId normalization round-trips cleanly', () => {
@@ -146,4 +148,25 @@ test('OKX XAU-USDT-SWAP (Gold) specification converts cleanly to base XAU and co
   assert.equal(conv.contractsSz, '19');
   assert.equal(conv.actualBaseQty, 0.019);
 });
+
+test('isTransientOkxRetryable distinguishes busy/5xx/network errors from deterministic OKX rejections', () => {
+  assert.equal(OKX_PRIMARY_API_BASE, 'https://www.okx.com');
+
+  // Transient OKX error codes & HTTP 5xx/429
+  assert.equal(isTransientOkxRetryable({ status: 200, code: '50013', msg: 'Systems are busy, please try again later' }), true);
+  assert.equal(isTransientOkxRetryable({ status: 200, code: '50001', msg: 'Service temporarily unavailable' }), true);
+  assert.equal(isTransientOkxRetryable({ status: 429, code: '50011', msg: 'Too Many Requests' }), true);
+  assert.equal(isTransientOkxRetryable({ status: 503, code: '50026', msg: 'System error' }), true);
+  assert.equal(isTransientOkxRetryable({ status: 502, msg: 'Bad Gateway' }), true);
+  assert.equal(isTransientOkxRetryable({ netCode: 'ECONNRESET', msg: 'socket hang up' }), true);
+  assert.equal(isTransientOkxRetryable({ netCode: 'ETIMEDOUT', msg: 'HTTPS timeout (6500ms)' }), true);
+
+  // Deterministic rejections must NOT retry (prevents duplicate order/spam errors)
+  assert.equal(isTransientOkxRetryable({ status: 400, code: '51001', msg: 'Instrument ID does not exist' }), false);
+  assert.equal(isTransientOkxRetryable({ status: 200, code: '51008', msg: 'Order failed due to insufficient USDT margin' }), false);
+  assert.equal(isTransientOkxRetryable({ status: 200, code: '51023', msg: "Position doesn't exist" }), false);
+  assert.equal(isTransientOkxRetryable({ status: 401, code: '50111', msg: 'Invalid OK-ACCESS-KEY' }), false);
+  assert.equal(isTransientOkxRetryable({ netCode: 'ENOTFOUND', msg: 'getaddrinfo ENOTFOUND aws.okx.com' }), false);
+});
+
 

@@ -252,6 +252,8 @@ import {
   buildOkxSetLeveragePayload,
   buildOkxMarketOrderPayload,
   buildOkxAmendAlgoPayload,
+  OKX_PRIMARY_API_BASE,
+  isTransientOkxRetryable,
   type OkxSwapInstrument,
   type OkxPositionMode,
 } from './src/lib/okx-exchange.ts';
@@ -3079,11 +3081,10 @@ function fromOkxSwapInstId(instId: string): string {
 }
 
 async function fetchOkxPublicJson(pathAndQuery: string, timeoutMs = 4500): Promise<{ ok: boolean; data: any; rttMs: number }> {
-  const endpoints = ['https://www.okx.com', 'https://aws.okx.com'];
-  for (const base of endpoints) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const t0 = Date.now();
-      const res = await fetch(`${base}${pathAndQuery}`, {
+      const res = await fetch(`${OKX_PRIMARY_API_BASE}${pathAndQuery}`, {
         headers: BYBIT_PUBLIC_HEADERS,
         signal: AbortSignal.timeout(timeoutMs),
       });
@@ -3093,9 +3094,17 @@ async function fetchOkxPublicJson(pathAndQuery: string, timeoutMs = 4500): Promi
         if (data && data.code === '0') {
           return { ok: true, data, rttMs };
         }
+        if (!isTransientOkxRetryable({ status: res.status, code: data?.code, msg: data?.msg })) {
+          break;
+        }
+      } else if (!isTransientOkxRetryable({ status: res.status })) {
+        break;
       }
     } catch {
-      // try next mirror
+      // retry once on transient network hiccup
+    }
+    if (attempt === 0) {
+      await new Promise((r) => setTimeout(r, 250));
     }
   }
   return { ok: false, data: null, rttMs: 120 };
@@ -3624,10 +3633,14 @@ async function executeOkxPrivateRequest(params: {
   }
 
   const bodyStr = params.bodyObj ? JSON.stringify(params.bodyObj) : '';
-  const endpoints = ['https://www.okx.com', 'https://aws.okx.com'];
-  const errNotes: string[] = [];
+  const retryDelaysMs = [0, 350, 700];
+  let lastError = 'OKX network error';
+  let lastRttMs = 120;
 
-  for (const baseUrl of endpoints) {
+  for (let attempt = 0; attempt < retryDelaysMs.length; attempt++) {
+    if (retryDelaysMs[attempt] > 0) {
+      await new Promise((r) => setTimeout(r, retryDelaysMs[attempt]));
+    }
     try {
       const headers = buildOkxV5Headers({
         apiKey: process.env.OKX_API_KEY!,
@@ -3641,13 +3654,14 @@ async function executeOkxPrivateRequest(params: {
 
       const t0 = Date.now();
       const { status, json, rawText } = await performHttpsJsonRequest({
-        url: `${baseUrl}${params.requestPath}`,
+        url: `${OKX_PRIMARY_API_BASE}${params.requestPath}`,
         method: params.method,
         headers,
         body: params.method === 'POST' ? bodyStr : undefined,
         timeoutMs: params.timeoutMs || 6500,
       });
       const rttMs = Date.now() - t0;
+      lastRttMs = rttMs;
 
       if (status >= 200 && status < 300 && json && json.code === '0') {
         systemState.pings.okx = Math.min(200, Math.max(10, rttMs));
@@ -3658,19 +3672,33 @@ async function executeOkxPrivateRequest(params: {
       const sMsg = firstItem?.sMsg || json?.msg || (rawText ? rawText.slice(0, 120) : `HTTP ${status}`);
       const sCode = firstItem?.sCode || json?.code || status;
       const detail = `[${sCode}] ${sMsg}`;
-      errNotes.push(`${new URL(baseUrl).hostname}: ${detail}`);
-      // Do not failover on deterministic API rejection (auth/balance/lot/position rejection)
-      if (status < 500 && json?.code) {
+      lastError = detail;
+
+      const retryable = isTransientOkxRetryable({
+        status,
+        code: sCode,
+        msg: sMsg,
+      });
+      if (!retryable) {
         return { attempted: true, ok: false, data: json?.data, retMsg: detail, rttMs };
       }
     } catch (err: any) {
       const code = err?.code || err?.cause?.code || '';
       const msg = err?.cause?.message || err?.message || 'OKX network error';
-      errNotes.push(`${new URL(baseUrl).hostname}: ${code ? `${code} ` : ''}${msg}`);
+      lastError = `${code ? `${code} ` : ''}${msg}`;
+
+      if (!isTransientOkxRetryable({ netCode: code, msg })) {
+        return { attempted: true, ok: false, retMsg: lastError, rttMs: lastRttMs };
+      }
     }
   }
 
-  return { attempted: true, ok: false, retMsg: errNotes.join(' | ') || 'OKX network error', rttMs: 120 };
+  return {
+    attempted: true,
+    ok: false,
+    retMsg: `${lastError} (попыток: ${retryDelaysMs.length})`,
+    rttMs: lastRttMs,
+  };
 }
 
 let okxMissingStreaks: Record<string, number> = {};
