@@ -1,4 +1,4 @@
-import { fromOkxSwapInstId, type OkxPositionMode } from './okx-exchange.ts';
+import { fromOkxSwapInstId, toOkxSwapInstId, type OkxPositionMode } from './okx-exchange.ts';
 
 export interface BotCycleWatchdogState {
   isRunning: boolean;
@@ -203,10 +203,18 @@ export interface OkxReconciliationResult<T extends ReconcileablePosition> {
   activeExchangeKeys: string[];
 }
 
+export interface OkxPositionsHistoryRow {
+  instId: string;
+  uTime?: number | string;
+  closeAvgPx?: number | string;
+}
+
 export function reconcileOkxLivePositions<T extends ReconcileablePosition>(params: {
   activePositions: T[];
   okxOpenPositions: OkxRawPositionItem[];
   okxPosMode: OkxPositionMode;
+  okxPositionsHistory?: OkxPositionsHistoryRow[];
+  unconfirmedMaxAgeMs?: number;
   previousMissingStreaks?: Record<string, number>;
   minConsecutiveMisses?: number;
   gracePeriodMs?: number;
@@ -216,6 +224,8 @@ export function reconcileOkxLivePositions<T extends ReconcileablePosition>(param
     activePositions,
     okxOpenPositions,
     okxPosMode,
+    okxPositionsHistory,
+    unconfirmedMaxAgeMs = 6 * 3600_000,
     previousMissingStreaks = {},
     minConsecutiveMisses = 2,
     gracePeriodMs = 90_000,
@@ -254,6 +264,20 @@ export function reconcileOkxLivePositions<T extends ReconcileablePosition>(param
         syncedMarkPrices[pos.symbol] = liveMatch.markPx;
       }
       continue;
+    }
+
+    if (Array.isArray(okxPositionsHistory)) {
+      const targetInstId = toOkxSwapInstId(pos.symbol);
+      const confirmedClosedInHistory = okxPositionsHistory.some((h) => {
+        if (String(h?.instId || '').toUpperCase() !== targetInstId) return false;
+        const uTime = Number(h?.uTime || 0);
+        if (!Number.isFinite(uTime) || uTime <= 0) return false;
+        return openedAt > 0 ? uTime >= openedAt + 5_000 : true;
+      });
+      const isRecentOrUnconfirmed = openedAt === 0 || nowTs - openedAt < unconfirmedMaxAgeMs;
+      if (!confirmedClosedInHistory && isRecentOrUnconfirmed) {
+        continue;
+      }
     }
 
     const nextStreak = (previousMissingStreaks[pos.id] || 0) + 1;

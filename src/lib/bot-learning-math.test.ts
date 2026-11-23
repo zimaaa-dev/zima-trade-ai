@@ -414,7 +414,8 @@ test('[Variant 3 · Trend-Grid @ne_investor] buildTrendGridPlan and evaluateTren
   assert.ok(plan.safetyOrders[0].triggerPrice < 99.0);
   assert.ok(plan.safetyOrders[1].triggerPrice < plan.safetyOrders[0].triggerPrice);
   assert.ok(plan.catastrophicSlPrice < plan.safetyOrders[1].triggerPrice);
-  assert.ok(plan.initialTpPrice >= 101.7);
+  assert.ok(plan.initialTpPrice >= 103.8, `Expected TP >= 103.8 (+15% ROE at 4x), got ${plan.initialTpPrice}`);
+  assert.ok(plan.tpTargetPct >= 3.8 && plan.tpTargetPct <= 6.25);
 
   // 2. Simulate a -1.4% market-maker wick to $98.60 (which used to stop out 10x positions, but now triggers Safety Order #1!)
   const fill1 = evaluateTrendGridSafetyOrderFill({

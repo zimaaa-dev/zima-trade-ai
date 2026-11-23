@@ -1690,7 +1690,8 @@ export function computeEffectiveGridRiskStopPct(atrPct: number): {
 } {
   const safeAtr = Number.isFinite(atrPct) && atrPct > 0 ? atrPct : 1.35;
   const gridStepPct = Number(clamp(safeAtr * 0.95, 1.15, 1.95).toFixed(2));
-  const tpTargetPct = Number(clamp(gridStepPct * 1.45, 1.70, 2.45).toFixed(2));
+  // Target +15.2%..+23.2% ROE at 4x leverage (+3.80%..+5.80% price move) so winners run cleanly instead of early cuts
+  const tpTargetPct = Number(clamp(gridStepPct * 3.1, 3.80, 5.80).toFixed(2));
   const catastrophicSlPct = Number(clamp(gridStepPct * 3.3, 3.80, 4.80).toFixed(2));
   // Across 40% Base (0x) + 30% SO1 (1.0x step) + 30% SO2 (2.1x step), averaged entry shifts ~0.93 * gridStepPct;
   // therefore remaining distance from averaged entryVwap to catastrophicSl is catastrophicSlPct - 0.90 * gridStepPct.
@@ -1755,7 +1756,7 @@ export function buildTrendGridPlan(params: {
   const { gridStepPct, tpTargetPct: defaultTpTargetPct, catastrophicSlPct } = computeEffectiveGridRiskStopPct(atrPct);
   const tpTargetPct =
     typeof params.tpTargetPct === 'number' && Number.isFinite(params.tpTargetPct)
-      ? Number(clamp(params.tpTargetPct, 1.5, 3.0).toFixed(2))
+      ? Number(clamp(params.tpTargetPct, 3.75, 6.50).toFixed(2))
       : defaultTpTargetPct;
 
   // Split totalPlannedQty into 40% Base + 30% SO1 + 30% SO2 if divisible into >= 3 * minQty;
@@ -1858,7 +1859,7 @@ export function evaluateTrendGridSafetyOrderFill(params: {
     safetyOrders,
     priceDecimals,
     qtyDecimals,
-    tpTargetPct = 1.80,
+    tpTargetPct = 4.50,
     nowTs = Date.now(),
   } = params;
 

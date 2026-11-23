@@ -24,7 +24,7 @@ test('STRATEGY_CATALOG_14 defines 14 distinct strategies with disciplined risk a
 
   for (const s of STRATEGY_CATALOG_14) {
     assert.ok(s.riskPerTradePct >= 0.8 && s.riskPerTradePct <= 1.5, `${s.agentId} risk must stay <= 1.5%`);
-    assert.ok(s.targetTpPct >= 1.8 && s.targetTpPct <= 2.4, `${s.agentId} TP must stay balanced 1.8–2.4%`);
+    assert.ok(s.targetTpPct >= 3.8 && s.targetTpPct <= 6.2, `${s.agentId} TP must target 3.8–6.2% (+15%..+25% ROE at 4x)`);
     assert.ok(s.preferredEvents.length >= 1);
   }
 });
@@ -181,7 +181,7 @@ test('parseAiConductorResponse validates Ollama JSON, strips fences, filters unk
           reason: 'Повышаем порог после стопа на SUI',
           confidenceThresholdDelta: 0.99,
           riskPerTradePct: 0.1,
-          targetTpPct: 2.2,
+          targetTpPct: 4.8,
         },
       ],
     }),
@@ -205,7 +205,7 @@ test('parseAiConductorResponse validates Ollama JSON, strips fences, filters unk
   // Clamped safely inside [ -0.03, 0.03 ] and [ 0.8, 1.6 ]
   assert.equal(parsed.mutations[0].confidenceThresholdDelta, 0.03);
   assert.equal(parsed.mutations[0].riskPerTradePct, 0.8);
-  assert.equal(parsed.mutations[0].targetTpPct, 2.2);
+  assert.equal(parsed.mutations[0].targetTpPct, 4.8);
 });
 
 test('applyDeterministicEvolutionFallback and applyConductorDecisionToAgents update active combo and mutate weak bots', () => {

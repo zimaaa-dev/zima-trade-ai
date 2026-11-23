@@ -145,3 +145,49 @@ test('buildOkxPositionDiff identifies stray exchange-only positions and normaliz
   assert.equal(diff.terminalLiveOkxPositions.find((p) => p.symbol === 'ETHUSDT')?.onExchange, false);
   assert.equal(diff.terminalLiveOkxPositions.find((p) => p.symbol === 'ETHUSDT')?.missingStreak, 1);
 });
+
+test('reconcileOkxLivePositions protects fresh trades from lagging OKX positions snapshot unless close is confirmed in positions-history', () => {
+  const now = 1_795_446_000_000;
+  const activePositions = [
+    // Opened 4 min ago (past 90s grace), missing from lagging OKX /positions, NOT in positions-history -> MUST NOT be dropped
+    { id: 'pos-aave', symbol: 'AAVEUSDT', side: 'LONG' as const, mode: 'LIVE', exchange: 'OKX', openedAt: now - 4 * 60_000 },
+    // Opened 6 min ago, missing from OKX /positions, AND closed in positions-history 2 min ago -> MUST be reconciled
+    { id: 'pos-mu', symbol: 'MUUSDT', side: 'LONG' as const, mode: 'LIVE', exchange: 'OKX', openedAt: now - 6 * 60_000 },
+  ];
+
+  // Prior XRP close happened BEFORE pos-aave opened, so it must NOT trigger anything anyway
+  const okxHistory = [
+    { instId: 'MU-USDT-SWAP', uTime: now - 2 * 60_000, closeAvgPx: 678 },
+    { instId: 'AAVE-USDT-SWAP', uTime: now - 10 * 60_000, closeAvgPx: 101 },
+  ];
+
+  const pass1 = reconcileOkxLivePositions({
+    activePositions,
+    okxOpenPositions: [],
+    okxPosMode: 'net_mode',
+    okxPositionsHistory: okxHistory,
+    previousMissingStreaks: {},
+    minConsecutiveMisses: 2,
+    gracePeriodMs: 90_000,
+    nowTs: now,
+  });
+  assert.equal(pass1.orphanedPositions.length, 0);
+  assert.equal(pass1.updatedStreaks['pos-aave'], undefined);
+  assert.equal(pass1.updatedStreaks['pos-mu'], 1);
+
+  const pass2 = reconcileOkxLivePositions({
+    activePositions,
+    okxOpenPositions: [],
+    okxPosMode: 'net_mode',
+    okxPositionsHistory: okxHistory,
+    previousMissingStreaks: pass1.updatedStreaks,
+    minConsecutiveMisses: 2,
+    gracePeriodMs: 90_000,
+    nowTs: now + 60_000,
+  });
+  assert.deepEqual(
+    pass2.orphanedPositions.map((p) => p.symbol),
+    ['MUUSDT']
+  );
+  assert.equal(pass2.updatedStreaks['pos-aave'], undefined);
+});

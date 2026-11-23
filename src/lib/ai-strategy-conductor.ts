@@ -124,8 +124,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.4,
     leverage: 4,
-    tpSlRatio: 2.3,
-    targetTpPct: 2.0,
+    tpSlRatio: 2.6,
+    targetTpPct: 4.5,
     maxConcurrentPositions: 2,
     confidenceThreshold: 0.2,
     atrMultiplier: 1.4,
@@ -144,8 +144,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.2,
     leverage: 4,
-    tpSlRatio: 2.3,
-    targetTpPct: 2.1,
+    tpSlRatio: 2.7,
+    targetTpPct: 4.8,
     maxConcurrentPositions: 2,
     confidenceThreshold: 0.21,
     atrMultiplier: 1.35,
@@ -164,8 +164,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.4,
     leverage: 4,
-    tpSlRatio: 2.4,
-    targetTpPct: 2.0,
+    tpSlRatio: 2.6,
+    targetTpPct: 4.6,
     maxConcurrentPositions: 2,
     confidenceThreshold: 0.21,
     atrMultiplier: 1.45,
@@ -184,8 +184,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'LONG_ONLY',
     riskPerTradePct: 1.3,
     leverage: 4,
-    tpSlRatio: 2.4,
-    targetTpPct: 2.2,
+    tpSlRatio: 2.6,
+    targetTpPct: 4.8,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.19,
     atrMultiplier: 1.35,
@@ -204,8 +204,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.1,
     leverage: 4,
-    tpSlRatio: 2.2,
-    targetTpPct: 1.9,
+    tpSlRatio: 2.5,
+    targetTpPct: 4.0,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.2,
     atrMultiplier: 1.3,
@@ -224,8 +224,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.2,
     leverage: 4,
-    tpSlRatio: 2.4,
-    targetTpPct: 2.1,
+    tpSlRatio: 2.6,
+    targetTpPct: 4.5,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.19,
     atrMultiplier: 1.4,
@@ -244,8 +244,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'SHORT_ONLY',
     riskPerTradePct: 1.3,
     leverage: 4,
-    tpSlRatio: 2.3,
-    targetTpPct: 2.0,
+    tpSlRatio: 2.6,
+    targetTpPct: 4.6,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.22,
     atrMultiplier: 1.45,
@@ -264,8 +264,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'LONG_ONLY',
     riskPerTradePct: 1.4,
     leverage: 4,
-    tpSlRatio: 2.5,
-    targetTpPct: 2.3,
+    tpSlRatio: 2.8,
+    targetTpPct: 5.5,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.2,
     atrMultiplier: 1.4,
@@ -284,8 +284,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.2,
     leverage: 4,
-    tpSlRatio: 2.2,
-    targetTpPct: 1.9,
+    tpSlRatio: 2.4,
+    targetTpPct: 4.0,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.18,
     atrMultiplier: 1.35,
@@ -304,8 +304,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.0,
     leverage: 3,
-    tpSlRatio: 2.1,
-    targetTpPct: 1.8,
+    tpSlRatio: 2.3,
+    targetTpPct: 3.8,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.21,
     atrMultiplier: 1.3,
@@ -324,8 +324,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.1,
     leverage: 4,
-    tpSlRatio: 2.2,
-    targetTpPct: 1.9,
+    tpSlRatio: 2.5,
+    targetTpPct: 4.2,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.2,
     atrMultiplier: 1.35,
@@ -344,8 +344,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.3,
     leverage: 4,
-    tpSlRatio: 2.4,
-    targetTpPct: 2.2,
+    tpSlRatio: 2.7,
+    targetTpPct: 5.2,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.2,
     atrMultiplier: 1.4,
@@ -364,8 +364,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.3,
     leverage: 4,
-    tpSlRatio: 2.5,
-    targetTpPct: 2.3,
+    tpSlRatio: 2.8,
+    targetTpPct: 5.4,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.21,
     atrMultiplier: 1.4,
@@ -384,8 +384,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.0,
     leverage: 3,
-    tpSlRatio: 2.2,
-    targetTpPct: 1.9,
+    tpSlRatio: 2.4,
+    targetTpPct: 4.0,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.2,
     atrMultiplier: 1.35,
@@ -621,7 +621,7 @@ export function buildAiConductorPrompt(
     `Матрица стратегий: ${JSON.stringify(rows)}`,
     'Правила ответа:',
     '1) Ответь ТОЛЬКО валидным JSON объектом без markdown-обёртки.',
-    '2) Формат JSON: {"summary":"краткий вывод на русском (2-3 предложения)","activeComboIds":["id1","id2","id3","id4"],"mutations":[{"agentId":"id","reason":"причина","confidenceThresholdDelta":0.01,"riskPerTradePct":1.2,"targetTpPct":2.1}]}',
+    '2) Формат JSON: {"summary":"краткий вывод на русском (2-3 предложения)","activeComboIds":["id1","id2","id3","id4"],"mutations":[{"agentId":"id","reason":"причина","confidenceThresholdDelta":0.01,"riskPerTradePct":1.2,"targetTpPct":4.8}]}',
     '3) В activeComboIds обязательно включи от 3 до 5 реально существующих agentId из списка выше (минимум 3, никогда не меньше 3!), соответствующих событию primaryEvent.',
   ].join('\n');
 }
@@ -695,7 +695,7 @@ export function parseAiConductorResponse(
                 : undefined,
             targetTpPct:
               typeof m.targetTpPct === 'number'
-                ? Number(clampNum(m.targetTpPct, 1.7, 2.6).toFixed(2))
+                ? Number(clampNum(m.targetTpPct, 3.8, 6.2).toFixed(2))
                 : undefined,
             atrMultiplier:
               typeof m.atrMultiplier === 'number'
@@ -773,13 +773,13 @@ export function applyDeterministicEvolutionFallback(
         reason: `Просадка (${s.realizedPnlUsdt.toFixed(2)} USDT, WR ${s.winRatePct.toFixed(0)}%): повышаем порог входа, снижаем риск и поджимаем TP.`,
         confidenceThresholdDelta: 0.02,
         riskPerTradePct: Number(clampNum(s.riskPerTradePct - 0.15, 0.9, 1.5).toFixed(2)),
-        targetTpPct: Number(clampNum(s.targetTpPct + 0.1, 1.8, 2.5).toFixed(2)),
+        targetTpPct: Number(clampNum(s.targetTpPct + 0.15, 3.8, 6.0).toFixed(2)),
       });
     } else if (s.tradesCount >= 2 && s.realizedPnlUsdt > 0.5 && s.winRatePct >= 65) {
       mutations.push({
         agentId: s.agentId,
         reason: `Лидер по результату (+${s.realizedPnlUsdt.toFixed(2)} USDT, WR ${s.winRatePct.toFixed(0)}%): закрепляем оптимальный R:R.`,
-        targetTpPct: Number(clampNum(s.targetTpPct + 0.05, 1.8, 2.5).toFixed(2)),
+        targetTpPct: Number(clampNum(s.targetTpPct + 0.1, 3.8, 6.0).toFixed(2)),
       });
     }
     if (mutations.length >= 3) break;
@@ -841,8 +841,8 @@ export function applyConductorDecisionToAgents<
         agent.riskPerTradePct = Number(clampNum(mut.riskPerTradePct, 0.8, 1.6).toFixed(2));
       }
       if (typeof mut.targetTpPct === 'number') {
-        agent.targetTpPct = Number(clampNum(mut.targetTpPct, 1.7, 2.6).toFixed(2));
-        agent.tpSlRatio = Number(clampNum((agent.targetTpPct / 0.85), 1.8, 3.0).toFixed(1));
+        agent.targetTpPct = Number(clampNum(mut.targetTpPct, 3.8, 6.2).toFixed(2));
+        agent.tpSlRatio = Number(clampNum((agent.targetTpPct / 1.75), 2.0, 3.2).toFixed(1));
       }
       if (typeof mut.atrMultiplier === 'number') {
         agent.brain.atrMultiplier = Number(clampNum(mut.atrMultiplier, 1.2, 1.85).toFixed(2));
