@@ -3,6 +3,7 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import https from 'https';
 import os from 'os';
 import dns from 'dns';
 import dotenv from 'dotenv';
@@ -3550,6 +3551,63 @@ function areOkxKeysConfigured(): boolean {
   );
 }
 
+function performHttpsJsonRequest(params: {
+  url: string;
+  method: 'GET' | 'POST';
+  headers: Record<string, string>;
+  body?: string;
+  timeoutMs: number;
+}): Promise<{ status: number; json: any; rawText: string }> {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(params.url);
+    const reqHeaders: Record<string, string> = {
+      'User-Agent': 'ZimaTrade/1.0',
+      Connection: 'close',
+      ...params.headers,
+    };
+    if (params.method === 'POST' && params.body !== undefined) {
+      reqHeaders['Content-Length'] = String(Buffer.byteLength(params.body, 'utf8'));
+    }
+
+    const req = https.request(
+      {
+        protocol: parsedUrl.protocol,
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port ? Number(parsedUrl.port) : 443,
+        path: `${parsedUrl.pathname}${parsedUrl.search}`,
+        method: params.method,
+        headers: reqHeaders,
+        family: 4,
+        agent: false,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        res.on('end', () => {
+          const rawText = Buffer.concat(chunks).toString('utf8');
+          let json: any = null;
+          try {
+            json = rawText ? JSON.parse(rawText) : null;
+          } catch {
+            json = null;
+          }
+          resolve({ status: res.statusCode || 0, json, rawText });
+        });
+      }
+    );
+
+    req.setTimeout(params.timeoutMs, () => {
+      req.destroy(Object.assign(new Error(`HTTPS timeout (${params.timeoutMs}ms)`), { code: 'ETIMEDOUT' }));
+    });
+    req.on('error', (err) => reject(err));
+
+    if (params.method === 'POST' && params.body) {
+      req.write(params.body, 'utf8');
+    }
+    req.end();
+  });
+}
+
 async function executeOkxPrivateRequest(params: {
   method: 'GET' | 'POST';
   requestPath: string;
@@ -3567,7 +3625,7 @@ async function executeOkxPrivateRequest(params: {
 
   const bodyStr = params.bodyObj ? JSON.stringify(params.bodyObj) : '';
   const endpoints = ['https://www.okx.com', 'https://aws.okx.com'];
-  let lastError = 'OKX network error';
+  const errNotes: string[] = [];
 
   for (const baseUrl of endpoints) {
     try {
@@ -3582,34 +3640,37 @@ async function executeOkxPrivateRequest(params: {
       });
 
       const t0 = Date.now();
-      const res = await fetch(`${baseUrl}${params.requestPath}`, {
+      const { status, json, rawText } = await performHttpsJsonRequest({
+        url: `${baseUrl}${params.requestPath}`,
         method: params.method,
         headers,
         body: params.method === 'POST' ? bodyStr : undefined,
-        signal: AbortSignal.timeout(params.timeoutMs || 6000),
+        timeoutMs: params.timeoutMs || 6500,
       });
       const rttMs = Date.now() - t0;
-      const json = await res.json().catch(() => null);
 
-      if (res.ok && json && json.code === '0') {
+      if (status >= 200 && status < 300 && json && json.code === '0') {
         systemState.pings.okx = Math.min(200, Math.max(10, rttMs));
         return { attempted: true, ok: true, data: json.data, retMsg: json.msg || 'OK', rttMs };
       }
 
       const firstItem = Array.isArray(json?.data) ? json.data[0] : null;
-      const sMsg = firstItem?.sMsg || json?.msg || `HTTP ${res.status}`;
-      const sCode = firstItem?.sCode || json?.code || res.status;
-      lastError = `[${sCode}] ${sMsg}`;
-      // Do not failover on deterministic API rejection (auth/balance/lot rejection)
-      if (res.status < 500 && json?.code) {
-        return { attempted: true, ok: false, data: json?.data, retMsg: lastError, rttMs };
+      const sMsg = firstItem?.sMsg || json?.msg || (rawText ? rawText.slice(0, 120) : `HTTP ${status}`);
+      const sCode = firstItem?.sCode || json?.code || status;
+      const detail = `[${sCode}] ${sMsg}`;
+      errNotes.push(`${new URL(baseUrl).hostname}: ${detail}`);
+      // Do not failover on deterministic API rejection (auth/balance/lot/position rejection)
+      if (status < 500 && json?.code) {
+        return { attempted: true, ok: false, data: json?.data, retMsg: detail, rttMs };
       }
     } catch (err: any) {
-      lastError = err.message || 'OKX timeout';
+      const code = err?.code || err?.cause?.code || '';
+      const msg = err?.cause?.message || err?.message || 'OKX network error';
+      errNotes.push(`${new URL(baseUrl).hostname}: ${code ? `${code} ` : ''}${msg}`);
     }
   }
 
-  return { attempted: true, ok: false, retMsg: lastError, rttMs: 120 };
+  return { attempted: true, ok: false, retMsg: errNotes.join(' | ') || 'OKX network error', rttMs: 120 };
 }
 
 let okxMissingStreaks: Record<string, number> = {};
