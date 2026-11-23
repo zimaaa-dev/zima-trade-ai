@@ -344,3 +344,60 @@ test('resolveCorrelationCapBySlots and evaluateStalePositionExit prevent multi-d
   assert.equal(freshTrade.shouldExit, false);
 });
 
+test('parseAiConductorResponse guarantees at least 3 strategies when LLM returns only 2', () => {
+  const snapshot: MarketSnapshotForAi = {
+    regimeLabel: 'Бычий тренд',
+    primaryEvent: 'BULL_EXPANSION',
+    secondaryEvents: [],
+    eventLabelRu: 'Устойчивый бычий тренд / альт-ралли',
+    btcPrice: 68500,
+    btcChange24hPct: 2.1,
+    btcEmaTrendBps: 9.0,
+    btcVwapDevPct: 0.45,
+    marketBreadthPct: 68,
+    avgAtrPct: 4.5,
+    maxCrowdSharePct: 74,
+    crowdedSymbols: [],
+    isMacroBlocked: false,
+    isNightSession: false,
+    openPositionsCount: 4,
+    workingCapitalUsdt: 300,
+  };
+
+  const perfList: StrategyPerformanceInput[] = STRATEGY_CATALOG_14.map((s) => ({
+    agentId: s.agentId,
+    name: s.name,
+    strategyFamily: s.strategyFamily,
+    preferredEvents: s.preferredEvents,
+    directionBias: s.directionBias,
+    isEnabled: s.defaultEnabled,
+    tradesCount: 0,
+    winRatePct: 0,
+    profitFactor: 1.5,
+    realizedPnlUsdt: 0,
+    riskPerTradePct: s.riskPerTradePct,
+    targetTpPct: s.targetTpPct,
+    confidenceThreshold: s.confidenceThreshold,
+    atrMultiplier: s.atrMultiplier,
+    weights: s.weights,
+  }));
+
+  const twoOnlyJson = JSON.stringify({
+    summary: 'Выбраны две трендовые стратегии.',
+    activeComboIds: ['strat-bull-breakout-pro', 'strat-alt-rotation-alpha'],
+    mutations: [],
+  });
+
+  const parsed = parseAiConductorResponse(twoOnlyJson, perfList, snapshot, {
+    modelUsed: 'GigaChat-2:2.0.28.2',
+    latencyMs: 1650,
+    source: 'GIGACHAT_AI',
+  });
+  assert.ok(parsed);
+  assert.equal(parsed.activeComboIds.length, 3);
+  assert.equal(parsed.activeComboIds[0], 'strat-bull-breakout-pro');
+  assert.equal(parsed.activeComboIds[1], 'strat-alt-rotation-alpha');
+  assert.equal(new Set(parsed.activeComboIds).size, 3);
+});
+
+

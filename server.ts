@@ -279,6 +279,13 @@ import {
   normalizeGigaChatAuthKey,
   gigaChatTokenCache,
 } from './src/lib/direct-ru-llm.ts';
+import {
+  createBotCycleWatchdogState,
+  acquireBotCycleLock,
+  releaseBotCycleLock,
+  runWithHardTimeout,
+  reconcileOkxLivePositions,
+} from './src/lib/bot-engine-resilience.ts';
 
 // Ollama Cloud Multi-Key Rotation & Model Orchestrator
 const initialOllamaKeys = [
@@ -3313,62 +3320,65 @@ async function measureRealExchangePings(force = false): Promise<void> {
   if (!force && now - lastExchangePingProbeTs < 15000) return;
   lastExchangePingProbeTs = now;
 
-  // 1. Bybit V5 Public Time + Clock Sync
-  try {
-    const t0 = Date.now();
-    const res = await fetch('https://api.bybit.com/v5/market/time', {
-      signal: AbortSignal.timeout(3500),
-    });
-    const rtt = Date.now() - t0;
-    if (res.ok) {
-      systemState.pings.bybit = Math.max(8, Math.min(250, rtt));
-      const data = await res.json().catch(() => null);
-      const serverNano = data?.result?.timeNano;
-      const serverSec = data?.result?.timeSecond;
-      const localNow = Date.now();
-      const serverMs = serverNano
-        ? Math.round(Number(serverNano) / 1e6)
-        : serverSec
-        ? Number(serverSec) * 1000
-        : localNow;
-      lastBybitClockSync = {
-        bybitServerTime: serverMs,
-        localTime: localNow,
-        driftDeltaMs: Math.round(localNow - serverMs),
-        lastSyncedAt: localNow,
-      };
-    }
-  } catch (_e) {
-    // keep previous measured ping
-  }
-
-  // 2. OKX V5 Public Time
-  try {
-    const t0 = Date.now();
-    const res = await fetch('https://www.okx.com/api/v5/public/time', {
-      signal: AbortSignal.timeout(3500),
-    });
-    const rtt = Date.now() - t0;
-    if (res.ok) {
-      systemState.pings.okx = Math.max(10, Math.min(300, rtt));
-    }
-  } catch (_e) {
-    // keep previous measured ping
-  }
-
-  // 3. MEXC V3 Public Time
-  try {
-    const t0 = Date.now();
-    const res = await fetch('https://api.mexc.com/api/v3/time', {
-      signal: AbortSignal.timeout(3500),
-    });
-    const rtt = Date.now() - t0;
-    if (res.ok) {
-      systemState.pings.mexc = Math.max(10, Math.min(300, rtt));
-    }
-  } catch (_e) {
-    // keep previous measured ping
-  }
+  await Promise.allSettled([
+    (async () => {
+      try {
+        const t0 = Date.now();
+        const res = await fetch('https://api.bybit.com/v5/market/time', {
+          signal: AbortSignal.timeout(3500),
+        });
+        const rtt = Date.now() - t0;
+        if (res.ok) {
+          systemState.pings.bybit = Math.max(8, Math.min(250, rtt));
+          const data = await res.json().catch(() => null);
+          const serverNano = data?.result?.timeNano;
+          const serverSec = data?.result?.timeSecond;
+          const localNow = Date.now();
+          const serverMs = serverNano
+            ? Math.round(Number(serverNano) / 1e6)
+            : serverSec
+            ? Number(serverSec) * 1000
+            : localNow;
+          lastBybitClockSync = {
+            bybitServerTime: serverMs,
+            localTime: localNow,
+            driftDeltaMs: Math.round(localNow - serverMs),
+            lastSyncedAt: localNow,
+          };
+        }
+      } catch {
+        // keep previous measured ping
+      }
+    })(),
+    (async () => {
+      try {
+        const t0 = Date.now();
+        const res = await fetch('https://www.okx.com/api/v5/public/time', {
+          signal: AbortSignal.timeout(3500),
+        });
+        const rtt = Date.now() - t0;
+        if (res.ok) {
+          systemState.pings.okx = Math.max(10, Math.min(300, rtt));
+        }
+      } catch {
+        // keep previous measured ping
+      }
+    })(),
+    (async () => {
+      try {
+        const t0 = Date.now();
+        const res = await fetch('https://api.mexc.com/api/v3/time', {
+          signal: AbortSignal.timeout(3500),
+        });
+        const rtt = Date.now() - t0;
+        if (res.ok) {
+          systemState.pings.mexc = Math.max(10, Math.min(300, rtt));
+        }
+      } catch {
+        // keep previous measured ping
+      }
+    })(),
+  ]);
 }
 
 // Calibrate initial seed positions & limit orders on boot so legacy prices don't trigger fake PnL jumps
@@ -3584,13 +3594,16 @@ async function executeOkxPrivateRequest(params: {
   return { attempted: true, ok: false, retMsg: lastError, rttMs: 120 };
 }
 
-async function syncOkxAccountState(): Promise<{
+let okxMissingStreaks: Record<string, number> = {};
+
+async function syncOkxAccountState(options?: { forceReconcile?: boolean }): Promise<{
   ok: boolean;
   equityUsdt?: number;
   availUsdt?: number;
   posMode?: OkxPositionMode;
   acctLv?: string;
   positionsCount?: number;
+  reconciledCount?: number;
   retMsg: string;
   rttMs?: number;
 }> {
@@ -3633,6 +3646,82 @@ async function syncOkxAccountState(): Promise<{
   systemState.okxAvailableBalanceUsdt = Number(availUsdt.toFixed(2));
   systemState.okxLastSyncedAt = Date.now();
 
+  let reconciledCount = 0;
+  if (
+    posRes.ok &&
+    Array.isArray(posRes.data) &&
+    systemState.mode === 'LIVE' &&
+    systemState.activeExchange === 'OKX'
+  ) {
+    const rec = reconcileOkxLivePositions({
+      activePositions: systemState.activePositions,
+      okxOpenPositions,
+      okxPosMode: systemState.okxPosMode || 'net_mode',
+      previousMissingStreaks: okxMissingStreaks,
+      minConsecutiveMisses: options?.forceReconcile ? 1 : 2,
+      gracePeriodMs: 90_000,
+    });
+    okxMissingStreaks = rec.updatedStreaks;
+
+    // Sync mark prices onto live open positions when available
+    for (const p of systemState.activePositions) {
+      const liveMark = rec.syncedMarkPrices[p.symbol];
+      if (liveMark && liveMark > 0) {
+        p.currentPrice = liveMark;
+        const dirSign = p.side === 'LONG' ? 1 : -1;
+        p.unrealizedPnl = Number(((liveMark - p.entryVwap) * dirSign * p.qty).toFixed(2));
+      }
+    }
+
+    if (rec.orphanedPositions.length > 0) {
+      const histRes = await executeOkxPrivateRequest({
+        method: 'GET',
+        requestPath: '/api/v5/account/positions-history?instType=SWAP&limit=20',
+      }).catch(() => ({ ok: false, data: null }));
+      const histItems: any[] = histRes.ok && Array.isArray(histRes.data) ? histRes.data : [];
+
+      for (const orphan of rec.orphanedPositions) {
+        const idx = systemState.activePositions.findIndex((p) => p.id === orphan.id);
+        if (idx === -1) continue;
+        const removed = systemState.activePositions.splice(idx, 1)[0];
+
+        const okxInstId = toOkxSwapInstId(removed.symbol);
+        const histMatch = histItems.find((h: any) => {
+          if (String(h?.instId || '').toUpperCase() !== okxInstId) return false;
+          const uTime = Number(h?.uTime || 0);
+          return !removed.openedAt || uTime === 0 || uTime >= removed.openedAt - 60_000;
+        });
+        const histClosePx = parseFloat(String(histMatch?.closeAvgPx || '0'));
+        const exitPrice =
+          Number.isFinite(histClosePx) && histClosePx > 0
+            ? histClosePx
+            : Number(removed.currentPrice) || Number(removed.entryVwap);
+
+        const dirSign = removed.side === 'LONG' ? 1 : -1;
+        const estPnl = (exitPrice - removed.entryVwap) * dirSign;
+        const exitReason: 'TP_HIT' | 'SL_HIT' = estPnl >= 0 ? 'TP_HIT' : 'SL_HIT';
+        const tradeRecord = recordClosedPosition(removed, exitPrice, exitReason);
+        reconciledCount += 1;
+
+        addBotLog({
+          botId: removed.botId || 'system',
+          botName: removed.botName || 'Синхронизация OKX',
+          action: exitReason,
+          symbol: removed.symbol,
+          side: removed.side,
+          price: exitPrice,
+          pnl: tradeRecord.netPnlUsdt,
+          message: `Авто-сверка OKX: позиция ${removed.side} ${removed.symbol} уже закрыта на бирже (выход $${exitPrice}). Фантомный слот освобождён, итог: ${tradeRecord.netPnlUsdt >= 0 ? '+' : ''}$${tradeRecord.netPnlUsdt.toFixed(2)} USDT.`,
+          rttMs: balRes.rttMs || systemState.pings.okx,
+        });
+      }
+
+      if (reconciledCount > 0) {
+        savePersistedState();
+      }
+    }
+  }
+
   if (systemState.mode === 'LIVE' && systemState.activeExchange === 'OKX' && equityUsdt > 0 && systemState.okxAccountLevel !== '1') {
     systemState.capitalUsdt = computeWorkingCapitalUsdt({
       mode: systemState.mode,
@@ -3650,6 +3739,7 @@ async function syncOkxAccountState(): Promise<{
     posMode: systemState.okxPosMode,
     acctLv: systemState.okxAccountLevel,
     positionsCount: okxOpenPositions.length,
+    reconciledCount,
     retMsg: 'OK',
     rttMs: balRes.rttMs,
   };
@@ -4877,8 +4967,10 @@ app.post('/api/orders/execute', async (req: Request, res: Response) => {
 // Freqtrade-style Symbol Cooldown & StoplossGuard Map (prevents whipsaw/revenge re-entry after SL)
 const symbolCooldowns: Record<string, SymbolCooldownEntry> = {};
 
-// Mutex lock preventing overlapping concurrent executions of runBotEngineCycle
-let isBotCycleRunning = false;
+// Watchdog mutex lock preventing hanging async calls from permanently freezing runBotEngineCycle
+const botCycleWatchdog = createBotCycleWatchdogState();
+const newsScanWatchdog = createBotCycleWatchdogState();
+let lastWatchdogRecoveryLogTs = 0;
 
 // Helper to record a closed position into closedTrades, walletLedger, and trigger Online RL Brain Adaptation
 function recordClosedPosition(
@@ -5210,12 +5302,27 @@ async function runBotEngineCycle() {
   if (!systemState.botTradingEnabled || systemState.isKillSwitchActive) {
     return;
   }
-  if (isBotCycleRunning) {
+  const lock = acquireBotCycleLock(botCycleWatchdog, Date.now(), 30_000);
+  if (!lock.acquired) {
     return;
   }
-  isBotCycleRunning = true;
+  if (lock.staleRecovered && Date.now() - lastWatchdogRecoveryLogTs > 30_000) {
+    lastWatchdogRecoveryLogTs = Date.now();
+    addBotLog({
+      botId: 'system',
+      botName: 'Watchdog Ядра',
+      action: 'RISK_GUARD',
+      symbol: 'ENGINE',
+      message: `Авто-восстановление цикла ботов после подвисания (${Math.round(lock.staleDurationMs / 1000)}с > 30с). Торговый движок перезапущен.`,
+      rttMs: systemState.pings.okx || systemState.pings.bybit,
+    });
+  }
+  const cycleRunId = lock.runId;
+  let timedOutOrFailed = false;
 
   try {
+    await runWithHardTimeout(async () => {
+      if (botCycleWatchdog.activeRunId !== cycleRunId) return;
     // 1. Fetch real Bybit tickers for live prices
     const tickers = await fetchRealBybitTickers();
     const priceMap: Record<string, number> = {};
@@ -6431,19 +6538,14 @@ async function runBotEngineCycle() {
       }
     }
 
-    // Periodically auto-scan connected Telegram & News channels so the live news feed stays fresh
-    if (Date.now() - lastAutoNewsScanTs > 18000) {
-      lastAutoNewsScanTs = Date.now();
-      await scanActiveNewsChannelOnce(false).catch(() => {});
-    }
-
     // Measure real exchange network RTT latency (Bybit / OKX / MEXC)
     await measureRealExchangePings(false);
-
-  } catch (err) {
-    console.warn('Bot engine cycle error:', err);
+    }, 26_000, 'BOT_ENGINE_CYCLE');
+  } catch (err: any) {
+    timedOutOrFailed = true;
+    console.warn('Bot engine cycle error:', err?.message || err);
   } finally {
-    isBotCycleRunning = false;
+    releaseBotCycleLock(botCycleWatchdog, cycleRunId, Date.now(), { timedOutOrFailed });
   }
 }
 
@@ -9399,7 +9501,7 @@ app.get('/api/config/test-connection', async (req: Request, res: Response) => {
       });
       return;
     }
-    const sync = await syncOkxAccountState();
+    const sync = await syncOkxAccountState({ forceReconcile: true });
     const envName = systemState.okxDemoTrading !== false ? 'OKX Demo Trading (x-simulated-trading: 1)' : 'OKX Live Real Account';
     if (sync.ok && sync.acctLv === '1') {
       savePersistedState(true);
@@ -11745,7 +11847,7 @@ async function startServer() {
     // Load live OKX SWAP contract specs & sync private OKX account state if keys are configured
     refreshOkxSwapInstrumentsCache(true).catch(() => {});
     if (areOkxKeysConfigured()) {
-      syncOkxAccountState().catch(() => {});
+      syncOkxAccountState({ forceReconcile: true }).catch(() => {});
     }
     setInterval(() => {
       if (areOkxKeysConfigured() && (systemState.activeExchange === 'OKX' || systemState.mode === 'LIVE')) {
@@ -11787,7 +11889,22 @@ async function startServer() {
     // Immediately scrape all active Telegram channels (@ne_investor, etc.) on boot
     scanAllActiveTelegramChannels().catch(() => {});
 
-    // Start background Autonomous Bot Trading Engine (optimized 6000ms cycle)
+    // Independent News & Telegram channel scraper loop (decoupled from runBotEngineCycle with its own 25s watchdog)
+    setInterval(async () => {
+      const nLock = acquireBotCycleLock(newsScanWatchdog, Date.now(), 25_000);
+      if (!nLock.acquired) return;
+      let newsFailed = false;
+      try {
+        lastAutoNewsScanTs = Date.now();
+        await runWithHardTimeout(() => scanActiveNewsChannelOnce(false), 20_000, 'NEWS_CHANNEL_SCAN');
+      } catch {
+        newsFailed = true;
+      } finally {
+        releaseBotCycleLock(newsScanWatchdog, nLock.runId, Date.now(), { timedOutOrFailed: newsFailed });
+      }
+    }, 20_000);
+
+    // Start background Autonomous Bot Trading Engine (optimized cycle with watchdog lock)
     setInterval(() => {
       if (systemState.botTradingEnabled && !systemState.isKillSwitchActive) {
         runBotEngineCycle().catch((err) => console.warn('Bot engine error:', err));

@@ -622,7 +622,7 @@ export function buildAiConductorPrompt(
     'Правила ответа:',
     '1) Ответь ТОЛЬКО валидным JSON объектом без markdown-обёртки.',
     '2) Формат JSON: {"summary":"краткий вывод на русском (2-3 предложения)","activeComboIds":["id1","id2","id3","id4"],"mutations":[{"agentId":"id","reason":"причина","confidenceThresholdDelta":0.01,"riskPerTradePct":1.2,"targetTpPct":2.1}]}',
-    '3) В activeComboIds включи от 3 до 5 реально существующих agentId из списка выше, соответствующих событию primaryEvent.',
+    '3) В activeComboIds обязательно включи от 3 до 5 реально существующих agentId из списка выше (минимум 3, никогда не меньше 3!), соответствующих событию primaryEvent.',
   ].join('\n');
 }
 
@@ -665,6 +665,17 @@ export function parseAiConductorResponse(
 
     if (comboIds.length < 2) {
       return null;
+    }
+
+    const minComboTarget = Math.min(3, strategies.length);
+    if (comboIds.length < minComboTarget) {
+      const ranked = rankStrategiesForSnapshot(snapshot, strategies);
+      for (const candidate of ranked) {
+        if (comboIds.length >= minComboTarget) break;
+        if (!comboIds.includes(candidate.agentId)) {
+          comboIds.push(candidate.agentId);
+        }
+      }
     }
 
     const mutations: StrategyMutationAction[] = Array.isArray(parsed.mutations)
@@ -714,12 +725,11 @@ export function parseAiConductorResponse(
   }
 }
 
-export function applyDeterministicEvolutionFallback(
+export function rankStrategiesForSnapshot(
   snapshot: MarketSnapshotForAi,
-  strategies: StrategyPerformanceInput[],
-  meta?: { modelUsed?: string; latencyMs?: number; nowTs?: number }
-): AiConductorDecision {
-  const ranked = [...strategies].sort((a, b) => {
+  strategies: StrategyPerformanceInput[]
+): StrategyPerformanceInput[] {
+  return [...strategies].sort((a, b) => {
     const aEventMatch = (a.preferredEvents || []).includes(snapshot.primaryEvent) ? 2.5 : 0;
     const bEventMatch = (b.preferredEvents || []).includes(snapshot.primaryEvent) ? 2.5 : 0;
     const aSecMatch = (a.preferredEvents || []).some((e) => snapshot.secondaryEvents.includes(e)) ? 0.8 : 0;
@@ -738,6 +748,14 @@ export function applyDeterministicEvolutionFallback(
     const bPerf = b.tradesCount > 0 ? b.profitFactor * 0.6 + b.realizedPnlUsdt * 0.3 : 0.7;
     return bEventMatch + bSecMatch + bBiasScore + bPerf - (aEventMatch + aSecMatch + aBiasScore + aPerf);
   });
+}
+
+export function applyDeterministicEvolutionFallback(
+  snapshot: MarketSnapshotForAi,
+  strategies: StrategyPerformanceInput[],
+  meta?: { modelUsed?: string; latencyMs?: number; nowTs?: number }
+): AiConductorDecision {
+  const ranked = rankStrategiesForSnapshot(snapshot, strategies);
 
   const activeComboIds = ranked.slice(0, 4).map((s) => s.agentId);
 
