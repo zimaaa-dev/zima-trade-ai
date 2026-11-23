@@ -8,6 +8,7 @@ import {
   reconcileOkxLivePositions,
   normalizeOkxOpenPositions,
   buildOkxPositionDiff,
+  mergeTerminalAndOkxPositionsSummary,
 } from './bot-engine-resilience.ts';
 
 test('bot cycle watchdog lock recovers stale stuck lock without letting old run clear new run', () => {
@@ -191,3 +192,31 @@ test('reconcileOkxLivePositions protects fresh trades from lagging OKX positions
   );
   assert.equal(pass2.updatedStreaks['pos-aave'], undefined);
 });
+
+test('mergeTerminalAndOkxPositionsSummary includes stray OKX positions in totals, symbols, and PnL', () => {
+  const okxOpen = normalizeOkxOpenPositions(
+    [
+      { instId: 'ADA-USDT-SWAP', pos: '11.8', posSide: 'net', avgPx: '0.152', markPx: '0.149', upl: '-3.06', lever: '4' },
+      { instId: 'DOT-USDT-SWAP', pos: '83', posSide: 'net', avgPx: '0.712', markPx: '0.686', upl: '-2.16', lever: '4' },
+      { instId: 'BTC-USDT-SWAP', pos: '0.09', posSide: 'net', avgPx: '63341', markPx: '61464', upl: '-1.69', lever: '4' },
+    ],
+    'net_mode'
+  );
+
+  const merged = mergeTerminalAndOkxPositionsSummary({
+    activePositions: [{ symbol: 'ADAUSDT', side: 'LONG', unrealizedPnl: -3.06, mode: 'LIVE', exchange: 'OKX' }],
+    okxCachedOpenPositions: okxOpen,
+    includeOkxExchange: true,
+  });
+
+  assert.equal(merged.terminalCount, 1);
+  assert.equal(merged.exchangeStrayCount, 2);
+  assert.equal(merged.totalLiveCount, 3);
+  assert.equal(merged.correlationPositions.length, 3);
+  assert.equal(merged.openSymbolsSet.has('DOTUSDT'), true);
+  assert.equal(merged.openSymbolsSet.has('BTCUSDT'), true);
+  assert.equal(merged.terminalFloatingPnlUsdt, -3.06);
+  assert.equal(merged.strayFloatingPnlUsdt, -3.85);
+  assert.equal(merged.totalFloatingPnlUsdt, -6.91);
+});
+

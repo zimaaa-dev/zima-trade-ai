@@ -353,3 +353,83 @@ export function buildOkxPositionDiff<T extends ReconcileablePosition>(params: {
     terminalLiveOkxPositions,
   };
 }
+
+export interface MergedPositionsSummary {
+  correlationPositions: Array<{ symbol: string; side: 'LONG' | 'SHORT' }>;
+  openSymbolsSet: Set<string>;
+  strayOkxPositions: NormalizedOkxOpenPosition[];
+  terminalCount: number;
+  exchangeStrayCount: number;
+  totalLiveCount: number;
+  terminalFloatingPnlUsdt: number;
+  strayFloatingPnlUsdt: number;
+  totalFloatingPnlUsdt: number;
+}
+
+/**
+ * Unifies terminal-tracked positions with live OKX exchange positions so:
+ * - Risk Firewall / Correlation Cap never ignores exchange-only (stray) positions
+ * - OKX net_mode duplicate entries on already-open symbols are strictly prevented
+ * - Telegram status & position commands report the true exchange count instead of hiding stray positions
+ */
+export function mergeTerminalAndOkxPositionsSummary(params: {
+  activePositions: Array<{
+    symbol: string;
+    side: 'LONG' | 'SHORT';
+    unrealizedPnl?: number;
+    mode?: string;
+    exchange?: string;
+  }>;
+  okxCachedOpenPositions?: NormalizedOkxOpenPosition[];
+  includeOkxExchange?: boolean;
+}): MergedPositionsSummary {
+  const { activePositions, okxCachedOpenPositions = [], includeOkxExchange = true } = params;
+  const seenKeys = new Set<string>();
+  const openSymbolsSet = new Set<string>();
+  const correlationPositions: Array<{ symbol: string; side: 'LONG' | 'SHORT' }> = [];
+
+  let terminalFloatingPnlUsdt = 0;
+  for (const p of activePositions) {
+    const sym = String(p.symbol || '').toUpperCase();
+    const side = p.side === 'SHORT' ? 'SHORT' : 'LONG';
+    const key = `${sym}:${side}`;
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      correlationPositions.push({ symbol: sym, side });
+    }
+    openSymbolsSet.add(sym);
+    terminalFloatingPnlUsdt += Number(p.unrealizedPnl) || 0;
+  }
+
+  const strayOkxPositions: NormalizedOkxOpenPosition[] = [];
+  let strayFloatingPnlUsdt = 0;
+  if (includeOkxExchange && Array.isArray(okxCachedOpenPositions)) {
+    for (const ox of okxCachedOpenPositions) {
+      const sym = String(ox.symbol || '').toUpperCase();
+      const side = ox.side === 'SHORT' ? 'SHORT' : 'LONG';
+      const key = `${sym}:${side}`;
+      openSymbolsSet.add(sym);
+      if (!seenKeys.has(key)) {
+        seenKeys.add(key);
+        correlationPositions.push({ symbol: sym, side });
+        strayOkxPositions.push(ox);
+        strayFloatingPnlUsdt += Number(ox.uplUsdt) || 0;
+      }
+    }
+  }
+
+  const terminalRounded = Number(terminalFloatingPnlUsdt.toFixed(2));
+  const strayRounded = Number(strayFloatingPnlUsdt.toFixed(2));
+  return {
+    correlationPositions,
+    openSymbolsSet,
+    strayOkxPositions,
+    terminalCount: activePositions.length,
+    exchangeStrayCount: strayOkxPositions.length,
+    totalLiveCount: activePositions.length + strayOkxPositions.length,
+    terminalFloatingPnlUsdt: terminalRounded,
+    strayFloatingPnlUsdt: strayRounded,
+    totalFloatingPnlUsdt: Number((terminalRounded + strayRounded).toFixed(2)),
+  };
+}
+

@@ -421,13 +421,19 @@ export function detectActiveMarketEvents(input: {
   if (input.maxCrowdSharePct >= 75) secondary.push('CROWD_EUPHORIA_COUNTER');
 
   const isBtcBouncingUp = input.btcEmaTrendBps >= 3.5 && input.btcVwapDevPct >= 0.25;
+  const isBtcRollingOver = input.btcEmaTrendBps <= -3.0 && input.btcVwapDevPct <= -0.25;
 
   let primaryEvent: MarketEventKey = 'LOW_VOL_RANGE';
   if (input.isMacroBlocked) {
     primaryEvent = 'MACRO_DEFENSE';
+  } else if (isBtcRollingOver) {
+    primaryEvent =
+      input.marketBreadthPct <= 52 || input.btcEmaTrendBps <= -6.0
+        ? 'MARKET_FLUSH_SHORT'
+        : 'LOW_VOL_RANGE';
   } else if (isBtcBouncingUp && input.marketBreadthPct <= 60) {
     primaryEvent = 'BTC_BOUNCE_REVERSAL';
-  } else if (input.marketBreadthPct >= 62 || input.btcChange24hPct >= 2.5) {
+  } else if (!isBtcRollingOver && (input.marketBreadthPct >= 62 || input.btcChange24hPct >= 2.5)) {
     primaryEvent = 'BULL_EXPANSION';
   } else if (input.marketBreadthPct <= 36 && !isBtcBouncingUp) {
     primaryEvent = 'MARKET_FLUSH_SHORT';
@@ -491,17 +497,16 @@ export function evaluateSameDirectionCorrelationCap(params: {
 
 /**
  * Dynamic same-direction crypto correlation cap scaled with total slot budget.
- * When 5 slots are active ($300+ account), allows up to 4 same-direction crypto trades
- * so 2 long-held positions do not freeze the remaining 3 slots during a broad rally.
+ * Strictly caps correlated one-way crypto exposure at <= 3 positions during the day (<= 2 at night)
+ * so BTC sell-offs never drag 4–5+ simultaneous LONGs into correlated drawdown.
  */
 export function resolveCorrelationCapBySlots(
   maxAllowedOpenPositions: number,
   isNightSession?: boolean
 ): number {
   if (isNightSession) {
-    return maxAllowedOpenPositions >= 4 ? 3 : 2;
+    return 2;
   }
-  if (maxAllowedOpenPositions >= 5) return 4;
   if (maxAllowedOpenPositions >= 4) return 3;
   return 2;
 }

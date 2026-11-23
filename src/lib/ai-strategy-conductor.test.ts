@@ -65,6 +65,19 @@ test('detectActiveMarketEvents accurately classifies BTC bounce, market flush, m
     isNightSession: false,
   });
   assert.equal(macro.primaryEvent, 'MACRO_DEFENSE');
+
+  // Even if 24h change is still green (+2.8%), intraday BTC rollover must NOT stay locked in BULL_EXPANSION
+  const intradayRollover = detectActiveMarketEvents({
+    btcChange24hPct: 2.8,
+    btcEmaTrendBps: -5.4,
+    btcVwapDevPct: -0.48,
+    marketBreadthPct: 48,
+    avgAtrPct: 4.9,
+    maxCrowdSharePct: 74,
+    isMacroBlocked: false,
+    isNightSession: false,
+  });
+  assert.equal(intradayRollover.primaryEvent, 'MARKET_FLUSH_SHORT');
 });
 
 test('evaluateBtcBounceShortVeto blocks altcoin SHORT during BTC recovery while permitting LONG and XAU', () => {
@@ -301,8 +314,9 @@ test('applyDeterministicEvolutionFallback and applyConductorDecisionToAgents upd
 });
 
 test('resolveCorrelationCapBySlots and evaluateStalePositionExit prevent multi-day slot lockups', () => {
-  assert.equal(resolveCorrelationCapBySlots(5, false), 4);
+  assert.equal(resolveCorrelationCapBySlots(5, false), 3);
   assert.equal(resolveCorrelationCapBySlots(4, false), 3);
+  assert.equal(resolveCorrelationCapBySlots(4, true), 2);
   assert.equal(resolveCorrelationCapBySlots(3, true), 2);
   assert.equal(resolveCorrelationCapBySlots(2, false), 2);
 

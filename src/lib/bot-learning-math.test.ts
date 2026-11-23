@@ -21,6 +21,7 @@ import {
   buildTrendGridPlan,
   computeEffectiveGridRiskStopPct,
   evaluateTrendGridSafetyOrderFill,
+  evaluateGridDcaMarketGuard,
   TREND_GRID_CORE_SYMBOLS,
   resolveDynamicVolatilityLimitPct,
   selectNextActingBot,
@@ -496,8 +497,34 @@ test('computeEffectiveGridRiskStopPct caps full-grid SO1+SO2 worst-case SL loss 
     totalNetLoss <= 2.15,
     `Full-grid SL loss ($${totalNetLoss.toFixed(2)}) must stay bounded near $2.00 risk budget, never $4.20`
   );
+  assert.ok(
+    plan.catastrophicSlPct >= 2.15 && plan.catastrophicSlPct <= 2.70,
+    `Hard SL (${plan.catastrophicSlPct}%) must stay <= 2.70% (<= -10.8% ROE at 4x), never -15%..-19% ROE`
+  );
   assert.equal(TREND_GRID_CORE_SYMBOLS.includes('XAUUSDT'), true);
   assert.equal(TREND_GRID_CORE_SYMBOLS.includes('ETHUSDT' as any), false);
+
+  // Guard blocks LONG DCA when BTC is dumping and blocks SHORT DCA when BTC is squeezing
+  const blockLongDca = evaluateGridDcaMarketGuard({
+    side: 'LONG',
+    btcEmaTrendBps: -4.2,
+    btcVwapDevPct: -0.45,
+  });
+  assert.equal(blockLongDca.allowed, false);
+
+  const allowLongDca = evaluateGridDcaMarketGuard({
+    side: 'LONG',
+    btcEmaTrendBps: 1.5,
+    btcVwapDevPct: -0.10,
+  });
+  assert.equal(allowLongDca.allowed, true);
+
+  const blockShortDca = evaluateGridDcaMarketGuard({
+    side: 'SHORT',
+    btcEmaTrendBps: 3.2,
+    btcVwapDevPct: 0.35,
+  });
+  assert.equal(blockShortDca.allowed, false);
 });
 
 test('resolveDynamicVolatilityLimitPct adapts cleanly to high-volatility flushes without blocking majors', () => {

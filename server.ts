@@ -210,6 +210,7 @@ import {
   buildTrendGridPlan,
   computeEffectiveGridRiskStopPct,
   evaluateTrendGridSafetyOrderFill,
+  evaluateGridDcaMarketGuard,
   TREND_GRID_CORE_SYMBOLS,
   resolveDynamicVolatilityLimitPct,
   selectNextActingBot,
@@ -290,7 +291,9 @@ import {
   reconcileOkxLivePositions,
   normalizeOkxOpenPositions,
   buildOkxPositionDiff,
+  mergeTerminalAndOkxPositionsSummary,
   type OkxPositionsHistoryRow,
+  type NormalizedOkxOpenPosition,
 } from './src/lib/bot-engine-resilience.ts';
 
 // Ollama Cloud Multi-Key Rotation & Model Orchestrator
@@ -685,6 +688,7 @@ interface AppSystemState {
   okxAccountEquityUsdt?: number;
   okxAvailableBalanceUsdt?: number;
   okxLastSyncedAt?: number;
+  okxCachedOpenPositions?: NormalizedOkxOpenPosition[];
   isKillSwitchActive: boolean;
   killSwitchTriggerReason: string | null;
   lastUnblockedAt?: number;
@@ -786,6 +790,7 @@ const systemState: AppSystemState = {
   activeExchange: 'OKX',
   okxDemoTrading: process.env.OKX_DEMO_TRADING !== 'false',
   okxPosMode: 'net_mode',
+  okxCachedOpenPositions: [],
   isKillSwitchActive: false,
   killSwitchTriggerReason: null,
   lastUnblockedAt: 0,
@@ -2331,10 +2336,15 @@ function buildTelegramCommandReply(
   const { cmd, arg } = parsed;
   const equity = (systemState.capitalUsdt + systemState.totalRealizedPnlUsdt).toFixed(2);
   const dndStatusLine = formatDndRemainingText(systemState.telegramBot.dndUntil);
+  const mergedPos = mergeTerminalAndOkxPositionsSummary({
+    activePositions: systemState.activePositions,
+    okxCachedOpenPositions: systemState.okxCachedOpenPositions || [],
+    includeOkxExchange: systemState.mode === 'LIVE' && systemState.activeExchange === 'OKX',
+  });
 
   if (cmd === '/start' || cmd === '/menu') {
     return {
-      html: `✅ <b>Терминал ZimaTrade подключен!</b>\n\nВаш Chat ID: <code>${chatIdStr}</code> привязан к ядру.\n\n💰 <b>Баланс портфеля:</b> $${equity} USDT\n📊 <b>Активных позиций:</b> ${systemState.activePositions.length}\n⚙️ <b>Режим:</b> ${systemState.mode === 'LIVE' ? 'LIVE (Боевой)' : 'SHADOW (Форвард-тест L2)'}\n🔔 <b>Уведомления:</b> ${dndStatusLine}\n\nИспользуйте <b>кнопочное меню внизу экрана</b> для быстрого управления или команды:\n/status — Баланс и PnL (сегодня, неделя, месяц)\n/report — Итоговый отчет PnL\n/positions — Открытые сделки\n/bots — Статистика стратегий\n/dnd — Режим «Не беспокоить» на N времени\n/kill — Аварийный Стоп-Кран`,
+      html: `✅ <b>Терминал ZimaTrade подключен!</b>\n\nВаш Chat ID: <code>${chatIdStr}</code> привязан к ядру.\n\n💰 <b>Баланс портфеля:</b> $${equity} USDT\n📊 <b>Активных позиций:</b> ${mergedPos.totalLiveCount}${mergedPos.exchangeStrayCount > 0 ? ` (терминал: ${mergedPos.terminalCount}, OKX вне терминала: ${mergedPos.exchangeStrayCount})` : ''}\n⚙️ <b>Режим:</b> ${systemState.mode === 'LIVE' ? 'LIVE (Боевой)' : 'SHADOW (Форвард-тест L2)'}\n🔔 <b>Уведомления:</b> ${dndStatusLine}\n\nИспользуйте <b>кнопочное меню внизу экрана</b> для быстрого управления или команды:\n/status — Баланс и PnL (сегодня, неделя, месяц)\n/report — Итоговый отчет PnL\n/positions — Открытые сделки\n/bots — Статистика стратегий\n/dnd — Режим «Не беспокоить» на N времени\n/kill — Аварийный Стоп-Кран`,
       replyMarkup: getTelegramReplyKeyboard(),
     };
   }
@@ -2352,9 +2362,7 @@ function buildTelegramCommandReply(
       closedTrades: systemState.closedTrades,
       baseCapitalUsdt: systemState.capitalUsdt,
     });
-    const floatingPnl = Number(
-      systemState.activePositions.reduce((acc, p) => acc + (Number(p.unrealizedPnl) || 0), 0).toFixed(2)
-    );
+    const floatingPnl = mergedPos.totalFloatingPnlUsdt;
     const totalEquity = (systemState.capitalUsdt + systemState.totalRealizedPnlUsdt + floatingPnl).toFixed(2);
     const exBadge =
       systemState.activeExchange === 'OKX'
@@ -2371,14 +2379,18 @@ function buildTelegramCommandReply(
       systemState.okxAccountEquityUsdt > systemState.capitalUsdt
         ? ` (лимит $${systemState.tradingCapitalCapUsdt.toFixed(0)} из $${systemState.okxAccountEquityUsdt.toFixed(2)} на OKX)`
         : '';
+    const posBreakdown =
+      mergedPos.exchangeStrayCount > 0
+        ? ` (терминал: ${mergedPos.terminalCount}, вне терминала на OKX: ${mergedPos.exchangeStrayCount})`
+        : '';
     return {
-      html: `📊 <b>Отчет ZimaTrade · ${breakdown.mskTimeLabel}</b>\n\n• Режим: <b>${modeLabel}</b>\n• Рабочий капитал: <b>$${equity} USDT</b> (Эквити: <b>$${totalEquity}</b>)${capNote}\n• Плавающий PnL: <b>${formatSignedUsdt(floatingPnl)} USDT</b>\n• Общий PnL (всё время): <b>${formatSignedUsdt(systemState.totalRealizedPnlUsdt)} USDT</b>\n\n${formatTelegramPeriodSummaryHtml(breakdown)}\n\n• Открытых сделок: <b>${systemState.activePositions.length}</b>\n• Стоп-Кран: <b>${systemState.isKillSwitchActive ? '🚨 АКТИВЕН' : '🟢 НОРМА'}</b>\n• Пинг Bybit / OKX: <b>${systemState.pings.bybit} мс / ${systemState.pings.okx} мс</b>\n• Режим тишины (DND): ${dndStatusLine}`,
+      html: `📊 <b>Отчет ZimaTrade · ${breakdown.mskTimeLabel}</b>\n\n• Режим: <b>${modeLabel}</b>\n• Рабочий капитал: <b>$${equity} USDT</b> (Эквити: <b>$${totalEquity}</b>)${capNote}\n• Плавающий PnL: <b>${formatSignedUsdt(floatingPnl)} USDT</b>\n• Общий PnL (всё время): <b>${formatSignedUsdt(systemState.totalRealizedPnlUsdt)} USDT</b>\n\n${formatTelegramPeriodSummaryHtml(breakdown)}\n\n• Открытых сделок: <b>${mergedPos.totalLiveCount}</b>${posBreakdown}\n• Стоп-Кран: <b>${systemState.isKillSwitchActive ? '🚨 АКТИВЕН' : '🟢 НОРМА'}</b>\n• Пинг Bybit / OKX: <b>${systemState.pings.bybit} мс / ${systemState.pings.okx} мс</b>\n• Режим тишины (DND): ${dndStatusLine}`,
       replyMarkup: getTelegramReplyKeyboard(),
     };
   }
 
   if (cmd === '/positions') {
-    if (systemState.activePositions.length === 0) {
+    if (mergedPos.totalLiveCount === 0) {
       return {
         html: `📭 <b>Открытых позиций сейчас нет.</b> Алгоритмы сканируют стакан L2 Bybit и OKX.`,
         replyMarkup: getTelegramReplyKeyboard(),
@@ -2388,8 +2400,13 @@ function buildTelegramCommandReply(
       (p, idx) =>
         `${idx + 1}. <b>${p.symbol}</b> [${p.side} ${p.leverage}x · ${(p.exchange || 'bybit').toUpperCase()}] · Вход: $${p.entryVwap} → Текущая: $${p.currentPrice} · PnL: <b>${p.unrealizedPnl >= 0 ? '+' : ''}$${Number(p.unrealizedPnl).toFixed(2)}</b> (SL: $${p.slPrice}${p.isBreakEven ? ' БУ' : ''})`
     );
+    const strayLines = mergedPos.strayOkxPositions.map(
+      (ox, idx) =>
+        `${systemState.activePositions.length + idx + 1}. ⚠️ <b>${ox.symbol}</b> [${ox.side} ${ox.lever}x · OKX вне терминала] · Вход: $${ox.avgPx} → Марк: $${ox.markPx} · PnL: <b>${ox.uplUsdt >= 0 ? '+' : ''}$${ox.uplUsdt.toFixed(2)}</b>`
+    );
+    const allLines = [...lines, ...strayLines];
     return {
-      html: `📈 <b>Открытые позиции (${systemState.activePositions.length}):</b>\n\n${lines.join('\n')}`,
+      html: `📈 <b>Открытые позиции (${mergedPos.totalLiveCount}):</b>\n\n${allLines.join('\n')}`,
       replyMarkup: getTelegramReplyKeyboard(),
     };
   }
@@ -2522,6 +2539,20 @@ async function handleIncomingTelegramUpdate(
   }
 
   const text = String(msg.text || '').trim();
+  const parsedCmd = normalizeTelegramInputToCommand(text);
+  if (
+    parsedCmd &&
+    ['/start', '/menu', '/status', '/balance', '/report', '/pnl', '/positions'].includes(parsedCmd.cmd) &&
+    systemState.mode === 'LIVE' &&
+    systemState.activeExchange === 'OKX' &&
+    areOkxKeysConfigured() &&
+    Date.now() - (systemState.okxLastSyncedAt || 0) > 8_000
+  ) {
+    await Promise.race([
+      syncOkxAccountState().catch(() => null),
+      new Promise((r) => setTimeout(r, 2500)),
+    ]);
+  }
   const cmdReply = buildTelegramCommandReply(text, chatIdStr, firstName);
   if (cmdReply && sendOutOfBandReply) {
     await sendTelegramMessageToChat(chatIdStr, cmdReply.html, cmdReply.replyMarkup);
@@ -3752,6 +3783,12 @@ async function syncOkxAccountState(options?: { forceReconcile?: boolean }): Prom
   systemState.okxAccountEquityUsdt = Number(equityUsdt.toFixed(2));
   systemState.okxAvailableBalanceUsdt = Number(availUsdt.toFixed(2));
   systemState.okxLastSyncedAt = Date.now();
+  if (posRes.ok && Array.isArray(posRes.data)) {
+    systemState.okxCachedOpenPositions = normalizeOkxOpenPositions(
+      okxOpenPositions,
+      systemState.okxPosMode || 'net_mode'
+    );
+  }
 
   let reconciledCount = 0;
   if (
@@ -4787,15 +4824,32 @@ app.post('/api/exchange/okx-close-stray', async (req: Request, res: Response) =>
         });
         syncedTerminal = true;
       } else {
+        const strayExitPx = target.markPx > 0 ? target.markPx : target.avgPx;
+        const strayEntryPx = target.avgPx > 0 ? target.avgPx : strayExitPx;
+        const strayPosRecord = {
+          id: `okx-stray-${target.symbol.toLowerCase()}-${Date.now()}`,
+          symbol: target.symbol,
+          side: target.side,
+          qty: baseQty,
+          entryVwap: strayEntryPx,
+          currentPrice: strayExitPx,
+          leverage: target.lever || 4,
+          mode: 'LIVE',
+          exchange: 'OKX',
+          botId: 'system',
+          botName: 'Синхронизация OKX (Вне терминала)',
+          openedAt: target.createdAt || Date.now() - 3600_000,
+        };
+        const tradeRecord = recordClosedPosition(strayPosRecord, strayExitPx, 'MANUAL_CLOSE');
         addBotLog({
           botId: 'system',
           botName: 'Синхронизация OKX',
           action: 'MANUAL_CLOSE',
           symbol: target.symbol,
           side: target.side,
-          price: target.markPx || target.avgPx,
-          pnl: Number(target.uplUsdt.toFixed(2)),
-          message: `Закрыта несинхронизированная позиция ${target.side} ${target.instId} на OKX (оценка PnL: ${target.uplUsdt >= 0 ? '+' : ''}$${target.uplUsdt.toFixed(2)} USDT).`,
+          price: strayExitPx,
+          pnl: tradeRecord.netPnlUsdt,
+          message: `Закрыта несинхронизированная позиция ${target.side} ${target.instId} на OKX по $${strayExitPx} (итог: ${tradeRecord.netPnlUsdt >= 0 ? '+' : ''}$${tradeRecord.netPnlUsdt.toFixed(2)} USDT).`,
           rttMs: systemState.pings.okx,
         });
       }
@@ -5597,12 +5651,16 @@ function recordClosedPosition(
     const pnlSign = trade.netPnlUsdt >= 0 ? '+' : '';
     const isSL = exitReason === 'SL_HIT';
     const isTP = exitReason === 'TP_HIT';
+    const actorText =
+      exitReason === 'MANUAL_CLOSE'
+        ? `Оператор закрыл ${trade.side} ${trade.symbol} (${trade.botName || 'OKX'})`
+        : `${trade.botName || 'Оператор'} закрыл ${trade.side} ${trade.symbol}`;
 
     emitAppNotification({
       category: isSL ? 'STOP_LOSS' : isTP ? 'TAKE_PROFIT' : 'TRADE_CLOSE',
       severity: isSL ? 'CRITICAL' : trade.netPnlUsdt > 0 ? 'SUCCESS' : 'WARNING',
       title: `${isSL ? '🛑 Stop-Loss' : isTP ? '💰 Take-Profit' : 'Сделка закрыта'}: ${trade.symbol}`,
-      message: `${trade.botName || 'Оператор'} закрыл ${trade.side} ${trade.symbol}. Итог PnL: ${pnlSign}$${trade.netPnlUsdt.toFixed(2)} USDT (${pnlSign}${trade.roePct.toFixed(2)}%)`,
+      message: `${actorText}. Итог PnL: ${pnlSign}$${trade.netPnlUsdt.toFixed(2)} USDT (${pnlSign}${trade.roePct.toFixed(2)}%)`,
       symbol: trade.symbol,
       botName: trade.botName,
       pnl: trade.netPnlUsdt,
@@ -5620,7 +5678,26 @@ app.post('/api/positions/close', async (req: Request, res: Response) => {
   const idx = systemState.activePositions.findIndex((p) => p.id === id);
   if (idx !== -1) {
     const target = systemState.activePositions[idx];
+    let liveExitPx = Number(target.currentPrice) || target.entryVwap;
+    const tickers = await fetchRealBybitTickers().catch(() => []);
+    const liveTicker = tickers.find((t) => t.symbol === target.symbol);
+    if (liveTicker && liveTicker.price > 0) {
+      liveExitPx = liveTicker.price;
+    }
+
     if (target.mode === 'LIVE' && target.exchange === 'OKX') {
+      const okxSnap = await executeOkxPrivateRequest({
+        method: 'GET',
+        requestPath: '/api/v5/account/positions?instType=SWAP',
+      }).catch(() => ({ ok: false, data: null }));
+      if (okxSnap.ok && Array.isArray(okxSnap.data)) {
+        const normalized = normalizeOkxOpenPositions(okxSnap.data, systemState.okxPosMode || 'net_mode');
+        const match = normalized.find((o) => o.symbol === target.symbol && o.side === target.side);
+        if (match) {
+          if (match.markPx > 0) liveExitPx = match.markPx;
+          if (match.avgPx > 0) target.entryVwap = match.avgPx;
+        }
+      }
       const closeRes = await closeRealOkxLivePosition({
         symbol: target.symbol,
         side: target.side,
@@ -5633,18 +5710,22 @@ app.post('/api/positions/close', async (req: Request, res: Response) => {
       }
     }
     const closed = systemState.activePositions.splice(idx, 1)[0];
-    const trade = recordClosedPosition(closed, closed.currentPrice, 'MANUAL_CLOSE');
+    closed.currentPrice = liveExitPx;
+    const trade = recordClosedPosition(closed, liveExitPx, 'MANUAL_CLOSE');
     addBotLog({
       botId: closed.botId || 'manual',
       botName: closed.botName || 'Оператор',
       action: 'MANUAL_CLOSE',
       symbol: closed.symbol,
       side: closed.side,
-      price: closed.currentPrice,
+      price: liveExitPx,
       pnl: trade.netPnlUsdt,
-      message: `Позиция ${closed.symbol} закрыта вручную по $${closed.currentPrice.toFixed(2)}. Чистый PnL: ${trade.netPnlUsdt >= 0 ? '+' : ''}$${trade.netPnlUsdt.toFixed(2)} USDT.`,
+      message: `Позиция ${closed.symbol} закрыта вручную по $${liveExitPx}. Чистый PnL: ${trade.netPnlUsdt >= 0 ? '+' : ''}$${trade.netPnlUsdt.toFixed(2)} USDT.`,
       rttMs: closed.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
     });
+    if (closed.mode === 'LIVE' && closed.exchange === 'OKX') {
+      syncOkxAccountState().catch(() => {});
+    }
     res.json({ success: true, closed, trade });
   } else {
     res.status(404).json({ error: 'Position not found' });
@@ -5655,9 +5736,30 @@ app.post('/api/positions/close', async (req: Request, res: Response) => {
 app.post('/api/positions/close-all', async (_req: Request, res: Response) => {
   const closedTradesList: ClosedTradeRecord[] = [];
   const errors: string[] = [];
+  const [tickers, okxSnap] = await Promise.all([
+    fetchRealBybitTickers().catch(() => []),
+    systemState.mode === 'LIVE' && systemState.activeExchange === 'OKX' && areOkxKeysConfigured()
+      ? executeOkxPrivateRequest({ method: 'GET', requestPath: '/api/v5/account/positions?instType=SWAP' }).catch(() => ({ ok: false, data: null }))
+      : Promise.resolve({ ok: false, data: null }),
+  ]);
+  const liveTickerMap: Record<string, number> = {};
+  for (const t of tickers) {
+    liveTickerMap[t.symbol] = t.price;
+  }
+  const okxLiveNormalized =
+    okxSnap.ok && Array.isArray(okxSnap.data)
+      ? normalizeOkxOpenPositions(okxSnap.data, systemState.okxPosMode || 'net_mode')
+      : [];
+
   for (let i = systemState.activePositions.length - 1; i >= 0; i--) {
     const pos = systemState.activePositions[i];
+    let liveExitPx = liveTickerMap[pos.symbol] || Number(pos.currentPrice) || pos.entryVwap;
     if (pos.mode === 'LIVE' && pos.exchange === 'OKX') {
+      const okxMatch = okxLiveNormalized.find((o) => o.symbol === pos.symbol && o.side === pos.side);
+      if (okxMatch) {
+        if (okxMatch.markPx > 0) liveExitPx = okxMatch.markPx;
+        if (okxMatch.avgPx > 0) pos.entryVwap = okxMatch.avgPx;
+      }
       const closeRes = await closeRealOkxLivePosition({
         symbol: pos.symbol,
         side: pos.side,
@@ -5670,7 +5772,8 @@ app.post('/api/positions/close-all', async (_req: Request, res: Response) => {
       }
     }
     systemState.activePositions.splice(i, 1);
-    const trade = recordClosedPosition(pos, pos.currentPrice, 'MANUAL_CLOSE');
+    pos.currentPrice = liveExitPx;
+    const trade = recordClosedPosition(pos, liveExitPx, 'MANUAL_CLOSE');
     closedTradesList.push(trade);
     addBotLog({
       botId: pos.botId || 'manual',
@@ -5678,13 +5781,16 @@ app.post('/api/positions/close-all', async (_req: Request, res: Response) => {
       action: 'MANUAL_CLOSE',
       symbol: pos.symbol,
       side: pos.side,
-      price: pos.currentPrice,
+      price: liveExitPx,
       pnl: trade.netPnlUsdt,
-      message: `Позиция ${pos.symbol} закрыта оператором по $${pos.currentPrice.toFixed(2)}. Чистый PnL: ${trade.netPnlUsdt >= 0 ? '+' : ''}$${trade.netPnlUsdt.toFixed(2)} USDT.`,
+      message: `Позиция ${pos.symbol} закрыта оператором по $${liveExitPx}. Чистый PnL: ${trade.netPnlUsdt >= 0 ? '+' : ''}$${trade.netPnlUsdt.toFixed(2)} USDT.`,
       rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
     });
   }
   savePersistedState();
+  if (systemState.mode === 'LIVE' && systemState.activeExchange === 'OKX') {
+    syncOkxAccountState().catch(() => {});
+  }
   res.json({
     success: errors.length === 0,
     closedCount: closedTradesList.length,
@@ -5732,6 +5838,8 @@ const INSTITUTIONAL_CRYPTO_WHITELIST = [
 const INSTITUTIONAL_WHITELIST_SET = new Set(INSTITUTIONAL_CRYPTO_WHITELIST);
 let lastMacroGuardLogTs = 0;
 let lastEmptyCandidatesLogTs = 0;
+let lastDcaGuardLogTs = 0;
+const okxDemoUnsupportedSymbols = new Set<string>();
 
 // Autonomous Bot Trading Engine for Mode 1 (Shadow Forward-Testing)
 async function runBotEngineCycle() {
@@ -5759,12 +5867,38 @@ async function runBotEngineCycle() {
   try {
     await runWithHardTimeout(async () => {
       if (botCycleWatchdog.activeRunId !== cycleRunId) return;
-    // 1. Fetch real Bybit tickers for live prices
-    const tickers = await fetchRealBybitTickers();
+
+    // 0. Keep live OKX positions & account state synchronized every <= 15s so correlation cap and duplicate guards never drift
+    if (
+      systemState.mode === 'LIVE' &&
+      systemState.activeExchange === 'OKX' &&
+      areOkxKeysConfigured() &&
+      Date.now() - (systemState.okxLastSyncedAt || 0) >= 15_000
+    ) {
+      await Promise.race([
+        syncOkxAccountState().catch(() => null),
+        new Promise((r) => setTimeout(r, 3000)),
+      ]);
+    }
+
+    // 1. Fetch real Bybit tickers & BTC market trend once per cycle (shared by DCA guard + candidate evaluation)
+    const [tickers, cycleBtcBook, cycleBtcKlines] = await Promise.all([
+      fetchRealBybitTickers(),
+      fetchRealBybitOrderbook('BTCUSDT'),
+      fetchRealBybitKlines('BTCUSDT', '15', 50),
+    ]);
     const priceMap: Record<string, number> = {};
     for (const t of tickers) {
       priceMap[t.symbol] = t.price;
     }
+    const cycleBtcFeatures = extractMarketFeatures({
+      bids: cycleBtcBook.bids,
+      asks: cycleBtcBook.asks,
+      klines: cycleBtcKlines,
+      sentimentScore: 0,
+    });
+    const btcEmaTrendBps = cycleBtcFeatures.emaTrendBps;
+    const btcVwapDevPct = cycleBtcFeatures.vwapDeviationPct;
 
     // 2. Mark-to-Market Evaluation & Institutional Multi-Stage SL/TP/Trailing Triggers on open positions
     for (let i = systemState.activePositions.length - 1; i >= 0; i--) {
@@ -5794,6 +5928,12 @@ async function runBotEngineCycle() {
           pos.tpTargetPct = fallbackPlan.tpTargetPct;
         }
 
+        const dcaMarketCheck = evaluateGridDcaMarketGuard({
+          side: pos.side,
+          btcEmaTrendBps,
+          btcVwapDevPct,
+        });
+
         const dcaFill = evaluateTrendGridSafetyOrderFill({
           side: pos.side,
           currentPrice: pos.currentPrice,
@@ -5802,10 +5942,24 @@ async function runBotEngineCycle() {
           safetyOrders: pos.safetyOrders,
           priceDecimals,
           qtyDecimals,
-          tpTargetPct: pos.tpTargetPct || 1.85,
+          tpTargetPct: pos.tpTargetPct || 4.50,
         });
 
-        if (dcaFill.triggered) {
+        if (dcaFill.triggered && !dcaMarketCheck.allowed) {
+          if (Date.now() - lastDcaGuardLogTs > 2 * 60 * 1000) {
+            lastDcaGuardLogTs = Date.now();
+            addBotLog({
+              botId: pos.botId || 'agent-tg-crypto-alpha',
+              botName: pos.botName || 'Риск-Файрвол Сетки',
+              action: 'RISK_GUARD',
+              symbol: pos.symbol,
+              side: pos.side,
+              price: pos.currentPrice,
+              message: `${pos.symbol}: ${dcaMarketCheck.reason}`,
+              rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
+            });
+          }
+        } else if (dcaFill.triggered) {
           let appliedAddedQty = dcaFill.addedQty;
           if (pos.mode === 'LIVE' && pos.exchange === 'OKX') {
             const addRes = await executeRealOkxLiveAddQty({
@@ -6250,8 +6404,13 @@ async function runBotEngineCycle() {
           : sessionRisk.maxConcurrentPositionsCap
         : baseMaxAllowedOpen;
     const maxAllowedOpenPositions = Math.min(baseMaxAllowedOpen, nightAdjustedCap);
+    const mergedPositions = mergeTerminalAndOkxPositionsSummary({
+      activePositions: systemState.activePositions,
+      okxCachedOpenPositions: systemState.okxCachedOpenPositions || [],
+      includeOkxExchange: systemState.mode === 'LIVE' && systemState.activeExchange === 'OKX',
+    });
 
-    if (systemState.activePositions.length < maxAllowedOpenPositions) {
+    if (mergedPositions.totalLiveCount < maxAllowedOpenPositions) {
       // Macro News Blackout Window Guard (FOMC / CPI / NFP / Live Macro Shock)
       const macroHeadline = getRecentMacroHeadlineFromFeed();
       const macroWindow = evaluateMacroNewsWindow({
@@ -6282,7 +6441,7 @@ async function runBotEngineCycle() {
           systemState.activePositions.filter((p) => p.botId === a.agentId).length < (effectiveCap <= 50 ? 1 : a.maxConcurrentPositions || 2)
       );
 
-      if (activeBots.length > 0 && systemState.activePositions.length < maxAllowedOpenPositions) {
+      if (activeBots.length > 0 && mergedPositions.totalLiveCount < maxAllowedOpenPositions) {
         const NEWS_ONLY_HANDLES = new Set(['@WatcherGuru', '@WuBlockchain', '@Cointelegraph', 'announcements.bybit.com']);
         const isTradingSignalFeedItem = (f: any) => !NEWS_ONLY_HANDLES.has(String(f?.sourceHandle || ''));
         const botSelection = selectNextActingBot({
@@ -6346,15 +6505,15 @@ async function runBotEngineCycle() {
           maxVolatilityPct: dynamicMaxVolPct,
         });
 
-        // Freqtrade ProtectionManager: filter out symbols in position, CooldownPeriod, StoplossGuard, or LowProfitPairs
+        // Freqtrade ProtectionManager: filter out symbols already open (terminal OR OKX exchange), unsupported on Demo, or on cooldown
         const nowCycleTs = Date.now();
-        const openSymbols = new Set(systemState.activePositions.map((p) => p.symbol));
         const hasLiveOkxCatalog =
           systemState.activeExchange === 'OKX' &&
           lastOkxInstrumentsFetchTs > 0 &&
           Object.keys(okxSwapInstrumentsCache).length > 30;
         const availableCandidates = rankedPairlist.filter((s) => {
-          if (!allowedUniverseSet.has(s) || openSymbols.has(s)) return false;
+          if (!allowedUniverseSet.has(s) || mergedPositions.openSymbolsSet.has(s)) return false;
+          if (systemState.activeExchange === 'OKX' && okxDemoUnsupportedSymbols.has(s)) return false;
           if (hasLiveOkxCatalog && !okxSwapInstrumentsCache[s]) return false;
           if (!evaluateSymbolCooldownGuard(symbolCooldowns, s, nowCycleTs).allowed) return false;
           const lowProfitCheck = evaluateLowProfitPairsProtection({
@@ -6411,18 +6570,7 @@ async function runBotEngineCycle() {
 
         const btcMeta = systemState.screenerSymbols.find((s) => s.symbol === 'BTCUSDT');
         const btcChange24h = btcMeta?.priceChangePct || 0;
-        const [btcBook, btcKlines] = await Promise.all([
-          fetchRealBybitOrderbook('BTCUSDT'),
-          fetchRealBybitKlines('BTCUSDT', '15', 50),
-        ]);
-        const btcFeatures = extractMarketFeatures({
-          bids: btcBook.bids,
-          asks: btcBook.asks,
-          klines: btcKlines,
-          sentimentScore: 0,
-        });
-        const btcEmaTrendBps = btcFeatures.emaTrendBps;
-        const btcVwapDevPct = btcFeatures.vwapDeviationPct;
+        const btcFeatures = cycleBtcFeatures;
 
         // Evaluate all batch candidates on 15-minute klines (Freqtrade NFI timeframe) + L2 Orderbook + Fresh (<=12h) Telegram Signals
         const evaluatedBatch = await Promise.all(
@@ -6567,7 +6715,7 @@ async function runBotEngineCycle() {
           const corrCap = evaluateSameDirectionCorrelationCap({
             symbol: cand.symbol,
             side: cand.evalResult.action,
-            activePositions: systemState.activePositions,
+            activePositions: mergedPositions.correlationPositions,
             maxSameDirectionCrypto: dynamicSameDirLimit,
           });
           if (!corrCap.allowed) {
@@ -6885,6 +7033,7 @@ async function runBotEngineCycle() {
             if (!liveRes.ok) {
               const errMsg = String(liveRes.retMsg || '');
               if (errMsg.includes('51001') || errMsg.toLowerCase().includes('instrument id')) {
+                okxDemoUnsupportedSymbols.add(targetSymbol);
                 const nowTs = Date.now();
                 symbolCooldowns[targetSymbol] = {
                   symbol: targetSymbol,
@@ -9513,8 +9662,14 @@ async function dispatchDailyTelegramDigestReport(manual = false): Promise<{
   const floatingPnl = Number(
     systemState.activePositions.reduce((acc, p) => acc + (Number(p.unrealizedPnl) || 0), 0).toFixed(2)
   );
+  const digestMergedPos = mergeTerminalAndOkxPositionsSummary({
+    activePositions: systemState.activePositions,
+    okxCachedOpenPositions: systemState.okxCachedOpenPositions || [],
+    includeOkxExchange: systemState.mode === 'LIVE' && systemState.activeExchange === 'OKX',
+  });
+  const digestFloatingPnl = digestMergedPos.totalFloatingPnlUsdt;
   const closedBal = (systemState.capitalUsdt + systemState.totalRealizedPnlUsdt).toFixed(2);
-  const totalEq = (systemState.capitalUsdt + systemState.totalRealizedPnlUsdt + floatingPnl).toFixed(2);
+  const totalEq = (systemState.capitalUsdt + systemState.totalRealizedPnlUsdt + digestFloatingPnl).toFixed(2);
   const todayWr =
     breakdown.today.tradesCount > 0
       ? `${Math.round((breakdown.today.winsCount / breakdown.today.tradesCount) * 100)}%`
@@ -9539,7 +9694,7 @@ async function dispatchDailyTelegramDigestReport(manual = false): Promise<{
   const htmlBody = [
     `• <b>Режим:</b> ${modeLabel}`,
     `• <b>Рабочий капитал:</b> $${closedBal} USDT (Эквити: $${totalEq})${capNote}`,
-    `• <b>Плавающий PnL:</b> ${formatSignedUsdt(floatingPnl)} USDT (поз.: ${systemState.activePositions.length})`,
+    `• <b>Плавающий PnL:</b> ${formatSignedUsdt(digestFloatingPnl)} USDT (поз.: ${digestMergedPos.totalLiveCount}${digestMergedPos.exchangeStrayCount > 0 ? `, из них вне терминала: ${digestMergedPos.exchangeStrayCount}` : ''})`,
     `• <b>Винрейт за сегодня:</b> ${todayWr} (${breakdown.today.winsCount}/${breakdown.today.tradesCount})`,
     '',
     formatTelegramPeriodSummaryHtml(breakdown),

@@ -1689,14 +1689,15 @@ export function computeEffectiveGridRiskStopPct(atrPct: number): {
   effectiveWorstCaseStopPct: number;
 } {
   const safeAtr = Number.isFinite(atrPct) && atrPct > 0 ? atrPct : 1.35;
-  const gridStepPct = Number(clamp(safeAtr * 0.95, 1.15, 1.95).toFixed(2));
+  const gridStepPct = Number(clamp(safeAtr * 0.75, 0.85, 1.10).toFixed(2));
   // Target +15.2%..+23.2% ROE at 4x leverage (+3.80%..+5.80% price move) so winners run cleanly instead of early cuts
-  const tpTargetPct = Number(clamp(gridStepPct * 3.1, 3.80, 5.80).toFixed(2));
-  const catastrophicSlPct = Number(clamp(gridStepPct * 3.3, 3.80, 4.80).toFixed(2));
-  // Across 40% Base (0x) + 30% SO1 (1.0x step) + 30% SO2 (2.1x step), averaged entry shifts ~0.93 * gridStepPct;
-  // therefore remaining distance from averaged entryVwap to catastrophicSl is catastrophicSlPct - 0.90 * gridStepPct.
+  const tpTargetPct = Number(clamp(gridStepPct * 3.8, 3.80, 5.80).toFixed(2));
+  // Cap hard catastrophic SL at 2.20%–2.75% (-8.8%..-11.0% ROE at 4x), strictly behind SO2 (1.85 * step <= 2.04%)
+  const catastrophicSlPct = Number(clamp(gridStepPct * 2.45, 2.20, 2.75).toFixed(2));
+  // Across 40% Base (0x) + 30% SO1 (1.0x step) + 30% SO2 (1.85x step), averaged entry shifts ~0.80 * gridStepPct;
+  // therefore remaining distance from averaged entryVwap to catastrophicSl is catastrophicSlPct - 0.80 * gridStepPct.
   const effectiveWorstCaseStopPct = Number(
-    Math.max(2.60, catastrophicSlPct - 0.90 * gridStepPct).toFixed(2)
+    Math.max(1.50, catastrophicSlPct - 0.80 * gridStepPct).toFixed(2)
   );
   return { gridStepPct, tpTargetPct, catastrophicSlPct, effectiveWorstCaseStopPct };
 }
@@ -1778,7 +1779,7 @@ export function buildTrendGridPlan(params: {
   const totalMaxQty = Number((baseOrderQty + so1Qty + so2Qty).toFixed(qtyDecimals));
 
   const so1StepPct = gridStepPct;
-  const so2StepPct = Number((gridStepPct * 2.1).toFixed(2));
+  const so2StepPct = Number((gridStepPct * 1.85).toFixed(2));
 
   const so1TriggerPrice = Number(
     (entryPrice * (1 - dirSign * (so1StepPct / 100))).toFixed(priceDecimals)
@@ -1905,6 +1906,31 @@ export function evaluateTrendGridSafetyOrderFill(params: {
     newTpPrice,
     updatedSafetyOrders: clonedOrders,
   };
+}
+
+/**
+ * Blocks Trend-Grid DCA averaging (SO1/SO2) when BTC is actively trending against the position side
+ * so bots never triple margin into a falling knife or short squeeze.
+ */
+export function evaluateGridDcaMarketGuard(params: {
+  side: 'LONG' | 'SHORT';
+  btcEmaTrendBps: number;
+  btcVwapDevPct: number;
+}): { allowed: boolean; reason?: string } {
+  const { side, btcEmaTrendBps, btcVwapDevPct } = params;
+  if (side === 'LONG' && (btcEmaTrendBps <= -2.5 || btcVwapDevPct <= -0.30)) {
+    return {
+      allowed: false,
+      reason: `Добор LONG заблокирован: BTC под давлением (EMA ${btcEmaTrendBps.toFixed(1)} bps, VWAP ${btcVwapDevPct.toFixed(2)}%) — не усредняем пролив.`,
+    };
+  }
+  if (side === 'SHORT' && (btcEmaTrendBps >= 2.5 || btcVwapDevPct >= 0.30)) {
+    return {
+      allowed: false,
+      reason: `Добор SHORT заблокирован: BTC отскакивает вверх (EMA +${btcEmaTrendBps.toFixed(1)} bps, VWAP +${btcVwapDevPct.toFixed(2)}%).`,
+    };
+  }
+  return { allowed: true };
 }
 
 /**
