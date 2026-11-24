@@ -2062,6 +2062,17 @@ const EXCLUDED_STABLE_OR_METAL_SYMBOLS = new Set([
 
 const SYNTHETIC_EQUITY_OR_INDEX_BASES = new Set([
   'SOXL',
+  'SOXS',
+  'SNXX',
+  'SKDD',
+  'SPXL',
+  'SPXS',
+  'TQQQ',
+  'SQQQ',
+  'UVXY',
+  'SVXY',
+  'VXX',
+  'MUU',
   'SNDK',
   'NVDA',
   'TSLA',
@@ -2119,6 +2130,63 @@ const SYNTHETIC_EQUITY_OR_INDEX_BASES = new Set([
   'ANTHROPIC',
   'OPENAI',
   'SPACEX',
+  'SPCX',
+  'SKHY',
+  'CL',
+  'CLUS',
+  'USOIL',
+  'UKOIL',
+  'NATGAS',
+  'SI',
+  'HG',
+  'NG',
+  'BRK',
+  'BRKB',
+  'NVDAX',
+  'TSLAX',
+  'AAPLX',
+  'GOOGLX',
+  'METAX',
+  'AMZNX',
+  'MSFTX',
+  'COINX',
+  'MSTRX',
+  'SPYX',
+  'QQQX',
+  'HOODX',
+  'CIRCLE',
+  'ANTH',
+  'OAI',
+  'RKLB',
+  'ASTS',
+  'OKLO',
+  'LEU',
+  'CRWD',
+  'PANW',
+  'SNOW',
+  'DDOG',
+  'NET',
+  'SHOP',
+  'UBER',
+  'ABNB',
+  'SOFI',
+  'RIVN',
+  'LCID',
+  'NIO',
+  'PDD',
+  'JD',
+  'BIDU',
+  'SE',
+  'GRAB',
+  'NU',
+  'MELI',
+  'DJT',
+  'CVNA',
+  'UPST',
+  'AFRM',
+  'SP500',
+  'NDX100',
+  'DXY',
   'XAI',
   'STRIPE',
   'DATABRICKS',
@@ -2165,8 +2233,8 @@ export function resolveDynamicCryptoUniverse(params: {
     maxSpreadBps = 3.0,
   } = params;
 
-  const baseFiltered = (baseAllowedSymbols.length > 0 ? baseAllowedSymbols : coreWhitelist).filter(
-    (s) => goldAllowed || s !== 'XAUUSDT'
+  const baseFiltered = (baseAllowedSymbols.length > 0 ? baseAllowedSymbols : coreWhitelist).filter((s) =>
+    isEligibleDynamicCryptoSymbol(s, goldAllowed)
   );
   if (!isDynamicScanEnabled) {
     return { universe: Array.from(new Set(baseFiltered)), dynamicAdded: [] };
@@ -2174,7 +2242,7 @@ export function resolveDynamicCryptoUniverse(params: {
 
   const universeSet = new Set<string>([
     ...baseFiltered,
-    ...coreWhitelist.filter((s) => goldAllowed || s !== 'XAUUSDT'),
+    ...coreWhitelist.filter((s) => isEligibleDynamicCryptoSymbol(s, goldAllowed)),
   ]);
 
   const dynamicAdded: string[] = [];

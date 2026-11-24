@@ -335,6 +335,36 @@ export type MarketEventKey =
   | 'MACRO_DEFENSE'
   | 'NIGHT_ASIA_SAFE';
 
+export type AiAllowedDirectionMode = 'BOTH' | 'SHORT_PREFERRED' | 'LONG_PREFERRED' | 'DEFENSE_ONLY';
+
+export interface MarketNewsSummaryItem {
+  source: string;
+  symbol: string;
+  sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  headline: string;
+}
+
+export interface PolicyEvaluationStats {
+  totalChecks: number;
+  allowedCount: number;
+  blockedByAiPolicy: number;
+  blockedByNews: number;
+  blockedByRules: number;
+  blockedBySettings: number;
+  lastBlockedReason?: string;
+  lastBlockedAt?: number;
+}
+
+export interface RecalibrationStats {
+  cutoffTs: number;
+  sinceLabel: string;
+  tradesCount: number;
+  wins: number;
+  losses: number;
+  winRatePct: number;
+  netPnlUsdt: number;
+}
+
 export interface StrategyMutationRecord {
   agentId: string;
   reason: string;
@@ -352,6 +382,8 @@ export interface AiConductorDecisionItem {
   primaryEvent: MarketEventKey;
   eventLabelRu: string;
   summary: string;
+  allowedDirectionMode?: AiAllowedDirectionMode;
+  blockedSymbols?: string[];
   activeComboIds: string[];
   mutations: StrategyMutationRecord[];
 }
@@ -363,6 +395,16 @@ export interface AiConductorStatusPayload {
   currentEvent: MarketEventKey;
   currentEventLabelRu: string;
   secondaryEvents: MarketEventKey[];
+  allowedDirectionMode: AiAllowedDirectionMode;
+  blockedSymbols: string[];
+  newsContext: {
+    marketNewsScore: number;
+    freshCount6h: number;
+    criticalRiskSymbols: string[];
+    summaryItems: MarketNewsSummaryItem[];
+  };
+  policyStats: PolicyEvaluationStats;
+  recalibrationStats: RecalibrationStats;
   activeComboIds: string[];
   totalStrategiesCount: number;
   latestDecision: AiConductorDecisionItem | null;

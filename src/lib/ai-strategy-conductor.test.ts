@@ -562,4 +562,93 @@ test('evaluateUnifiedTradePolicy & evaluateCounterTrendDefenseExit enforce Rules
   assert.ok(buildAiConductorPrompt(flushSnap, perfAll).includes('@WatcherGuru'));
 });
 
+test('no simultaneous LONG+SHORT deadlock in [3.5..5.0] bps zone and blockedSymbols obeys anchor/justify guardrails', () => {
+  // During MARKET_FLUSH_SHORT + SHORT_PREFERRED at mild +4.1 bps / +0.25% bounce, SHORT remains permitted (no deadlock!)
+  const midBounceShort = evaluateUnifiedTradePolicy({
+    symbol: 'SUIUSDT',
+    side: 'SHORT',
+    strategyId: 'strat-trend-flush-rider',
+    strategyName: 'Flush-Rider',
+    directionBias: 'SHORT_ONLY',
+    primaryEvent: 'MARKET_FLUSH_SHORT',
+    aiAllowedDirectionMode: 'SHORT_PREFERRED',
+    btcEmaTrendBps: 4.1,
+    btcVwapDevPct: 0.25,
+    macroBlocked: false,
+    goldAllowed: true,
+  });
+  assert.equal(midBounceShort.allowed, true);
+
+  // Stronger genuine BTC recovery (>= 5.0 bps and >= 0.30% VWAP) DOES veto alt SHORT
+  const realRecoveryShort = evaluateUnifiedTradePolicy({
+    symbol: 'SUIUSDT',
+    side: 'SHORT',
+    strategyId: 'strat-trend-flush-rider',
+    strategyName: 'Flush-Rider',
+    directionBias: 'SHORT_ONLY',
+    primaryEvent: 'MARKET_FLUSH_SHORT',
+    aiAllowedDirectionMode: 'SHORT_PREFERRED',
+    btcEmaTrendBps: 5.4,
+    btcVwapDevPct: 0.34,
+    macroBlocked: false,
+    goldAllowed: true,
+  });
+  assert.equal(realRecoveryShort.allowed, false);
+  assert.equal(realRecoveryShort.vetoSource, 'RULE');
+
+  // parseAiConductorResponse blocks arbitrary anchor bans (BTC/ETH/SOL) while allowing critical-risk XAU & crowded/volatile bans capped at 3
+  const snapWithRisk: MarketSnapshotForAi = {
+    regimeLabel: 'Пролив',
+    primaryEvent: 'MARKET_FLUSH_SHORT',
+    secondaryEvents: [],
+    eventLabelRu: 'Общерыночный пролив',
+    btcPrice: 60100,
+    btcChange24hPct: -4.2,
+    btcEmaTrendBps: -7.5,
+    btcVwapDevPct: -0.45,
+    marketBreadthPct: 24,
+    avgAtrPct: 5.5,
+    maxCrowdSharePct: 81,
+    crowdedSymbols: ['DOGEUSDT (81% LONG)'],
+    isMacroBlocked: false,
+    isNightSession: false,
+    openPositionsCount: 1,
+    workingCapitalUsdt: 300,
+    newsBiasScore: -0.5,
+    criticalRiskSymbols: ['XAUUSDT'],
+    recentNewsSummary: [],
+  };
+  const perfAll: StrategyPerformanceInput[] = STRATEGY_CATALOG_14.map((s) => ({
+    ...s,
+    isEnabled: s.defaultEnabled,
+    tradesCount: 0,
+    winRatePct: 0,
+    profitFactor: 1.5,
+    realizedPnlUsdt: 0,
+  }));
+
+  const aiJson = JSON.stringify({
+    summary: 'Шортим слабые альты и исключаем перегретый DOGE и XAU под критическим риском.',
+    allowedDirectionMode: 'SHORT_PREFERRED',
+    blockedSymbols: ['BTCUSDT', 'SOLUSDT', 'XAUUSDT', 'DOGEUSDT', 'SUIUSDT', 'NEARUSDT'],
+    activeComboIds: [
+      'strat-trend-flush-rider',
+      'agent-onnx-ppo-v2',
+      'agent-lgbm-nightly',
+      'strat-short-squeeze-fade',
+    ],
+    mutations: [],
+  });
+  const parsed = parseAiConductorResponse(aiJson, perfAll, snapWithRisk, {
+    modelUsed: 'gpt-oss:20b',
+    latencyMs: 500,
+  });
+  assert.ok(parsed);
+  assert.ok(!parsed.blockedSymbols?.includes('BTCUSDT'));
+  assert.ok(!parsed.blockedSymbols?.includes('SOLUSDT'));
+  assert.ok(parsed.blockedSymbols?.includes('XAUUSDT'));
+  assert.ok(parsed.blockedSymbols?.includes('DOGEUSDT'));
+  assert.ok((parsed.blockedSymbols?.length || 0) <= 3);
+});
+
 

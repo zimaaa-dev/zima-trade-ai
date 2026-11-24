@@ -79,6 +79,7 @@ export interface MarketSnapshotForAi {
   workingCapitalUsdt: number;
   newsBiasScore?: number;
   recentNewsSummary?: MarketNewsSummaryItem[];
+  criticalRiskSymbols?: string[];
 }
 
 export interface StrategyMutationAction {
@@ -477,14 +478,24 @@ export function evaluateBtcBounceShortVeto(params: {
   side: 'LONG' | 'SHORT';
   btcEmaTrendBps: number;
   btcVwapDevPct: number;
+  primaryEvent?: MarketEventKey;
+  aiAllowedDirectionMode?: AiAllowedDirectionMode;
 }): { allowed: boolean; reason?: string } {
-  const { symbol, side, btcEmaTrendBps, btcVwapDevPct } = params;
+  const { symbol, side, btcEmaTrendBps, btcVwapDevPct, primaryEvent, aiAllowedDirectionMode } = params;
   if (side !== 'SHORT') return { allowed: true };
   if (symbol === 'XAUUSDT') return { allowed: true };
-  if (btcEmaTrendBps >= 3.5 && btcVwapDevPct >= 0.28) {
+
+  // During MARKET_FLUSH_SHORT / SHORT_PREFERRED, allow SHORT resistance fades on minor bounces (< +5.0 bps / < +0.30% VWAP)
+  // so SHORT and LONG are never mutually deadlocked in a deadzone between [3.5..5.0] bps.
+  const isShortTrendMode =
+    primaryEvent === 'MARKET_FLUSH_SHORT' || aiAllowedDirectionMode === 'SHORT_PREFERRED';
+  const minEmaBps = isShortTrendMode ? 5.0 : 3.5;
+  const minVwapPct = isShortTrendMode ? 0.30 : 0.28;
+
+  if (btcEmaTrendBps >= minEmaBps && btcVwapDevPct >= minVwapPct) {
     return {
       allowed: false,
-      reason: `BTC Bounce Veto: запрет SHORT ${symbol} при отскоке BTC вверх (EMA +${btcEmaTrendBps.toFixed(1)} bps, VWAP +${btcVwapDevPct.toFixed(2)}%).`,
+      reason: `BTC Bounce Veto: запрет SHORT ${symbol} при сильном отскоке BTC вверх (EMA +${btcEmaTrendBps.toFixed(1)} bps, VWAP +${btcVwapDevPct.toFixed(2)}%).`,
     };
   }
   return { allowed: true };
@@ -767,12 +778,14 @@ export function evaluateUnifiedTradePolicy(input: UnifiedTradePolicyInput): Unif
     }
   }
 
-  // 5. Symmetrical intraday BTC bounce short veto
+  // 5. Symmetrical intraday BTC bounce short veto aligned with strongBtcRecovery during flush
   const btcBounceVeto = evaluateBtcBounceShortVeto({
     symbol,
     side,
     btcEmaTrendBps,
     btcVwapDevPct,
+    primaryEvent,
+    aiAllowedDirectionMode: effectiveMode,
   });
   if (!btcBounceVeto.allowed) {
     return {
@@ -901,6 +914,7 @@ export function buildAiConductorPrompt(
     '1) Ответь ТОЛЬКО валидным JSON объектом без markdown-обёртки.',
     '2) Формат JSON: {"summary":"краткий вывод с опорой на рынок и новости (2-3 предложения)","allowedDirectionMode":"BOTH|SHORT_PREFERRED|LONG_PREFERRED|DEFENSE_ONLY","blockedSymbols":[],"activeComboIds":["id1","id2","id3","id4"],"mutations":[{"agentId":"id","reason":"причина","confidenceThresholdDelta":0.01,"riskPerTradePct":1.2,"targetTpPct":2.75}]}',
     '3) В activeComboIds обязательно включи от 3 до 5 реально существующих agentId из списка выше (минимум 3!), строго соответствующих событию primaryEvent и новостям.',
+    '4) Поле blockedSymbols оставь пустым [], если по монете нет критических негативных новостей (взлом/делистинг/иск SEC) или явного перекоса толпы >75%. Не блокируй BTCUSDT, ETHUSDT, XAUUSDT без критического риска.',
   ].join('\n');
 }
 
@@ -968,14 +982,31 @@ export function parseAiConductorResponse(
         ? (parsed.allowedDirectionMode as AiAllowedDirectionMode)
         : resolveDefaultDirectionModeForEvent(snapshot.primaryEvent);
 
+    const anchorSymbols = new Set(['BTCUSDT', 'ETHUSDT', 'XAUUSDT']);
+    const criticalSet = new Set((snapshot.criticalRiskSymbols || []).map((s) => s.toUpperCase()));
+    const justifiedBlockSet = new Set<string>([
+      ...criticalSet,
+      ...(snapshot.crowdedSymbols || []).map((c) => String(c).split(/\s+/)[0].toUpperCase()),
+      ...(snapshot.recentNewsSummary || [])
+        .filter((n) => n.sentiment === 'BEARISH')
+        .map((n) => String(n.symbol || '').toUpperCase()),
+    ]);
+    const hasRiskContext =
+      Array.isArray(snapshot.recentNewsSummary) || Array.isArray(snapshot.criticalRiskSymbols);
+
     const blockedSymbols: string[] = Array.isArray(parsed.blockedSymbols)
       ? Array.from(
           new Set(
             parsed.blockedSymbols
               .map((s: unknown) => String(s || '').toUpperCase().trim())
-              .filter((s: string) => s.endsWith('USDT') && s.length >= 6)
+              .filter((s: string) => {
+                if (!s.endsWith('USDT') || s.length < 6) return false;
+                if (anchorSymbols.has(s) && !criticalSet.has(s)) return false;
+                if (hasRiskContext && !justifiedBlockSet.has(s)) return false;
+                return true;
+              })
           )
-        ).slice(0, 8) as string[]
+        ).slice(0, 3) as string[]
       : [];
 
     const mutations: StrategyMutationAction[] = Array.isArray(parsed.mutations)

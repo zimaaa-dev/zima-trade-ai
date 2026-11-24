@@ -593,8 +593,8 @@ test('[Option 1] computeFeedItemFreshnessWeight decays older Telegram signals cl
 test('[Option 1] resolveDynamicCryptoUniverse expands Top-35 liquid crypto coins while blocking US stock/ETF synthetics', () => {
   const core = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XAUUSDT'];
   const { universe, dynamicAdded } = resolveDynamicCryptoUniverse({
-    baseAllowedSymbols: ['BTCUSDT', 'SOLUSDT'],
-    coreWhitelist: core,
+    baseAllowedSymbols: ['BTCUSDT', 'SOLUSDT', 'SPCXUSDT', 'CLUSDT'],
+    coreWhitelist: [...core, 'SKHYUSDT'],
     goldAllowed: true,
     isDynamicScanEnabled: true,
     maxDynamicExtras: 15,
@@ -603,6 +603,11 @@ test('[Option 1] resolveDynamicCryptoUniverse expands Top-35 liquid crypto coins
       { symbol: 'SOXLUSDT', turnover24h: 207_000_000, spreadBps: 2.9 },
       { symbol: 'SNDKUSDT', turnover24h: 150_000_000, spreadBps: 1.2 },
       { symbol: 'NVDAUSDT', turnover24h: 400_000_000, spreadBps: 0.5 },
+      { symbol: 'NVDAXUSDT', turnover24h: 220_000_000, spreadBps: 0.7 },
+      { symbol: 'SPCXUSDT', turnover24h: 250_000_000, spreadBps: 0.6 },
+      { symbol: 'SKHYUSDT', turnover24h: 240_000_000, spreadBps: 0.8 },
+      { symbol: 'CLUSDT', turnover24h: 310_000_000, spreadBps: 0.5 },
+      { symbol: 'USOILUSDT', turnover24h: 280_000_000, spreadBps: 0.6 },
       { symbol: 'ANTHROPICUSDT', turnover24h: 180_000_000, spreadBps: 0.8 },
       { symbol: 'MUUSDT', turnover24h: 160_000_000, spreadBps: 0.9 },
       { symbol: 'OPENAIUSDT', turnover24h: 190_000_000, spreadBps: 0.7 },
@@ -621,6 +626,11 @@ test('[Option 1] resolveDynamicCryptoUniverse expands Top-35 liquid crypto coins
   assert.ok(!universe.includes('SOXLUSDT'));
   assert.ok(!universe.includes('SNDKUSDT'));
   assert.ok(!universe.includes('NVDAUSDT'));
+  assert.ok(!universe.includes('NVDAXUSDT'));
+  assert.ok(!universe.includes('SPCXUSDT'));
+  assert.ok(!universe.includes('SKHYUSDT'));
+  assert.ok(!universe.includes('CLUSDT'));
+  assert.ok(!universe.includes('USOILUSDT'));
   assert.ok(!universe.includes('ANTHROPICUSDT'));
   assert.ok(!universe.includes('MUUSDT'));
   assert.ok(!universe.includes('OPENAIUSDT'));

@@ -217,6 +217,7 @@ import {
   isRealTelegramChatId,
   computeFeedItemFreshnessWeight,
   resolveDynamicCryptoUniverse,
+  isEligibleDynamicCryptoSymbol,
   type TrendGridSafetyOrder,
   type MarketRegimeType,
   type AdaptiveMarketProfile,
@@ -245,6 +246,7 @@ import {
   type MarketNewsSummaryItem,
   type AiConductorDecision,
   type MarketEventKey,
+  type AiAllowedDirectionMode,
 } from './src/lib/ai-strategy-conductor.ts';
 import {
   DEFAULT_OKX_SWAP_INSTRUMENTS,
@@ -262,7 +264,10 @@ import {
 } from './src/lib/okx-exchange.ts';
 import {
   parseTelegramSignalPost,
+  parseMarketNewsHeadline,
   extractSignalsFromTelegramWebHtml,
+  extractNewsItemsFromTelegramWebHtml,
+  parseRssOrAtomFeedXml,
   detectAllSymbolsInText,
   classifyHeadlineRisk,
   type ParsedTelegramPostSignal,
@@ -271,6 +276,8 @@ import {
   type AppNotification,
   type NotificationCategory,
   type NotificationSeverity,
+  type PolicyEvaluationStats,
+  type RecalibrationStats,
 } from './src/types.ts';
 import {
   OpenRouterKeyPool,
@@ -719,6 +726,9 @@ interface AppSystemState {
   lastAiConductorRunAt?: number;
   currentAiConductorDecision?: AiConductorDecision | null;
   aiConductorHistory?: AiConductorDecision[];
+  rssDefaultsSeeded?: boolean;
+  recalibrationCutoffTs?: number;
+  policyStats?: PolicyEvaluationStats;
   botEngineSpeedMs: number;
   botTradeLogs: BotLogEntry[];
   closedTrades: ClosedTradeRecord[];
@@ -813,6 +823,16 @@ const systemState: AppSystemState = {
   currentMarketRegime: '🔄 Боковой диапазон (Range / Choppy)',
   aiConductorEnabled: true,
   lastAiConductorRunAt: 0,
+  rssDefaultsSeeded: true,
+  recalibrationCutoffTs: Date.UTC(2026, 10, 24, 13, 30, 0),
+  policyStats: {
+    totalChecks: 0,
+    allowedCount: 0,
+    blockedByAiPolicy: 0,
+    blockedByNews: 0,
+    blockedByRules: 0,
+    blockedBySettings: 0,
+  },
   currentAiConductorDecision: null,
   aiConductorHistory: [],
   botEngineSpeedMs: 3500,
@@ -908,6 +928,44 @@ const systemState: AppSystemState = {
       profitFactor: 2.05,
       maxDrawdownPct: 3.1,
       daysInQuarantine: 45,
+    },
+    {
+      channelId: 1008,
+      title: 'CoinDesk News RSS',
+      username: 'https://www.coindesk.com/arc/outboundfeeds/rss/',
+      sourceType: 'RSS',
+      category: 'Свежие мировые криптоновости (RSS)',
+      influenceWeight: 0.78,
+      isEnabled: true,
+      lastSignalText: 'Синхронизация ленты CoinDesk RSS...',
+      lastParsedAt: Date.now() - 120000,
+      status: 'APPROVED',
+      trustScore: 90.0,
+      scamEditCount: 0,
+      totalSignals: 0,
+      winRateShadow: 0.68,
+      profitFactor: 1.82,
+      maxDrawdownPct: 3.6,
+      daysInQuarantine: 30,
+    },
+    {
+      channelId: 1009,
+      title: 'Cointelegraph RSS',
+      username: 'https://cointelegraph.com/rss',
+      sourceType: 'RSS',
+      category: 'Оперативные новости крипторынка (RSS)',
+      influenceWeight: 0.76,
+      isEnabled: true,
+      lastSignalText: 'Синхронизация ленты Cointelegraph RSS...',
+      lastParsedAt: Date.now() - 120000,
+      status: 'APPROVED',
+      trustScore: 88.0,
+      scamEditCount: 0,
+      totalSignals: 0,
+      winRateShadow: 0.66,
+      profitFactor: 1.78,
+      maxDrawdownPct: 3.8,
+      daysInQuarantine: 30,
     },
     {
       channelId: 1006,
@@ -1038,6 +1096,9 @@ function buildPersistPayload() {
     lastAiConductorRunAt: systemState.lastAiConductorRunAt || 0,
     currentAiConductorDecision: systemState.currentAiConductorDecision || null,
     aiConductorHistory: (systemState.aiConductorHistory || []).slice(0, 24),
+    rssDefaultsSeeded: Boolean(systemState.rssDefaultsSeeded),
+    recalibrationCutoffTs: systemState.recalibrationCutoffTs || Date.UTC(2026, 10, 24, 13, 30, 0),
+    policyStats: systemState.policyStats,
     activePositions: systemState.activePositions,
     limitOrdersQueue: systemState.limitOrdersQueue,
     closedTrades: systemState.closedTrades,
@@ -1277,6 +1338,21 @@ function loadPersistedState(): void {
       if (Array.isArray(parsed.aiConductorHistory)) {
         systemState.aiConductorHistory = parsed.aiConductorHistory.slice(0, 24);
       }
+      if (typeof parsed.recalibrationCutoffTs === 'number' && parsed.recalibrationCutoffTs > 0) {
+        systemState.recalibrationCutoffTs = parsed.recalibrationCutoffTs;
+      }
+      if (parsed.policyStats && typeof parsed.policyStats === 'object') {
+        systemState.policyStats = {
+          totalChecks: Number(parsed.policyStats.totalChecks) || 0,
+          allowedCount: Number(parsed.policyStats.allowedCount) || 0,
+          blockedByAiPolicy: Number(parsed.policyStats.blockedByAiPolicy) || 0,
+          blockedByNews: Number(parsed.policyStats.blockedByNews) || 0,
+          blockedByRules: Number(parsed.policyStats.blockedByRules) || 0,
+          blockedBySettings: Number(parsed.policyStats.blockedBySettings) || 0,
+          lastBlockedReason: parsed.policyStats.lastBlockedReason,
+          lastBlockedAt: parsed.policyStats.lastBlockedAt,
+        };
+      }
       if (typeof parsed.lastUnblockedAt === 'number') systemState.lastUnblockedAt = parsed.lastUnblockedAt;
       if (typeof parsed.isKillSwitchActive === 'boolean' && !isLegacy10k) {
         systemState.isKillSwitchActive = parsed.isKillSwitchActive;
@@ -1382,7 +1458,11 @@ function loadPersistedState(): void {
       }
       if (Array.isArray(parsed.xaiDecisions)) {
         systemState.xaiDecisions = parsed.xaiDecisions
-          .filter((d: any) => isDemoSeedMode || !String(d?.id || '').startsWith('xai-init-'))
+          .filter(
+            (d: any) =>
+              (isDemoSeedMode || !String(d?.id || '').startsWith('xai-init-')) &&
+              (!d?.symbol || isEligibleDynamicCryptoSymbol(String(d.symbol), true))
+          )
           .map((d: any) => ({
             ...d,
             botName: sanitizeBotName(d.botId, d.botName),
@@ -1398,7 +1478,7 @@ function loadPersistedState(): void {
         }));
       }
       if (Array.isArray(parsed.channels) && parsed.channels.length > 0) {
-        // Remove defunct non-existent placeholder channels (@crypto_alpha_vip, @bybit_whale_calls) and ensure @ne_investor is present & APPROVED
+        // Remove defunct non-existent placeholder channels (@crypto_alpha_vip, @bybit_whale_calls) and ensure @ne_investor + default RSS feeds are present
         const filteredChannels = parsed.channels.filter(
           (c: any) =>
             c.username !== '@crypto_alpha_vip' &&
@@ -1439,10 +1519,70 @@ function loadPersistedState(): void {
             }
           }
         }
+        if (!parsed.rssDefaultsSeeded) {
+          const defaultRssToSeed = [
+            {
+              channelId: 1008,
+              title: 'CoinDesk News RSS',
+              username: 'https://www.coindesk.com/arc/outboundfeeds/rss/',
+              sourceType: 'RSS',
+              category: 'Свежие мировые криптоновости (RSS)',
+              influenceWeight: 0.78,
+              isEnabled: true,
+              lastSignalText: 'Синхронизация ленты CoinDesk RSS...',
+              lastParsedAt: Date.now(),
+              status: 'APPROVED',
+              trustScore: 90.0,
+              scamEditCount: 0,
+              totalSignals: 0,
+              winRateShadow: 0.68,
+              profitFactor: 1.82,
+              maxDrawdownPct: 3.6,
+              daysInQuarantine: 30,
+            },
+            {
+              channelId: 1009,
+              title: 'Cointelegraph RSS',
+              username: 'https://cointelegraph.com/rss',
+              sourceType: 'RSS',
+              category: 'Оперативные новости крипторынка (RSS)',
+              influenceWeight: 0.76,
+              isEnabled: true,
+              lastSignalText: 'Синхронизация ленты Cointelegraph RSS...',
+              lastParsedAt: Date.now(),
+              status: 'APPROVED',
+              trustScore: 88.0,
+              scamEditCount: 0,
+              totalSignals: 0,
+              winRateShadow: 0.66,
+              profitFactor: 1.78,
+              maxDrawdownPct: 3.8,
+              daysInQuarantine: 30,
+            },
+          ];
+          for (const rssItem of defaultRssToSeed) {
+            const exists = filteredChannels.some(
+              (c: any) =>
+                String(c.username || '').toLowerCase().includes(rssItem.username.includes('coindesk') ? 'coindesk' : 'cointelegraph')
+            );
+            if (!exists) {
+              filteredChannels.push(rssItem);
+            }
+          }
+        }
+        systemState.rssDefaultsSeeded = true;
         systemState.channels = filteredChannels;
       }
       if (Array.isArray(parsed.parsedNewsFeed) && parsed.parsedNewsFeed.length > 0) {
-        // Purge synthetic L2_ORDERBOOK_SIGNAL entries and non-actionable promo/referral posts
+        // Purge synthetic L2_ORDERBOOK_SIGNAL entries while preserving both TG trading signals and macro/market news headlines
+        const NEWS_ONLY_SET = new Set([
+          '@watcherguru',
+          '@wublockchain',
+          '@cointelegraph',
+          '@unfolded',
+          '@whale_alert_io',
+          'announcements.bybit.com',
+        ]);
         systemState.parsedNewsFeed = parsed.parsedNewsFeed.filter((f: any) => {
           const text = String(f?.rawText || '');
           if (
@@ -1454,8 +1594,16 @@ function loadPersistedState(): void {
           ) {
             return false;
           }
-          const check = parseTelegramSignalPost(text);
-          return check.isActionableSignal;
+          const isNewsItem =
+            f?.sourceType === 'RSS' ||
+            f?.sourceType === 'EXCHANGE_ANN' ||
+            f?.dataSource === 'LIVE_RSS_FEED' ||
+            f?.dataSource === 'LIVE_BYBIT_API' ||
+            NEWS_ONLY_SET.has(String(f?.sourceHandle || '').toLowerCase());
+          if (isNewsItem) {
+            return parseMarketNewsHeadline(text).isRelevantNews;
+          }
+          return parseTelegramSignalPost(text).isActionableSignal;
         });
       }
       if (parsed.telegramBot && typeof parsed.telegramBot === 'object') {
@@ -2388,8 +2536,27 @@ function buildTelegramCommandReply(
       mergedPos.exchangeStrayCount > 0
         ? ` (терминал: ${mergedPos.terminalCount}, вне терминала на OKX: ${mergedPos.exchangeStrayCount})`
         : '';
+    const conductor = systemState.currentAiConductorDecision;
+    const aiDirMode =
+      conductor?.allowedDirectionMode ||
+      resolveDefaultDirectionModeForEvent(conductor?.primaryEvent || 'LOW_VOL_RANGE');
+    const aiBanList = conductor?.blockedSymbols?.length ? conductor.blockedSymbols.join(', ') : 'нет';
+    const liveNews = computeLiveNewsContext(Date.now());
+    const pStats = systemState.policyStats || {
+      totalChecks: 0,
+      allowedCount: 0,
+      blockedByAiPolicy: 0,
+      blockedByNews: 0,
+      blockedByRules: 0,
+      blockedBySettings: 0,
+    };
+    const recalStats = computeRecalibrationStats();
+    const newsScoreStr = `${liveNews.marketNewsScore >= 0 ? '+' : ''}${liveNews.marketNewsScore.toFixed(2)}`;
+    const aiPolicyLine = `\n• <b>Политика ИИ:</b> ${aiDirMode} (${conductor?.primaryEvent || 'LOW_VOL_RANGE'}) · бан: ${aiBanList}`;
+    const newsLine = `\n• <b>Новости (6ч):</b> фон ${newsScoreStr} (свежих: ${liveNews.freshCount6h}) · отказы: ИИ ${pStats.blockedByAiPolicy} / Нов ${pStats.blockedByNews} / Прав ${pStats.blockedByRules}`;
+    const recalLine = `\n• <b>Новая калибровка TP:</b> ${recalStats.tradesCount} сд. · WR ${recalStats.winRatePct.toFixed(0)}% · ${formatSignedUsdt(recalStats.netPnlUsdt)} USDT`;
     return {
-      html: `📊 <b>Отчет ZimaTrade · ${breakdown.mskTimeLabel}</b>\n\n• Режим: <b>${modeLabel}</b>\n• Рабочий капитал: <b>$${equity} USDT</b> (Эквити: <b>$${totalEquity}</b>)${capNote}\n• Плавающий PnL: <b>${formatSignedUsdt(floatingPnl)} USDT</b>\n• Общий PnL (всё время): <b>${formatSignedUsdt(systemState.totalRealizedPnlUsdt)} USDT</b>\n\n${formatTelegramPeriodSummaryHtml(breakdown)}\n\n• Открытых сделок: <b>${mergedPos.totalLiveCount}</b>${posBreakdown}\n• Стоп-Кран: <b>${systemState.isKillSwitchActive ? '🚨 АКТИВЕН' : '🟢 НОРМА'}</b>\n• Пинг Bybit / OKX: <b>${systemState.pings.bybit} мс / ${systemState.pings.okx} мс</b>\n• Режим тишины (DND): ${dndStatusLine}`,
+      html: `📊 <b>Отчет ZimaTrade · ${breakdown.mskTimeLabel}</b>\n\n• Режим: <b>${modeLabel}</b>\n• Рабочий капитал: <b>$${equity} USDT</b> (Эквити: <b>$${totalEquity}</b>)${capNote}\n• Плавающий PnL: <b>${formatSignedUsdt(floatingPnl)} USDT</b>\n• Общий PnL (всё время): <b>${formatSignedUsdt(systemState.totalRealizedPnlUsdt)} USDT</b>\n\n${formatTelegramPeriodSummaryHtml(breakdown)}${aiPolicyLine}${newsLine}${recalLine}\n\n• Открытых сделок: <b>${mergedPos.totalLiveCount}</b>${posBreakdown}\n• Стоп-Кран: <b>${systemState.isKillSwitchActive ? '🚨 АКТИВЕН' : '🟢 НОРМА'}</b>\n• Пинг Bybit / OKX: <b>${systemState.pings.bybit} мс / ${systemState.pings.okx} мс</b>\n• Режим тишины (DND): ${dndStatusLine}`,
       replyMarkup: getTelegramReplyKeyboard(),
     };
   }
@@ -2766,7 +2933,15 @@ async function runProductionTelegramRelayBridge(): Promise<void> {
               const floating = Number(
                 prodPositions.reduce((acc: number, p: any) => acc + (Number(p?.unrealizedPnl) || 0), 0).toFixed(2)
               );
-              replyHtml = `📊 <b>Статус боевого сервера (194.113.34.230)</b>\n\n• Баланс: <b>$${eq} USDT</b> (Плавающий: <b>${formatSignedUsdt(floating)}</b>)\n• Общий PnL: <b>${formatSignedUsdt(Number(realPnl))} USDT</b>\n\n${periodBlock}\n\n• Открытых сделок: <b>${prodPositions.length}</b>\n• Стоп-Кран: <b>${prodHealth?.isKillSwitchActive ? '🚨 АКТИВЕН' : '🟢 НОРМА'}</b>\n• Режим тишины (DND): ${dndText}`;
+              const pPolicy = prodHealth?.aiPolicySummary;
+              const pRecal = prodHealth?.recalibrationStats;
+              const pPolicyLine = pPolicy
+                ? `\n• <b>Политика ИИ:</b> ${pPolicy.allowedDirectionMode} (${pPolicy.primaryEvent}) · бан: ${pPolicy.blockedSymbols?.length ? pPolicy.blockedSymbols.join(', ') : 'нет'}\n• <b>Новости (6ч):</b> фон ${pPolicy.marketNewsScore >= 0 ? '+' : ''}${Number(pPolicy.marketNewsScore || 0).toFixed(2)} (свежих: ${pPolicy.freshCount6h || 0})`
+                : '';
+              const pRecalLine = pRecal
+                ? `\n• <b>Новая калибровка TP:</b> ${pRecal.tradesCount} сд. · WR ${Number(pRecal.winRatePct || 0).toFixed(0)}% · ${formatSignedUsdt(Number(pRecal.netPnlUsdt || 0))} USDT`
+                : '';
+              replyHtml = `📊 <b>Статус боевого сервера (194.113.34.230)</b>\n\n• Баланс: <b>$${eq} USDT</b> (Плавающий: <b>${formatSignedUsdt(floating)}</b>)\n• Общий PnL: <b>${formatSignedUsdt(Number(realPnl))} USDT</b>\n\n${periodBlock}${pPolicyLine}${pRecalLine}\n\n• Открытых сделок: <b>${prodPositions.length}</b>\n• Стоп-Кран: <b>${prodHealth?.isKillSwitchActive ? '🚨 АКТИВЕН' : '🟢 НОРМА'}</b>\n• Режим тишины (DND): ${dndText}`;
             } else if (cmd === '/positions') {
               if (prodPositions.length === 0) {
                 replyHtml = `📭 <b>На боевом сервере сейчас нет открытых позиций.</b> Алгоритмы сканируют стакан L2 Bybit и OKX.`;
@@ -3282,7 +3457,13 @@ async function fetchRealOkxTickers(): Promise<any[]> {
             nextFundingTime: cachedFr?.nextFundingTime ?? Date.now() + 3600000,
           };
         })
-        .filter((t: any) => t.price > 0 && t.turnover24h >= 1500000 && t.spreadBps <= 35.0)
+        .filter(
+          (t: any) =>
+            isEligibleDynamicCryptoSymbol(t.symbol, true) &&
+            t.price > 0 &&
+            t.turnover24h >= 1500000 &&
+            t.spreadBps <= 35.0
+        )
         .sort((a: any, b: any) => b.turnover24h - a.turnover24h)
         .slice(0, 150);
 
@@ -3345,7 +3526,13 @@ async function fetchRealBybitTickers(): Promise<any[]> {
             nextFundingTime: parseInt(t.nextFundingTime || '0'),
           };
         })
-        .filter((t: any) => t.price > 0 && t.turnover24h >= 1500000 && t.spreadBps <= 35.0)
+        .filter(
+          (t: any) =>
+            isEligibleDynamicCryptoSymbol(t.symbol, true) &&
+            t.price > 0 &&
+            t.turnover24h >= 1500000 &&
+            t.spreadBps <= 35.0
+        )
         .sort((a: any, b: any) => b.turnover24h - a.turnover24h)
         .slice(0, 150);
 
@@ -4467,6 +4654,20 @@ function buildFullSystemHealthPayload() {
       closedTrades: systemState.closedTrades,
       baseCapitalUsdt: systemState.capitalUsdt,
     }),
+    recalibrationStats: computeRecalibrationStats(),
+    aiPolicySummary: (() => {
+      const dec = systemState.currentAiConductorDecision;
+      const news = computeLiveNewsContext(Date.now());
+      return {
+        primaryEvent: dec?.primaryEvent || 'LOW_VOL_RANGE',
+        allowedDirectionMode:
+          dec?.allowedDirectionMode || resolveDefaultDirectionModeForEvent(dec?.primaryEvent || 'LOW_VOL_RANGE'),
+        blockedSymbols: dec?.blockedSymbols || [],
+        marketNewsScore: news.marketNewsScore,
+        freshCount6h: news.freshCount6h,
+        policyStats: systemState.policyStats,
+      };
+    })(),
     memoryRssMb: rssMb,
     agentsOnline: systemState.agents.filter(a => a.isEnabled).length,
     totalAgents: systemState.agents.length,
@@ -5846,8 +6047,66 @@ let lastEmptyCandidatesLogTs = 0;
 let lastDcaGuardLogTs = 0;
 const okxDemoUnsupportedSymbols = new Set<string>(['CLUSDT', 'UNIUSDT', 'SKHYUSDT', 'SPCXUSDT']);
 
+const NEWS_ONLY_HANDLES_LOWER = new Set([
+  '@watcherguru',
+  '@wublockchain',
+  '@cointelegraph',
+  '@unfolded',
+  '@whale_alert_io',
+  'announcements.bybit.com',
+]);
+
+function isNewsOnlySource(source?: {
+  username?: string;
+  sourceHandle?: string;
+  sourceType?: string;
+  dataSource?: string;
+}): boolean {
+  const sType = String(source?.sourceType || '').toUpperCase();
+  if (sType === 'RSS' || sType === 'TWITTER' || sType === 'EXCHANGE_ANN') return true;
+  if (source?.dataSource === 'LIVE_RSS_FEED' || source?.dataSource === 'LIVE_BYBIT_API') return true;
+  const handle = String(source?.username || source?.sourceHandle || '').trim().toLowerCase();
+  if (!handle) return false;
+  if (handle.startsWith('http://') || handle.startsWith('https://')) return true;
+  return NEWS_ONLY_HANDLES_LOWER.has(handle);
+}
+
+function computeRecalibrationStats(): RecalibrationStats {
+  const cutoffTs = systemState.recalibrationCutoffTs || Date.UTC(2026, 10, 24, 13, 30, 0);
+  const postTrades = (systemState.closedTrades || []).filter(
+    (t: any) => (Number(t?.closedAt) || 0) >= cutoffTs
+  );
+  const tradesCount = postTrades.length;
+  const wins = postTrades.filter((t: any) => (Number(t?.netPnlUsdt) || 0) >= 0).length;
+  const losses = tradesCount - wins;
+  const winRatePct = tradesCount > 0 ? Number(((wins / tradesCount) * 100).toFixed(1)) : 0;
+  const netPnlUsdt = Number(
+    postTrades.reduce((acc: number, t: any) => acc + (Number(t?.netPnlUsdt) || 0), 0).toFixed(2)
+  );
+  const sinceLabel =
+    new Date(cutoffTs).toLocaleString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }) + ' МСК';
+
+  return {
+    cutoffTs,
+    sinceLabel,
+    tradesCount,
+    wins,
+    losses,
+    winRatePct,
+    netPnlUsdt,
+  };
+}
+
 function computeLiveNewsContext(nowTs = Date.now()): {
   marketNewsScore: number;
+  freshCount6h: number;
+  criticalRiskSymbols: string[];
   bySymbol: Record<string, { score: number; hasCriticalRisk: boolean; criticalTag?: string }>;
   summaryItems: MarketNewsSummaryItem[];
 } {
@@ -5864,20 +6123,26 @@ function computeLiveNewsContext(nowTs = Date.now()): {
   for (const item of freshItems) {
     const rawText = String(item?.rawText || '');
     const sym = String(item?.symbol || 'BTCUSDT').toUpperCase();
+    const explicitlyMentioned = detectAllSymbolsInText(rawText);
     const ageHours = Math.max(0, (nowTs - (Number(item?.timestamp) || nowTs)) / 3600000);
     const freshness = Math.max(0.25, 1 - ageHours / 6);
     const risk = classifyHeadlineRisk(rawText);
 
-    // Re-score headline with latest parser rules so stale mislabeled short-squeeze news never persists
-    const reparsed = parseTelegramSignalPost(rawText, { fallbackSymbol: sym });
+    // Re-score headline with latest signal & macro news rules so neutral macro/ETF headlines and risk flags are accurate
+    const reparsedSig = parseTelegramSignalPost(rawText, { fallbackSymbol: sym });
+    const reparsedNews = reparsedSig.isActionableSignal
+      ? null
+      : parseMarketNewsHeadline(rawText, { fallbackSymbol: sym });
     const score =
-      reparsed.isActionableSignal && reparsed.sentiment !== 'NEUTRAL'
-        ? reparsed.sentimentScore
+      reparsedSig.isActionableSignal && reparsedSig.sentiment !== 'NEUTRAL'
+        ? reparsedSig.sentimentScore
+        : reparsedNews && reparsedNews.isRelevantNews && reparsedNews.sentiment !== 'NEUTRAL'
+        ? reparsedNews.sentimentScore
         : Number(item?.sentimentScore) || 0;
     const sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL' =
       score > 0.15 ? 'BULLISH' : score < -0.15 ? 'BEARISH' : 'NEUTRAL';
 
-    const weight = (Number(item?.impactWeight) || 0.8) * freshness;
+    const weight = Math.max(0.35, Number(item?.impactWeight) || 0.75) * freshness;
     marketScoreSum += score * weight;
     marketWeightSum += weight;
 
@@ -5886,34 +6151,50 @@ function computeLiveNewsContext(nowTs = Date.now()): {
     }
     symbolAgg[sym].sum += score * weight;
     symbolAgg[sym].wSum += weight;
-    if (risk.isCriticalRisk) {
+    if (risk.isCriticalRisk && explicitlyMentioned.includes(sym)) {
       symbolAgg[sym].hasCriticalRisk = true;
       symbolAgg[sym].criticalTag = risk.tag;
     }
 
     if (summaryItems.length < 8) {
+      const handleStr = String(item?.sourceHandle || '');
+      const cleanSource =
+        handleStr.startsWith('http') || !handleStr
+          ? String(item?.sourceTitle || 'RSS Feed').replace(/\s+News\s+RSS/i, ' RSS')
+          : handleStr;
+      const cleanHeadline = rawText.replace(/^\[[^\]]+\]\s*/, '').slice(0, 130);
       summaryItems.push({
-        source: String(item?.sourceHandle || item?.sourceTitle || 'Feed'),
+        source: cleanSource,
         symbol: sym,
         sentiment,
-        headline: rawText.slice(0, 130),
+        headline: cleanHeadline,
       });
     }
   }
 
   const bySymbol: Record<string, { score: number; hasCriticalRisk: boolean; criticalTag?: string }> = {};
+  const criticalRiskSymbols: string[] = [];
   for (const [sym, agg] of Object.entries(symbolAgg)) {
     bySymbol[sym] = {
       score: agg.wSum > 0 ? Number((agg.sum / agg.wSum).toFixed(2)) : 0,
       hasCriticalRisk: agg.hasCriticalRisk,
       criticalTag: agg.criticalTag,
     };
+    if (agg.hasCriticalRisk) {
+      criticalRiskSymbols.push(sym);
+    }
   }
 
   const marketNewsScore =
     marketWeightSum > 0 ? Number((marketScoreSum / marketWeightSum).toFixed(2)) : 0;
 
-  return { marketNewsScore, bySymbol, summaryItems };
+  return {
+    marketNewsScore,
+    freshCount6h: freshItems.length,
+    criticalRiskSymbols,
+    bySymbol,
+    summaryItems,
+  };
 }
 
 // Autonomous Bot Trading Engine for Mode 1 (Shadow Forward-Testing)
@@ -6588,8 +6869,9 @@ async function runBotEngineCycle() {
       );
 
       if (activeBots.length > 0 && mergedPositions.totalLiveCount < maxAllowedOpenPositions) {
-        const NEWS_ONLY_HANDLES = new Set(['@WatcherGuru', '@WuBlockchain', '@Cointelegraph', 'announcements.bybit.com']);
-        const isTradingSignalFeedItem = (f: any) => !NEWS_ONLY_HANDLES.has(String(f?.sourceHandle || ''));
+        const isTradingSignalFeedItem = (f: any) =>
+          !isNewsOnlySource(f) &&
+          (Boolean(f?.extractedSetup) || String(f?.sourceHandle || '').trim().toLowerCase() === '@ne_investor');
         const botSelection = selectNextActingBot({
           activeBots,
           activePositions: systemState.activePositions,
@@ -6658,6 +6940,7 @@ async function runBotEngineCycle() {
           lastOkxInstrumentsFetchTs > 0 &&
           Object.keys(okxSwapInstrumentsCache).length > 30;
         const availableCandidates = rankedPairlist.filter((s) => {
+          if (!isEligibleDynamicCryptoSymbol(s, goldAllowed)) return false;
           if (!allowedUniverseSet.has(s) || mergedPositions.openSymbolsSet.has(s)) return false;
           if (systemState.activeExchange === 'OKX' && okxDemoUnsupportedSymbols.has(s)) return false;
           if (hasLiveOkxCatalog && !okxSwapInstrumentsCache[s]) return false;
@@ -6855,7 +7138,24 @@ async function runBotEngineCycle() {
           }
 
           const policyVerdict = checkCandidatePolicy(cand);
+          if (!systemState.policyStats) {
+            systemState.policyStats = {
+              totalChecks: 0,
+              allowedCount: 0,
+              blockedByAiPolicy: 0,
+              blockedByNews: 0,
+              blockedByRules: 0,
+              blockedBySettings: 0,
+            };
+          }
+          systemState.policyStats.totalChecks += 1;
           if (!policyVerdict.allowed) {
+            if (policyVerdict.vetoSource === 'AI_POLICY') systemState.policyStats.blockedByAiPolicy += 1;
+            else if (policyVerdict.vetoSource === 'NEWS') systemState.policyStats.blockedByNews += 1;
+            else if (policyVerdict.vetoSource === 'SETTINGS') systemState.policyStats.blockedBySettings += 1;
+            else systemState.policyStats.blockedByRules += 1;
+            systemState.policyStats.lastBlockedReason = `${cand.evalResult.action} ${cand.symbol}: ${policyVerdict.reason || 'policy veto'}`.slice(0, 180);
+            systemState.policyStats.lastBlockedAt = nowCycleTs;
             addBotLog({
               botId: actingBot.agentId,
               botName: actingBot.name,
@@ -6868,6 +7168,7 @@ async function runBotEngineCycle() {
             });
             continue;
           }
+          systemState.policyStats.allowedCount += 1;
 
           const dynamicSameDirLimit = resolveCorrelationCapBySlots(
             maxAllowedOpenPositions,
@@ -7373,6 +7674,8 @@ async function runBotEngineCycle() {
 
 // Bot Control API
 app.get('/api/bots/state', (_req: Request, res: Response) => {
+  const conductor = systemState.currentAiConductorDecision;
+  const liveNews = computeLiveNewsContext(Date.now());
   res.json({
     isRunning: systemState.botTradingEnabled && !systemState.isKillSwitchActive,
     mode: systemState.mode,
@@ -7381,6 +7684,17 @@ app.get('/api/bots/state', (_req: Request, res: Response) => {
     recentLogs: systemState.botTradeLogs.slice(0, 35),
     xaiDecisions: systemState.xaiDecisions.slice(0, 40),
     activePositionsCount: systemState.activePositions.length,
+    policyStats: systemState.policyStats,
+    recalibrationStats: computeRecalibrationStats(),
+    aiPolicySummary: {
+      primaryEvent: conductor?.primaryEvent || 'LOW_VOL_RANGE',
+      allowedDirectionMode:
+        conductor?.allowedDirectionMode ||
+        resolveDefaultDirectionModeForEvent(conductor?.primaryEvent || 'LOW_VOL_RANGE'),
+      blockedSymbols: conductor?.blockedSymbols || [],
+      marketNewsScore: liveNews.marketNewsScore,
+      freshCount6h: liveNews.freshCount6h,
+    },
     stats: {
       capitalUsdt: systemState.capitalUsdt,
       totalRealizedPnlUsdt: systemState.totalRealizedPnlUsdt,
@@ -7842,6 +8156,7 @@ async function computeLiveMarketSnapshotForAi(
     openPositionsCount: systemState.activePositions.length,
     workingCapitalUsdt,
     newsBiasScore: liveNewsCtx.marketNewsScore,
+    criticalRiskSymbols: liveNewsCtx.criticalRiskSymbols,
     recentNewsSummary: liveNewsCtx.summaryItems,
   };
 }
@@ -7898,27 +8213,56 @@ function buildAiConductorStatusPayload(snapshotOverride?: MarketSnapshotForAi): 
   currentEvent: MarketEventKey;
   currentEventLabelRu: string;
   secondaryEvents: MarketEventKey[];
+  allowedDirectionMode: AiAllowedDirectionMode;
+  blockedSymbols: string[];
+  newsContext: {
+    marketNewsScore: number;
+    freshCount6h: number;
+    criticalRiskSymbols: string[];
+    summaryItems: MarketNewsSummaryItem[];
+  };
+  policyStats: PolicyEvaluationStats;
+  recalibrationStats: RecalibrationStats;
   activeComboIds: string[];
   totalStrategiesCount: number;
   latestDecision: AiConductorDecision | null;
   history: AiConductorDecision[];
 } {
   const latest = systemState.currentAiConductorDecision || null;
-  const fallbackEvent = snapshotOverride?.primaryEvent || latest?.primaryEvent || 'LOW_VOL_RANGE';
+  const currentEvent = snapshotOverride?.primaryEvent || latest?.primaryEvent || 'LOW_VOL_RANGE';
   const activeComboIds = systemState.agents
     .filter((a) => a.isEnabled !== false)
     .map((a) => a.agentId);
+  const liveNews = computeLiveNewsContext(Date.now());
 
   return {
     enabled: systemState.aiConductorEnabled !== false,
     intervalMinutes: 20,
     lastRunAt: systemState.lastAiConductorRunAt ? systemState.lastAiConductorRunAt : null,
-    currentEvent: snapshotOverride?.primaryEvent || fallbackEvent,
+    currentEvent,
     currentEventLabelRu:
       snapshotOverride?.eventLabelRu ||
       latest?.eventLabelRu ||
-      EVENT_LABELS_RU[fallbackEvent],
+      EVENT_LABELS_RU[currentEvent],
     secondaryEvents: snapshotOverride?.secondaryEvents || [],
+    allowedDirectionMode:
+      latest?.allowedDirectionMode || resolveDefaultDirectionModeForEvent(currentEvent),
+    blockedSymbols: Array.isArray(latest?.blockedSymbols) ? latest.blockedSymbols : [],
+    newsContext: {
+      marketNewsScore: liveNews.marketNewsScore,
+      freshCount6h: liveNews.freshCount6h,
+      criticalRiskSymbols: liveNews.criticalRiskSymbols,
+      summaryItems: liveNews.summaryItems,
+    },
+    policyStats: systemState.policyStats || {
+      totalChecks: 0,
+      allowedCount: 0,
+      blockedByAiPolicy: 0,
+      blockedByNews: 0,
+      blockedByRules: 0,
+      blockedBySettings: 0,
+    },
+    recalibrationStats: computeRecalibrationStats(),
     activeComboIds: latest?.activeComboIds?.length ? latest.activeComboIds : activeComboIds,
     totalStrategiesCount: systemState.agents.length,
     latestDecision: latest,
@@ -9034,11 +9378,12 @@ async function fetchActionableSignalsFromChannel(channel: any): Promise<
     publishedAt?: number;
     rawText: string;
     symbol: string;
-    side: 'LONG' | 'SHORT';
-    sentiment: 'BULLISH' | 'BEARISH';
+    side?: 'LONG' | 'SHORT';
+    sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
     sentimentScore: number;
     dataSource: 'LIVE_TELEGRAM_WEB' | 'LIVE_BYBIT_API' | 'LIVE_RSS_FEED';
     sourceUrl?: string;
+    isNewsOnly?: boolean;
     extractedLevels?: {
       entryPrice?: number;
       stopLoss?: number;
@@ -9049,6 +9394,7 @@ async function fetchActionableSignalsFromChannel(channel: any): Promise<
 > {
   const sourceType: string = channel.sourceType || 'TELEGRAM';
   const handle = String(channel.username || '').trim();
+  const channelNewsOnly = isNewsOnlySource(channel);
 
   // 1. Public Telegram channel scraping via https://t.me/s/<channel_username> (with mirror fallback)
   if (sourceType === 'TELEGRAM') {
@@ -9060,10 +9406,7 @@ async function fetchActionableSignalsFromChannel(channel: any): Promise<
 
     if (cleanSlug && /^[a-zA-Z0-9_]{3,64}$/.test(cleanSlug)) {
       const publicUrl = `https://t.me/s/${cleanSlug}`;
-      const candidateUrls = [
-        publicUrl,
-        `https://r.jina.ai/${publicUrl}`,
-      ];
+      const candidateUrls = [publicUrl, `https://r.jina.ai/${publicUrl}`];
 
       for (const targetUrl of candidateUrls) {
         try {
@@ -9077,65 +9420,98 @@ async function fetchActionableSignalsFromChannel(channel: any): Promise<
           });
           if (!res.ok) continue;
           const body = await res.text();
-          let signals: ParsedTelegramPostSignal[] = [];
 
-          if (body.includes('tgme_widget_message_text')) {
-            signals = extractSignalsFromTelegramWebHtml(body, cleanSlug);
-            // If fewer than 6 actionable signals on the latest page, also inspect 1 page back (?before=minId)
-            if (signals.length < 6 && targetUrl === publicUrl) {
-              const idMatches = [...body.matchAll(/data-post="[^"/]+\/(\d+)"/gi)].map((m) => parseInt(m[1], 10));
-              if (idMatches.length > 0) {
-                const minId = Math.min(...idMatches);
-                const prevRes = await fetch(`${publicUrl}?before=${minId}`, {
-                  headers: {
-                    'User-Agent':
-                      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-                    Accept: 'text/html,application/xhtml+xml',
-                  },
-                  signal: AbortSignal.timeout(5000),
-                }).catch(() => null);
-                if (prevRes && prevRes.ok) {
-                  const prevHtml = await prevRes.text();
-                  const prevSignals = extractSignalsFromTelegramWebHtml(prevHtml, cleanSlug);
-                  for (const ps of prevSignals) {
-                    if (!signals.some((s) => s.rawText === ps.rawText)) {
-                      signals.push(ps);
+          if (channelNewsOnly) {
+            let newsItems = body.includes('tgme_widget_message_text')
+              ? extractNewsItemsFromTelegramWebHtml(body, cleanSlug)
+              : [];
+
+            if (newsItems.length === 0) {
+              const paragraphs = body
+                .split(/\n{2,}/)
+                .map((p) => p.trim())
+                .filter((p) => p.length >= 25 && !p.startsWith('Title:') && !p.startsWith('URL Source:'));
+              for (const p of paragraphs.slice(0, 12)) {
+                const parsed = parseMarketNewsHeadline(p, { fallbackSymbol: 'BTCUSDT', sourceUrl: publicUrl });
+                if (parsed.isRelevantNews) newsItems.push(parsed);
+              }
+            }
+
+            if (newsItems.length > 0) {
+              return newsItems.map((n) => ({
+                postId: n.postId,
+                publishedAt: n.publishedAt,
+                rawText: n.rawText,
+                symbol: INSTITUTIONAL_WHITELIST_SET.has(n.symbol) ? n.symbol : 'BTCUSDT',
+                sentiment: n.sentiment,
+                sentimentScore: n.sentimentScore,
+                dataSource: 'LIVE_TELEGRAM_WEB' as const,
+                sourceUrl: n.sourceUrl || publicUrl,
+                isNewsOnly: true,
+              }));
+            }
+          } else {
+            let signals: ParsedTelegramPostSignal[] = [];
+
+            if (body.includes('tgme_widget_message_text')) {
+              signals = extractSignalsFromTelegramWebHtml(body, cleanSlug);
+              // If fewer than 6 actionable signals on the latest page, also inspect 1 page back (?before=minId)
+              if (signals.length < 6 && targetUrl === publicUrl) {
+                const idMatches = [...body.matchAll(/data-post="[^"/]+\/(\d+)"/gi)].map((m) => parseInt(m[1], 10));
+                if (idMatches.length > 0) {
+                  const minId = Math.min(...idMatches);
+                  const prevRes = await fetch(`${publicUrl}?before=${minId}`, {
+                    headers: {
+                      'User-Agent':
+                        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+                      Accept: 'text/html,application/xhtml+xml',
+                    },
+                    signal: AbortSignal.timeout(5000),
+                  }).catch(() => null);
+                  if (prevRes && prevRes.ok) {
+                    const prevHtml = await prevRes.text();
+                    const prevSignals = extractSignalsFromTelegramWebHtml(prevHtml, cleanSlug);
+                    for (const ps of prevSignals) {
+                      if (!signals.some((s) => s.rawText === ps.rawText)) {
+                        signals.push(ps);
+                      }
                     }
                   }
                 }
               }
-            }
-          } else {
-            // Fallback for plain text / markdown proxy output (r.jina.ai)
-            const paragraphs = body
-              .split(/\n{2,}/)
-              .map((p) => p.trim())
-              .filter((p) => p.length >= 25 && !p.startsWith('Title:') && !p.startsWith('URL Source:'));
-            for (const p of paragraphs) {
-              const sig = parseTelegramSignalPost(p, { fallbackSymbol: 'BTCUSDT' });
-              if (sig.isActionableSignal) {
-                signals.push(sig);
+            } else {
+              // Fallback for plain text / markdown proxy output (r.jina.ai)
+              const paragraphs = body
+                .split(/\n{2,}/)
+                .map((p) => p.trim())
+                .filter((p) => p.length >= 25 && !p.startsWith('Title:') && !p.startsWith('URL Source:'));
+              for (const p of paragraphs) {
+                const sig = parseTelegramSignalPost(p, { fallbackSymbol: 'BTCUSDT' });
+                if (sig.isActionableSignal) {
+                  signals.push(sig);
+                }
               }
             }
-          }
 
-          if (signals.length > 0) {
-            return signals
-              .filter((s): s is ParsedTelegramPostSignal & { sentiment: 'BULLISH' | 'BEARISH' } =>
-                s.isActionableSignal && (s.sentiment === 'BULLISH' || s.sentiment === 'BEARISH')
-              )
-              .map((s) => ({
-                postId: s.postId,
-                publishedAt: s.publishedAt,
-                rawText: s.rawText,
-                symbol: INSTITUTIONAL_WHITELIST_SET.has(s.symbol) ? s.symbol : 'BTCUSDT',
-                side: s.side,
-                sentiment: s.sentiment,
-                sentimentScore: s.sentimentScore,
-                dataSource: 'LIVE_TELEGRAM_WEB' as const,
-                sourceUrl: publicUrl,
-                extractedLevels: s.extractedLevels,
-              }));
+            if (signals.length > 0) {
+              return signals
+                .filter((s): s is ParsedTelegramPostSignal & { sentiment: 'BULLISH' | 'BEARISH' } =>
+                  s.isActionableSignal && (s.sentiment === 'BULLISH' || s.sentiment === 'BEARISH')
+                )
+                .map((s) => ({
+                  postId: s.postId,
+                  publishedAt: s.publishedAt,
+                  rawText: s.rawText,
+                  symbol: INSTITUTIONAL_WHITELIST_SET.has(s.symbol) ? s.symbol : 'BTCUSDT',
+                  side: s.side,
+                  sentiment: s.sentiment,
+                  sentimentScore: s.sentimentScore,
+                  dataSource: 'LIVE_TELEGRAM_WEB' as const,
+                  sourceUrl: publicUrl,
+                  isNewsOnly: false,
+                  extractedLevels: s.extractedLevels,
+                }));
+            }
           }
         } catch (_err) {
           // Try next mirror URL
@@ -9144,11 +9520,11 @@ async function fetchActionableSignalsFromChannel(channel: any): Promise<
     }
   }
 
-  // 2. Official Bybit V5 Announcements API (ONLY for EXCHANGE_ANN sources, only actionable market/listing items)
+  // 2. Official Bybit V5 Announcements API (ONLY for EXCHANGE_ANN sources)
   if (sourceType === 'EXCHANGE_ANN') {
     try {
-      const res = await fetch('https://api.bybit.com/v5/announcements/index?locale=ru-RU&limit=5', {
-        signal: AbortSignal.timeout(4500),
+      const res = await fetch('https://api.bybit.com/v5/announcements/index?locale=ru-RU&limit=8', {
+        signal: AbortSignal.timeout(5000),
       });
       if (res.ok) {
         const data = await res.json().catch(() => null);
@@ -9158,16 +9534,37 @@ async function fetchActionableSignalsFromChannel(channel: any): Promise<
           if (item?.title) {
             const text = `[Bybit Official] ${item.title}${item.description ? ` — ${item.description}` : ''}`.slice(0, 340);
             const sym = detectSymbolInText(text, 'BTCUSDT');
-            const parsed = parseTelegramSignalPost(text, { fallbackSymbol: sym });
-            if (parsed.isActionableSignal && (parsed.sentiment === 'BULLISH' || parsed.sentiment === 'BEARISH')) {
+            const parsedSig = parseTelegramSignalPost(text, { fallbackSymbol: sym });
+            const parsedNews = parsedSig.isActionableSignal
+              ? null
+              : parseMarketNewsHeadline(text, {
+                  fallbackSymbol: sym,
+                  publishedAt: Number(item?.dateTimestamp) || Date.now(),
+                  sourceUrl: item.url || 'https://announcements.bybit.com',
+                });
+            if (parsedSig.isActionableSignal && (parsedSig.sentiment === 'BULLISH' || parsedSig.sentiment === 'BEARISH')) {
               results.push({
+                postId: item.url || text.slice(0, 80),
+                publishedAt: Number(item?.dateTimestamp) || Date.now(),
                 rawText: text,
-                symbol: sym,
-                side: parsed.side,
-                sentiment: parsed.sentiment,
-                sentimentScore: parsed.sentimentScore,
+                symbol: INSTITUTIONAL_WHITELIST_SET.has(sym) ? sym : 'BTCUSDT',
+                sentiment: parsedSig.sentiment,
+                sentimentScore: parsedSig.sentimentScore,
                 dataSource: 'LIVE_BYBIT_API' as const,
                 sourceUrl: item.url || 'https://announcements.bybit.com',
+                isNewsOnly: true,
+              });
+            } else if (parsedNews && parsedNews.isRelevantNews) {
+              results.push({
+                postId: item.url || text.slice(0, 80),
+                publishedAt: parsedNews.publishedAt,
+                rawText: text,
+                symbol: INSTITUTIONAL_WHITELIST_SET.has(parsedNews.symbol) ? parsedNews.symbol : 'BTCUSDT',
+                sentiment: parsedNews.sentiment,
+                sentimentScore: parsedNews.sentimentScore,
+                dataSource: 'LIVE_BYBIT_API' as const,
+                sourceUrl: parsedNews.sourceUrl,
+                isNewsOnly: true,
               });
             }
           }
@@ -9179,46 +9576,37 @@ async function fetchActionableSignalsFromChannel(channel: any): Promise<
     }
   }
 
-  // 3. Real RSS Feed XML Parser
+  // 3. Real RSS / Atom Feed XML Parser (CoinDesk, Cointelegraph, or user-added RSS)
   if (sourceType === 'RSS' || sourceType === 'TWITTER') {
     const rssUrl = handle.startsWith('http')
       ? handle
-      : handle.includes('coindesk')
+      : handle.toLowerCase().includes('coindesk')
       ? 'https://www.coindesk.com/arc/outboundfeeds/rss/'
       : 'https://cointelegraph.com/rss';
     try {
       const res = await fetch(rssUrl, {
-        headers: { 'User-Agent': 'ZimaTradeAI-RSS-Reader/2.5' },
-        signal: AbortSignal.timeout(4500),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; ZimaTradeAI-RSS/2.6)',
+          Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9',
+        },
+        signal: AbortSignal.timeout(6500),
       });
       if (res.ok) {
         const xml = await res.text();
-        const itemMatches = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)];
-        const results: Array<any> = [];
-        for (const im of itemMatches.slice(0, 6)) {
-          const block = im[1];
-          const titleMatch = block.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/i);
-          if (titleMatch && titleMatch[1]) {
-            const headline = decodeHtmlEntities(titleMatch[1]).slice(0, 300);
-            if (headline.length > 10) {
-              const text = `[${channel.title}] ${headline}`;
-              const sym = detectSymbolInText(headline, 'BTCUSDT');
-              const parsed = parseTelegramSignalPost(headline, { fallbackSymbol: sym });
-              if (parsed.isActionableSignal && (parsed.sentiment === 'BULLISH' || parsed.sentiment === 'BEARISH')) {
-                results.push({
-                  rawText: text,
-                  symbol: sym,
-                  side: parsed.side,
-                  sentiment: parsed.sentiment,
-                  sentimentScore: parsed.sentimentScore,
-                  dataSource: 'LIVE_RSS_FEED' as const,
-                  sourceUrl: rssUrl,
-                });
-              }
-            }
-          }
+        const rssItems = parseRssOrAtomFeedXml(xml, channel.title || 'RSS Feed', rssUrl, Date.now());
+        if (rssItems.length > 0) {
+          return rssItems.map((n) => ({
+            postId: n.sourceUrl || n.rawText.slice(0, 96),
+            publishedAt: n.publishedAt,
+            rawText: n.rawText,
+            symbol: INSTITUTIONAL_WHITELIST_SET.has(n.symbol) ? n.symbol : 'BTCUSDT',
+            sentiment: n.sentiment,
+            sentimentScore: n.sentimentScore,
+            dataSource: 'LIVE_RSS_FEED' as const,
+            sourceUrl: n.sourceUrl || rssUrl,
+            isNewsOnly: true,
+          }));
         }
-        if (results.length > 0) return results;
       }
     } catch (_err) {
       // Ignore
@@ -9247,10 +9635,17 @@ async function scanActiveNewsChannelOnce(notifyTelegram: boolean = true, preferr
     return systemState.parsedNewsFeed.find((f) => f.channelId === pickedChannel.channelId) || null;
   }
 
-  // Ingest up to 8 new actionable signals from this channel (oldest-to-newest so newest ends up first)
+  const isNewsOnlyChannel = isNewsOnlySource(pickedChannel);
+
+  // Ingest up to 8 new signals/news items from this channel (oldest-to-newest so newest ends up first)
   const missingSignals = scrapedSignals
     .slice(0, 8)
-    .filter((sig) => !systemState.parsedNewsFeed.some((f) => f.rawText === sig.rawText))
+    .filter(
+      (sig) =>
+        !systemState.parsedNewsFeed.some(
+          (f) => f.rawText === sig.rawText || (sig.postId && f.postId && f.postId === sig.postId)
+        )
+    )
     .reverse();
 
   let latestCreatedItem: any = null;
@@ -9265,30 +9660,30 @@ async function scanActiveNewsChannelOnce(notifyTelegram: boolean = true, preferr
   } else {
     for (const sig of missingSignals) {
       const sym = INSTITUTIONAL_WHITELIST_SET.has(sig.symbol) ? sig.symbol : 'BTCUSDT';
-      const book = await fetchRealBybitOrderbook(sym);
-      const midPrice = book.bids[0]?.price || 68500;
-      const decimals = midPrice >= 1000 ? 1 : midPrice >= 10 ? 2 : 4;
 
-      const isBullish = sig.side === 'LONG';
-      const side: 'LONG' | 'SHORT' = sig.side;
-      const entryPrice = sig.extractedLevels?.entryPrice || Number(midPrice.toFixed(decimals));
-      const stopLoss =
-        sig.extractedLevels?.stopLoss ||
-        Number((isBullish ? entryPrice * 0.985 : entryPrice * 1.015).toFixed(decimals));
-      const tp1 =
-        sig.extractedLevels?.tp1 ||
-        Number((isBullish ? entryPrice * 1.024 : entryPrice * 0.976).toFixed(decimals));
+      let side: 'LONG' | 'SHORT' | undefined;
+      let entryPrice = 0;
+      let stopLoss = 0;
+      let tp1 = 0;
+
+      if (!isNewsOnlyChannel && sig.side) {
+        const book = await fetchRealBybitOrderbook(sym);
+        const midPrice = book.bids[0]?.price || 68500;
+        const decimals = midPrice >= 1000 ? 1 : midPrice >= 10 ? 2 : 4;
+        const isBullish = sig.side === 'LONG';
+        side = sig.side;
+        entryPrice = sig.extractedLevels?.entryPrice || Number(midPrice.toFixed(decimals));
+        stopLoss =
+          sig.extractedLevels?.stopLoss ||
+          Number((isBullish ? entryPrice * 0.985 : entryPrice * 1.015).toFixed(decimals));
+        tp1 =
+          sig.extractedLevels?.tp1 ||
+          Number((isBullish ? entryPrice * 1.024 : entryPrice * 0.976).toFixed(decimals));
+      }
 
       pickedChannel.totalSignals = (pickedChannel.totalSignals || 0) + 1;
       pickedChannel.lastSignalText = scrapedSignals[0].rawText;
       pickedChannel.lastParsedAt = Date.now();
-
-      const isNewsOnlyChannel = new Set([
-        '@WatcherGuru',
-        '@WuBlockchain',
-        '@Cointelegraph',
-        'announcements.bybit.com',
-      ]).has(String(pickedChannel.username || ''));
 
       const newFeedItem = {
         id: `news-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
@@ -9302,17 +9697,18 @@ async function scanActiveNewsChannelOnce(notifyTelegram: boolean = true, preferr
         symbol: sym,
         sentiment: sig.sentiment,
         sentimentScore: sig.sentimentScore,
-        impactWeight: isNewsOnlyChannel ? 0 : (pickedChannel.influenceWeight ?? 0.85),
+        impactWeight: isNewsOnlyChannel ? 0.65 : (pickedChannel.influenceWeight ?? 0.85),
         dataSource: sig.dataSource,
         sourceUrl: sig.sourceUrl,
-        extractedSetup: isNewsOnlyChannel
-          ? undefined
-          : {
-              side,
-              entryPrice,
-              stopLoss,
-              tp1,
-            },
+        extractedSetup:
+          isNewsOnlyChannel || !side
+            ? undefined
+            : {
+                side,
+                entryPrice,
+                stopLoss,
+                tp1,
+              },
       };
 
       systemState.parsedNewsFeed.unshift(newFeedItem);
@@ -9324,7 +9720,8 @@ async function scanActiveNewsChannelOnce(notifyTelegram: boolean = true, preferr
           ? 'LIVE Bybit API'
           : 'LIVE RSS XML';
 
-      if (!isNewsOnlyChannel) {
+      if (!isNewsOnlyChannel && side) {
+        const isBullish = side === 'LONG';
         addBotLog({
           botId: 'agent-tg-crypto-alpha',
           botName: 'Alpha-Signal · Индекс Каналов',
@@ -9347,7 +9744,7 @@ async function scanActiveNewsChannelOnce(notifyTelegram: boolean = true, preferr
     }
   }
 
-  if (notifyTelegram && latestCreatedItem) {
+  if (notifyTelegram && latestCreatedItem && latestCreatedItem.extractedSetup) {
     const isBullish = latestCreatedItem.sentiment !== 'BEARISH';
     dispatchTelegramNotification({
       category: 'SIGNAL',

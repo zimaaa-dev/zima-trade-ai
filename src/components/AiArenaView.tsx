@@ -77,6 +77,29 @@ interface BotDraftConfig {
   learningRate: number;
 }
 
+function formatDirectionModeRu(mode?: string): { label: string; toneClass: string } {
+  if (mode === 'SHORT_PREFERRED') return { label: 'Приоритет SHORT', toneClass: 'text-rose-300' };
+  if (mode === 'LONG_PREFERRED') return { label: 'Приоритет LONG', toneClass: 'text-emerald-300' };
+  if (mode === 'DEFENSE_ONLY') return { label: 'Защита / Пауза', toneClass: 'text-amber-300' };
+  return { label: 'Оба направления', toneClass: 'text-cyan-300' };
+}
+
+function formatFeedTimestamp(ts?: number): string {
+  const num = Number(ts) || 0;
+  if (num <= 0) return '—';
+  const diffMin = Math.max(0, Math.floor((Date.now() - num) / 60000));
+  if (diffMin < 1) return 'только что';
+  if (diffMin < 60) return `${diffMin}м назад`;
+  const diffHours = Math.floor(diffMin / 60);
+  if (diffHours < 24) return `${diffHours}ч назад`;
+  return new Date(num).toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 const RewardSparklineSvg: React.FC<{ history: RewardHistoryPoint[] }> = ({ history }) => {
   if (!history || history.length === 0) {
     return (
@@ -1126,6 +1149,131 @@ export const AiArenaView: React.FC = () => {
               </div>
             </div>
 
+            {(() => {
+              const dirInfo = formatDirectionModeRu(conductorStatus.allowedDirectionMode);
+              const blockedList = conductorStatus.blockedSymbols || [];
+              const newsCtx = conductorStatus.newsContext || {
+                marketNewsScore: 0,
+                freshCount6h: 0,
+                criticalRiskSymbols: [],
+                summaryItems: [],
+              };
+              const pStats = conductorStatus.policyStats || {
+                totalChecks: 0,
+                allowedCount: 0,
+                blockedByAiPolicy: 0,
+                blockedByNews: 0,
+                blockedByRules: 0,
+                blockedBySettings: 0,
+              };
+              const recal = conductorStatus.recalibrationStats;
+              const newsScoreColor =
+                newsCtx.marketNewsScore > 0.15
+                  ? 'text-emerald-300'
+                  : newsCtx.marketNewsScore < -0.15
+                  ? 'text-rose-300'
+                  : 'text-slate-200';
+              return (
+                <div className="space-y-3 border-b border-slate-800/80 pb-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div>
+                      <div className="text-[11px] text-slate-400">Политика направления</div>
+                      <div className={`text-sm font-bold mt-0.5 ${dirInfo.toneClass}`}>
+                        {dirInfo.label}
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-0.5 truncate" title={blockedList.join(', ') || 'нет'}>
+                        Бан монет ИИ:{' '}
+                        <span className={blockedList.length > 0 ? 'text-amber-300' : 'text-slate-500'}>
+                          {blockedList.length > 0 ? blockedList.join(', ') : 'нет'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-[11px] text-slate-400">Новостной фон (6ч)</div>
+                      <div className={`text-sm font-bold mt-0.5 ${newsScoreColor}`}>
+                        {newsCtx.marketNewsScore >= 0 ? '+' : ''}
+                        {newsCtx.marketNewsScore.toFixed(2)}
+                        <span className="text-[11px] font-normal text-slate-400">
+                          {' '}· свежих: {newsCtx.freshCount6h}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-0.5 truncate">
+                        Критич. риск:{' '}
+                        <span className={newsCtx.criticalRiskSymbols.length > 0 ? 'text-rose-300' : 'text-slate-500'}>
+                          {newsCtx.criticalRiskSymbols.length > 0
+                            ? newsCtx.criticalRiskSymbols.join(', ')
+                            : 'не выявлен'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-[11px] text-slate-400">Фильтр сделок (Policy)</div>
+                      <div className="text-sm font-bold text-slate-100 mt-0.5">
+                        {pStats.allowedCount} допущено{' '}
+                        <span className="text-[11px] font-normal text-slate-400">
+                          / {pStats.totalChecks} пров.
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-0.5">
+                        ИИ {pStats.blockedByAiPolicy} · Нов {pStats.blockedByNews} · Прав {pStats.blockedByRules} · Настр {pStats.blockedBySettings}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-[11px] text-slate-400">После калибровки TP</div>
+                      <div className="text-sm font-bold mt-0.5">
+                        <span className="text-slate-100">{recal ? recal.tradesCount : 0} сд.</span>
+                        <span className="text-slate-500"> · </span>
+                        <span className={(recal?.winRatePct || 0) >= 50 ? 'text-emerald-300' : 'text-amber-300'}>
+                          WR {(recal?.winRatePct || 0).toFixed(0)}%
+                        </span>
+                        <span className="text-slate-500"> · </span>
+                        <span className={(recal?.netPnlUsdt || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                          {(recal?.netPnlUsdt || 0) >= 0 ? '+' : ''}${(recal?.netPnlUsdt || 0).toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">
+                        с {recal?.sinceLabel || '24.11 13:30 МСК'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {pStats.lastBlockedReason && (
+                    <div className="text-[11px] text-slate-400 truncate">
+                      <span className="text-amber-300 font-semibold">Последний блок Policy: </span>
+                      {pStats.lastBlockedReason}
+                    </div>
+                  )}
+
+                  {newsCtx.summaryItems.length > 0 && (
+                    <div className="pt-2 border-t border-slate-800/70 space-y-1 text-[11px]">
+                      <div className="text-slate-400 font-semibold">Сводка новостей в контексте ИИ (6ч):</div>
+                      {newsCtx.summaryItems.slice(0, 4).map((n, idx) => (
+                        <div key={`${n.source}-${idx}`} className="flex items-baseline gap-2 text-slate-300 min-w-0">
+                          <span
+                            className={`shrink-0 font-bold ${
+                              n.sentiment === 'BULLISH'
+                                ? 'text-emerald-400'
+                                : n.sentiment === 'BEARISH'
+                                ? 'text-rose-400'
+                                : 'text-slate-400'
+                            }`}
+                          >
+                            {n.sentiment === 'BULLISH' ? '+' : n.sentiment === 'BEARISH' ? '−' : '~'}
+                          </span>
+                          <span className="text-cyan-300 shrink-0">{n.symbol}</span>
+                          <span className="text-slate-500 shrink-0">{n.source}</span>
+                          <span className="truncate">{n.headline}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {conductorStatus.latestDecision ? (
               <div className="text-xs text-slate-200 leading-relaxed">
                 <span className="text-slate-400 font-semibold">Вывод ИИ: </span>
@@ -1619,7 +1767,9 @@ export const AiArenaView: React.FC = () => {
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-[260px] overflow-y-auto pr-1">
                 {parsedNewsFeed.slice(0, 6).map((item, idx) => {
-                  const isBull = item.sentiment === 'BULLISH' || item.sentimentScore > 0;
+                  const isBull = item.sentiment === 'BULLISH' || item.sentimentScore > 0.1;
+                  const isBear = item.sentiment === 'BEARISH' || item.sentimentScore < -0.1;
+                  const isNeutral = !isBull && !isBear;
                   return (
                     <div
                       key={item.id}
@@ -1647,10 +1797,12 @@ export const AiArenaView: React.FC = () => {
                             className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
                               isBull
                                 ? 'bg-emerald-950 text-emerald-400 border border-emerald-500/30'
-                                : 'bg-rose-950 text-rose-400 border border-rose-500/30'
+                                : isBear
+                                ? 'bg-rose-950 text-rose-400 border border-rose-500/30'
+                                : 'bg-slate-950 text-slate-300 border border-slate-700'
                             }`}
                           >
-                            {isBull ? 'БЫЧИЙ' : 'МЕДВЕЖИЙ'} {item.sentimentScore >= 0 ? '+' : ''}
+                            {isNeutral ? 'НЕЙТР.' : isBull ? 'БЫЧИЙ' : 'МЕДВЕЖИЙ'} {item.sentimentScore >= 0 ? '+' : ''}
                             {(item.sentimentScore * 100).toFixed(0)}%
                           </span>
                         </div>
@@ -1664,10 +1816,10 @@ export const AiArenaView: React.FC = () => {
                         <span>
                           {item.extractedSetup
                             ? `Распознан сетап: ${item.extractedSetup.side} @ $${item.extractedSetup.entryPrice} · SL $${item.extractedSetup.stopLoss} · TP1 $${item.extractedSetup.tp1}`
-                            : `Вес сигнала: ${Math.round((item.impactWeight || 0.8) * 100)}%`}
+                            : `Вес в новостном фоне: ${Math.round((item.impactWeight || 0.65) * 100)}%`}
                         </span>
-                        <span className="text-slate-500 shrink-0">
-                          {new Date(item.timestamp).toLocaleTimeString()}
+                        <span className="text-slate-500 shrink-0 tabular-nums" title={new Date(item.timestamp).toLocaleString('ru-RU')}>
+                          {formatFeedTimestamp(item.timestamp)}
                         </span>
                       </div>
                     </div>

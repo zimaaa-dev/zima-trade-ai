@@ -2,7 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseTelegramSignalPost,
+  parseMarketNewsHeadline,
   extractSignalsFromTelegramWebHtml,
+  extractNewsItemsFromTelegramWebHtml,
+  parseRssOrAtomFeedXml,
   detectAllSymbolsInText,
   classifyHeadlineRisk,
 } from './telegram-signal-parser';
@@ -132,5 +135,84 @@ test('WatcherGuru short-liquidation squeeze headlines classify as BULLISH and ha
   assert.equal(hackRisk.isCriticalRisk, true);
   assert.equal(hackRisk.severity, 'HIGH');
   assert.equal(hackRisk.directionImpact, 'BEARISH');
+});
+
+test('parseMarketNewsHeadline, extractNewsItemsFromTelegramWebHtml, and parseRssOrAtomFeedXml preserve macro/ETF/Fed news without LONG/SHORT keywords', () => {
+  const etfInflow = parseMarketNewsHeadline(
+    'BlackRock Spot Bitcoin ETF records $420M net inflows on institutional accumulation'
+  );
+  assert.equal(etfInflow.isRelevantNews, true);
+  assert.equal(etfInflow.symbol, 'BTCUSDT');
+  assert.equal(etfInflow.sentiment, 'BULLISH');
+  assert.ok(etfInflow.sentimentScore > 0.4);
+
+  const fedRatePause = parseMarketNewsHeadline(
+    'Federal Reserve holds interest rates steady at 4.25%-4.50% as Powell monitors inflation'
+  );
+  assert.equal(fedRatePause.isRelevantNews, true);
+  assert.equal(fedRatePause.sentiment, 'NEUTRAL');
+
+  const macroBear = parseMarketNewsHeadline(
+    'US SEC files lawsuit and delays spot Ethereum ETF decision amid tightening tariffs'
+  );
+  assert.equal(macroBear.isRelevantNews, true);
+  assert.equal(macroBear.symbol, 'ETHUSDT');
+  assert.equal(macroBear.sentiment, 'BEARISH');
+  assert.ok(macroBear.sentimentScore < -0.4);
+
+  const watcherHtml = `
+    <div class="tgme_widget_message" data-post="WatcherGuru/9001">
+      <div class="tgme_widget_message_text">Federal Reserve holds interest rates steady at 4.25%-4.50% ahead of CPI release</div>
+      <time datetime="2026-11-24T10:00:00+00:00"></time>
+    </div>
+    <div class="tgme_widget_message" data-post="WatcherGuru/9002">
+      <div class="tgme_widget_message_text">JUST IN: Spot Bitcoin ETF sees $450M inflows today</div>
+      <time datetime="2026-11-24T12:00:00+00:00"></time>
+    </div>
+  `;
+  const tgNews = extractNewsItemsFromTelegramWebHtml(watcherHtml, 'WatcherGuru');
+  assert.equal(tgNews.length, 2);
+  assert.equal(tgNews[0].postId, 'WatcherGuru/9002');
+  assert.equal(tgNews[0].sentiment, 'BULLISH');
+  assert.equal(tgNews[1].postId, 'WatcherGuru/9001');
+  assert.equal(tgNews[1].sentiment, 'NEUTRAL');
+
+  const rssXml = `
+    <rss version="2.0"><channel>
+      <item>
+        <title><![CDATA[Bitcoin ETF inflows surge as institutions buy BTC dip]]></title>
+        <description><![CDATA[Strong spot ETF demand pushes BTC sentiment higher.]]></description>
+        <pubDate>Tue, 24 Nov 2026 11:30:00 +0000</pubDate>
+        <link>https://www.coindesk.com/markets/btc-etf</link>
+      </item>
+      <item>
+        <title>Fed minutes flag hawkish rate path and ETF outflow pressure on SOL</title>
+        <pubDate>Tue, 24 Nov 2026 09:00:00 +0000</pubDate>
+        <link>https://www.coindesk.com/markets/fed-minutes</link>
+      </item>
+    </channel></rss>
+  `;
+  const nowTs = Date.UTC(2026, 10, 24, 14, 0, 0);
+  const rssItems = parseRssOrAtomFeedXml(rssXml, 'CoinDesk News RSS', 'https://coindesk.com/rss', nowTs);
+  assert.equal(rssItems.length, 2);
+  assert.equal(rssItems[0].publishedAt, Date.UTC(2026, 10, 24, 11, 30, 0));
+  assert.equal(rssItems[0].sentiment, 'BULLISH');
+  assert.equal(rssItems[1].sentiment, 'BEARISH');
+
+  const etfOutflowRecord = parseMarketNewsHeadline(
+    'Bitcoin drops as November spot ETF outflows increase to record $4.71 billion'
+  );
+  assert.equal(etfOutflowRecord.sentiment, 'BEARISH');
+  assert.ok(etfOutflowRecord.sentimentScore < -0.4);
+
+  const handsBackGains = parseMarketNewsHeadline(
+    "Bitcoin hands back Monday's Nvidia-driven gains, liquidations triple"
+  );
+  assert.equal(handsBackGains.sentiment, 'BEARISH');
+
+  const personalWalletRisk = classifyHeadlineRisk(
+    'Crypto trader Ansem says his wallet was hacked as $2 million in memecoins were sold'
+  );
+  assert.equal(personalWalletRisk.isCriticalRisk, false);
 });
 
