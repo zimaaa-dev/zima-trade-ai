@@ -1690,8 +1690,8 @@ export function computeEffectiveGridRiskStopPct(atrPct: number): {
 } {
   const safeAtr = Number.isFinite(atrPct) && atrPct > 0 ? atrPct : 1.35;
   const gridStepPct = Number(clamp(safeAtr * 0.75, 0.85, 1.10).toFixed(2));
-  // Target +15.2%..+23.2% ROE at 4x leverage (+3.80%..+5.80% price move) so winners run cleanly instead of early cuts
-  const tpTargetPct = Number(clamp(gridStepPct * 3.8, 3.80, 5.80).toFixed(2));
+  // Realistic +9.6%..+13.0% ROE target at 4x leverage (+2.40%..+3.25% spot move) so winners harvest reliably before reversals
+  const tpTargetPct = Number(clamp(gridStepPct * 2.75, 2.40, 3.25).toFixed(2));
   // Cap hard catastrophic SL at 2.20%–2.75% (-8.8%..-11.0% ROE at 4x), strictly behind SO2 (1.85 * step <= 2.04%)
   const catastrophicSlPct = Number(clamp(gridStepPct * 2.45, 2.20, 2.75).toFixed(2));
   // Across 40% Base (0x) + 30% SO1 (1.0x step) + 30% SO2 (1.85x step), averaged entry shifts ~0.80 * gridStepPct;
@@ -1757,7 +1757,7 @@ export function buildTrendGridPlan(params: {
   const { gridStepPct, tpTargetPct: defaultTpTargetPct, catastrophicSlPct } = computeEffectiveGridRiskStopPct(atrPct);
   const tpTargetPct =
     typeof params.tpTargetPct === 'number' && Number.isFinite(params.tpTargetPct)
-      ? Number(clamp(params.tpTargetPct, 3.75, 6.50).toFixed(2))
+      ? Number(clamp(params.tpTargetPct, 2.20, 3.60).toFixed(2))
       : defaultTpTargetPct;
 
   // Split totalPlannedQty into 40% Base + 30% SO1 + 30% SO2 if divisible into >= 3 * minQty;
@@ -1860,7 +1860,7 @@ export function evaluateTrendGridSafetyOrderFill(params: {
     safetyOrders,
     priceDecimals,
     qtyDecimals,
-    tpTargetPct = 4.50,
+    tpTargetPct = 2.75,
     nowTs = Date.now(),
   } = params;
 

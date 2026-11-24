@@ -4,6 +4,7 @@ import {
   parseTelegramSignalPost,
   extractSignalsFromTelegramWebHtml,
   detectAllSymbolsInText,
+  classifyHeadlineRisk,
 } from './telegram-signal-parser';
 
 test('parseTelegramSignalPost accurately parses real @ne_investor SOL & XRP LONG signals', () => {
@@ -110,5 +111,26 @@ test('parseTelegramSignalPost recognizes XAU / XAUt / Золото as XAUUSDT', 
   assert.equal(parsed.isActionableSignal, true);
   assert.equal(parsed.symbol, 'XAUUSDT');
   assert.equal(parsed.side, 'LONG');
+});
+
+test('WatcherGuru short-liquidation squeeze headlines classify as BULLISH and hack/crash risks are flagged accurately', () => {
+  const shortSqueeze = parseTelegramSignalPost(
+    'JUST IN: Bitcoin surges to $63,000 as $250,000,000 in shorts are liquidated from the crypto market.'
+  );
+  assert.equal(shortSqueeze.isActionableSignal, true);
+  assert.equal(shortSqueeze.sentiment, 'BULLISH');
+  assert.ok(shortSqueeze.sentimentScore > 0.5);
+
+  const crashNews = parseTelegramSignalPost(
+    'JUST IN: Crypto continues to crash $BTC falls under $56,000 $ETH falls under $1,550'
+  );
+  assert.equal(crashNews.isActionableSignal, true);
+  assert.equal(crashNews.sentiment, 'BEARISH');
+  assert.ok(crashNews.sentimentScore < -0.5);
+
+  const hackRisk = classifyHeadlineRisk('ALERT: Major bridge protocol exploited and $120M drained');
+  assert.equal(hackRisk.isCriticalRisk, true);
+  assert.equal(hackRisk.severity, 'HIGH');
+  assert.equal(hackRisk.directionImpact, 'BEARISH');
 });
 

@@ -51,6 +51,15 @@ export interface StrategyPerformanceInput {
   latestTradeClosedAt?: number;
 }
 
+export type AiAllowedDirectionMode = 'BOTH' | 'SHORT_PREFERRED' | 'LONG_PREFERRED' | 'DEFENSE_ONLY';
+
+export interface MarketNewsSummaryItem {
+  source: string;
+  symbol: string;
+  sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  headline: string;
+}
+
 export interface MarketSnapshotForAi {
   regimeLabel: string;
   primaryEvent: MarketEventKey;
@@ -68,6 +77,8 @@ export interface MarketSnapshotForAi {
   isNightSession: boolean;
   openPositionsCount: number;
   workingCapitalUsdt: number;
+  newsBiasScore?: number;
+  recentNewsSummary?: MarketNewsSummaryItem[];
 }
 
 export interface StrategyMutationAction {
@@ -97,6 +108,8 @@ export interface AiConductorDecision {
   primaryEvent: MarketEventKey;
   eventLabelRu: string;
   summary: string;
+  allowedDirectionMode?: AiAllowedDirectionMode;
+  blockedSymbols?: string[];
   activeComboIds: string[];
   mutations: StrategyMutationAction[];
 }
@@ -122,10 +135,10 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     strategyFamily: 'L2 Orderflow',
     preferredEvents: ['LOW_VOL_RANGE', 'MARKET_FLUSH_SHORT', 'BULL_EXPANSION'],
     directionBias: 'BOTH',
-    riskPerTradePct: 1.4,
+    riskPerTradePct: 1.3,
     leverage: 4,
-    tpSlRatio: 2.6,
-    targetTpPct: 4.5,
+    tpSlRatio: 1.5,
+    targetTpPct: 2.75,
     maxConcurrentPositions: 2,
     confidenceThreshold: 0.2,
     atrMultiplier: 1.4,
@@ -144,8 +157,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.2,
     leverage: 4,
-    tpSlRatio: 2.7,
-    targetTpPct: 4.8,
+    tpSlRatio: 1.6,
+    targetTpPct: 2.9,
     maxConcurrentPositions: 2,
     confidenceThreshold: 0.21,
     atrMultiplier: 1.35,
@@ -162,10 +175,10 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     strategyFamily: 'Channel Confluence',
     preferredEvents: ['MARKET_FLUSH_SHORT', 'BULL_EXPANSION', 'BTC_BOUNCE_REVERSAL'],
     directionBias: 'BOTH',
-    riskPerTradePct: 1.4,
+    riskPerTradePct: 1.3,
     leverage: 4,
-    tpSlRatio: 2.6,
-    targetTpPct: 4.6,
+    tpSlRatio: 1.5,
+    targetTpPct: 2.8,
     maxConcurrentPositions: 2,
     confidenceThreshold: 0.21,
     atrMultiplier: 1.45,
@@ -182,12 +195,12 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     strategyFamily: 'Bounce Reversal',
     preferredEvents: ['BTC_BOUNCE_REVERSAL', 'LOW_VOL_RANGE'],
     directionBias: 'LONG_ONLY',
-    riskPerTradePct: 1.3,
+    riskPerTradePct: 1.2,
     leverage: 4,
-    tpSlRatio: 2.6,
-    targetTpPct: 4.8,
+    tpSlRatio: 1.6,
+    targetTpPct: 2.85,
     maxConcurrentPositions: 1,
-    confidenceThreshold: 0.19,
+    confidenceThreshold: 0.2,
     atrMultiplier: 1.35,
     maxSpreadBps: 10,
     weights: { obiWeight: 0.34, momentumWeight: 0.24, vwapWeight: 0.32, sentimentWeight: 0.1 },
@@ -204,8 +217,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.1,
     leverage: 4,
-    tpSlRatio: 2.5,
-    targetTpPct: 4.0,
+    tpSlRatio: 1.4,
+    targetTpPct: 2.45,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.2,
     atrMultiplier: 1.3,
@@ -224,8 +237,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.2,
     leverage: 4,
-    tpSlRatio: 2.6,
-    targetTpPct: 4.5,
+    tpSlRatio: 1.5,
+    targetTpPct: 2.75,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.19,
     atrMultiplier: 1.4,
@@ -244,10 +257,10 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'SHORT_ONLY',
     riskPerTradePct: 1.3,
     leverage: 4,
-    tpSlRatio: 2.6,
-    targetTpPct: 4.6,
+    tpSlRatio: 1.6,
+    targetTpPct: 2.85,
     maxConcurrentPositions: 1,
-    confidenceThreshold: 0.22,
+    confidenceThreshold: 0.21,
     atrMultiplier: 1.45,
     maxSpreadBps: 10,
     weights: { obiWeight: 0.32, momentumWeight: 0.36, vwapWeight: 0.18, sentimentWeight: 0.14 },
@@ -262,10 +275,10 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     strategyFamily: 'Upside Breakout',
     preferredEvents: ['BULL_EXPANSION', 'BTC_BOUNCE_REVERSAL'],
     directionBias: 'LONG_ONLY',
-    riskPerTradePct: 1.4,
+    riskPerTradePct: 1.3,
     leverage: 4,
-    tpSlRatio: 2.8,
-    targetTpPct: 5.5,
+    tpSlRatio: 1.7,
+    targetTpPct: 3.1,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.2,
     atrMultiplier: 1.4,
@@ -282,12 +295,12 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     strategyFamily: 'Safe-Haven Gold',
     preferredEvents: ['MACRO_DEFENSE', 'NIGHT_ASIA_SAFE', 'MARKET_FLUSH_SHORT'],
     directionBias: 'BOTH',
-    riskPerTradePct: 1.2,
+    riskPerTradePct: 1.1,
     leverage: 4,
-    tpSlRatio: 2.4,
-    targetTpPct: 4.0,
+    tpSlRatio: 1.4,
+    targetTpPct: 2.4,
     maxConcurrentPositions: 1,
-    confidenceThreshold: 0.18,
+    confidenceThreshold: 0.19,
     atrMultiplier: 1.35,
     maxSpreadBps: 6,
     weights: { obiWeight: 0.34, momentumWeight: 0.28, vwapWeight: 0.26, sentimentWeight: 0.12 },
@@ -304,8 +317,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.0,
     leverage: 3,
-    tpSlRatio: 2.3,
-    targetTpPct: 3.8,
+    tpSlRatio: 1.4,
+    targetTpPct: 2.35,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.21,
     atrMultiplier: 1.3,
@@ -324,8 +337,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.1,
     leverage: 4,
-    tpSlRatio: 2.5,
-    targetTpPct: 4.2,
+    tpSlRatio: 1.5,
+    targetTpPct: 2.55,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.2,
     atrMultiplier: 1.35,
@@ -342,10 +355,10 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     strategyFamily: 'Altcoin Rotation',
     preferredEvents: ['BULL_EXPANSION', 'BTC_BOUNCE_REVERSAL'],
     directionBias: 'BOTH',
-    riskPerTradePct: 1.3,
+    riskPerTradePct: 1.2,
     leverage: 4,
-    tpSlRatio: 2.7,
-    targetTpPct: 5.2,
+    tpSlRatio: 1.6,
+    targetTpPct: 3.0,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.2,
     atrMultiplier: 1.4,
@@ -362,10 +375,10 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     strategyFamily: 'Volatility Squeeze',
     preferredEvents: ['LOW_VOL_RANGE', 'BULL_EXPANSION', 'MARKET_FLUSH_SHORT'],
     directionBias: 'BOTH',
-    riskPerTradePct: 1.3,
+    riskPerTradePct: 1.2,
     leverage: 4,
-    tpSlRatio: 2.8,
-    targetTpPct: 5.4,
+    tpSlRatio: 1.7,
+    targetTpPct: 3.05,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.21,
     atrMultiplier: 1.4,
@@ -384,8 +397,8 @@ export const STRATEGY_CATALOG_14: StrategySeedSpec[] = [
     directionBias: 'BOTH',
     riskPerTradePct: 1.0,
     leverage: 3,
-    tpSlRatio: 2.4,
-    targetTpPct: 4.0,
+    tpSlRatio: 1.4,
+    targetTpPct: 2.45,
     maxConcurrentPositions: 1,
     confidenceThreshold: 0.2,
     atrMultiplier: 1.35,
@@ -410,6 +423,7 @@ export function detectActiveMarketEvents(input: {
   maxCrowdSharePct: number;
   isMacroBlocked: boolean;
   isNightSession: boolean;
+  newsSentimentBias?: number;
 }): {
   primaryEvent: MarketEventKey;
   secondaryEvents: MarketEventKey[];
@@ -420,22 +434,26 @@ export function detectActiveMarketEvents(input: {
   if (input.isNightSession) secondary.push('NIGHT_ASIA_SAFE');
   if (input.maxCrowdSharePct >= 75) secondary.push('CROWD_EUPHORIA_COUNTER');
 
-  const isBtcBouncingUp = input.btcEmaTrendBps >= 3.5 && input.btcVwapDevPct >= 0.25;
-  const isBtcRollingOver = input.btcEmaTrendBps <= -3.0 && input.btcVwapDevPct <= -0.25;
+  const newsBias = Number.isFinite(input.newsSentimentBias) ? Number(input.newsSentimentBias) : 0;
+  // Require stronger BTC recovery (EMA >= +5 bps and VWAP >= +0.30%, not overwhelmed by bearish news) before declaring bounce
+  const isBtcBouncingUp = input.btcEmaTrendBps >= 5.0 && input.btcVwapDevPct >= 0.30 && newsBias > -0.45;
+  const isBtcRollingOver =
+    (input.btcEmaTrendBps <= -3.0 && input.btcVwapDevPct <= -0.25) ||
+    (newsBias <= -0.45 && input.btcEmaTrendBps <= -1.5);
 
   let primaryEvent: MarketEventKey = 'LOW_VOL_RANGE';
   if (input.isMacroBlocked) {
     primaryEvent = 'MACRO_DEFENSE';
   } else if (isBtcRollingOver) {
     primaryEvent =
-      input.marketBreadthPct <= 52 || input.btcEmaTrendBps <= -6.0
+      input.marketBreadthPct <= 52 || input.btcEmaTrendBps <= -6.0 || newsBias <= -0.45
         ? 'MARKET_FLUSH_SHORT'
         : 'LOW_VOL_RANGE';
   } else if (isBtcBouncingUp && input.marketBreadthPct <= 60) {
     primaryEvent = 'BTC_BOUNCE_REVERSAL';
   } else if (!isBtcRollingOver && (input.marketBreadthPct >= 62 || input.btcChange24hPct >= 2.5)) {
     primaryEvent = 'BULL_EXPANSION';
-  } else if (input.marketBreadthPct <= 36 && !isBtcBouncingUp) {
+  } else if (input.marketBreadthPct <= 38 && !isBtcBouncingUp) {
     primaryEvent = 'MARKET_FLUSH_SHORT';
   } else if (input.isNightSession && input.avgAtrPct < 4.5) {
     primaryEvent = 'NIGHT_ASIA_SAFE';
@@ -599,6 +617,255 @@ export function evaluateStrategyDirectionBias(
   return { allowed: true };
 }
 
+export function resolveDefaultDirectionModeForEvent(primaryEvent: MarketEventKey): AiAllowedDirectionMode {
+  if (primaryEvent === 'MARKET_FLUSH_SHORT') return 'SHORT_PREFERRED';
+  if (primaryEvent === 'BULL_EXPANSION' || primaryEvent === 'BTC_BOUNCE_REVERSAL') return 'LONG_PREFERRED';
+  if (primaryEvent === 'MACRO_DEFENSE') return 'DEFENSE_ONLY';
+  return 'BOTH';
+}
+
+export interface UnifiedTradePolicyInput {
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  strategyId: string;
+  strategyName: string;
+  directionBias?: 'BOTH' | 'LONG_ONLY' | 'SHORT_ONLY';
+  primaryEvent: MarketEventKey;
+  aiAllowedDirectionMode?: AiAllowedDirectionMode;
+  aiBlockedSymbols?: string[];
+  btcEmaTrendBps: number;
+  btcVwapDevPct: number;
+  macroBlocked: boolean;
+  goldAllowed: boolean;
+  symbolNewsScore?: number; // [-1 .. +1]
+  marketNewsScore?: number; // [-1 .. +1]
+  hasCriticalRiskNewsOnSymbol?: boolean;
+  criticalRiskTag?: string;
+}
+
+export interface UnifiedTradePolicyVerdict {
+  allowed: boolean;
+  vetoSource?: 'SETTINGS' | 'NEWS' | 'AI_POLICY' | 'RULE';
+  reason?: string;
+}
+
+/**
+ * Hybrid pre-trade decision gate uniting User Settings + Live News Risk/Sentiment + AI Conductor Policy + Trend Rules.
+ * Eliminates counter-trend LONG knife-catching during MARKET_FLUSH_SHORT and protects against bad news shocks.
+ */
+export function evaluateUnifiedTradePolicy(input: UnifiedTradePolicyInput): UnifiedTradePolicyVerdict {
+  const {
+    symbol,
+    side,
+    directionBias,
+    primaryEvent,
+    aiAllowedDirectionMode,
+    aiBlockedSymbols = [],
+    btcEmaTrendBps,
+    btcVwapDevPct,
+    macroBlocked,
+    goldAllowed,
+    symbolNewsScore = 0,
+    marketNewsScore = 0,
+    hasCriticalRiskNewsOnSymbol = false,
+    criticalRiskTag,
+  } = input;
+
+  // 1. User Settings Enforcement
+  if (!goldAllowed && symbol === 'XAUUSDT') {
+    return {
+      allowed: false,
+      vetoSource: 'SETTINGS',
+      reason: 'Настройка пользователя: торговля золотом (XAUUSDT) отключена.',
+    };
+  }
+  if (macroBlocked && symbol !== 'XAUUSDT') {
+    return {
+      allowed: false,
+      vetoSource: 'NEWS',
+      reason: 'Макро-новостной блок (ФРС/CPI/NFP): крипто-входы на паузе.',
+    };
+  }
+
+  // 2. Strategy internal directional constraint
+  const dirBiasCheck = evaluateStrategyDirectionBias(directionBias, side);
+  if (!dirBiasCheck.allowed) {
+    return {
+      allowed: false,
+      vetoSource: 'RULE',
+      reason: dirBiasCheck.reason,
+    };
+  }
+
+  // 3. News Risk & Sentiment Guard
+  if (hasCriticalRiskNewsOnSymbol && symbol !== 'XAUUSDT') {
+    return {
+      allowed: false,
+      vetoSource: 'NEWS',
+      reason: `Новостной стоп по ${symbol}: критическая новость риска (${criticalRiskTag || 'HACK/DELIST/SEC'}).`,
+    };
+  }
+  if (symbol !== 'XAUUSDT') {
+    if (side === 'LONG' && (symbolNewsScore <= -0.58 || marketNewsScore <= -0.62)) {
+      return {
+        allowed: false,
+        vetoSource: 'NEWS',
+        reason: `Новостной фильтр: сильный медвежий фон (монета ${symbolNewsScore.toFixed(2)}, рынок ${marketNewsScore.toFixed(2)}) — LONG ${symbol} запрещён.`,
+      };
+    }
+    if (side === 'SHORT' && symbolNewsScore >= 0.65) {
+      return {
+        allowed: false,
+        vetoSource: 'NEWS',
+        reason: `Новостной фильтр: сильный бычий драйвер по ${symbol} (+${symbolNewsScore.toFixed(2)}) — SHORT запрещён.`,
+      };
+    }
+  }
+
+  // 4. AI Conductor Policy & Blocked Symbols
+  if (aiBlockedSymbols.includes(symbol)) {
+    return {
+      allowed: false,
+      vetoSource: 'AI_POLICY',
+      reason: `ИИ-цензор временно заблокировал ${symbol} на текущий цикл.`,
+    };
+  }
+
+  const effectiveMode = aiAllowedDirectionMode || resolveDefaultDirectionModeForEvent(primaryEvent);
+  const strongBtcRecovery = btcEmaTrendBps >= 5.0 && btcVwapDevPct >= 0.30;
+  const strongBtcRollover = btcEmaTrendBps <= -3.5 && btcVwapDevPct <= -0.25;
+
+  if (symbol !== 'XAUUSDT') {
+    if (effectiveMode === 'DEFENSE_ONLY') {
+      return {
+        allowed: false,
+        vetoSource: 'AI_POLICY',
+        reason: `Политика ИИ (DEFENSE_ONLY): входы в крипту приостановлены на период риска.`,
+      };
+    }
+    if (
+      (primaryEvent === 'MARKET_FLUSH_SHORT' || effectiveMode === 'SHORT_PREFERRED') &&
+      side === 'LONG' &&
+      !strongBtcRecovery
+    ) {
+      return {
+        allowed: false,
+        vetoSource: 'AI_POLICY',
+        reason: `Защита от ножей (${primaryEvent}/${effectiveMode}): LONG ${symbol} запрещён при слабом BTC (EMA ${btcEmaTrendBps.toFixed(1)} bps, VWAP ${btcVwapDevPct.toFixed(2)}%).`,
+      };
+    }
+    if (
+      (primaryEvent === 'BULL_EXPANSION' || effectiveMode === 'LONG_PREFERRED') &&
+      side === 'SHORT' &&
+      !strongBtcRollover
+    ) {
+      return {
+        allowed: false,
+        vetoSource: 'AI_POLICY',
+        reason: `Защита по тренду (${primaryEvent}/${effectiveMode}): контртрендовый SHORT ${symbol} запрещён при росте BTC.`,
+      };
+    }
+  }
+
+  // 5. Symmetrical intraday BTC bounce short veto
+  const btcBounceVeto = evaluateBtcBounceShortVeto({
+    symbol,
+    side,
+    btcEmaTrendBps,
+    btcVwapDevPct,
+  });
+  if (!btcBounceVeto.allowed) {
+    return {
+      allowed: false,
+      vetoSource: 'RULE',
+      reason: btcBounceVeto.reason,
+    };
+  }
+
+  return { allowed: true };
+}
+
+export interface CounterTrendDefenseInput {
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  entryPrice: number;
+  currentPrice: number;
+  openedAt: number;
+  nowTs?: number;
+  primaryEvent: MarketEventKey;
+  aiAllowedDirectionMode?: AiAllowedDirectionMode;
+  symbolNewsScore?: number;
+  marketNewsScore?: number;
+  hasCriticalRiskNewsOnSymbol?: boolean;
+}
+
+export interface CounterTrendDefenseResult {
+  isCounterTrendOrNews: boolean;
+  blockDca: boolean;
+  shouldExit: boolean;
+  reason?: string;
+}
+
+/**
+ * Protects open positions when AI regime or breaking news shifts against them:
+ * 1) Blocks DCA safety-order averaging (SO1/SO2) so losing counter-trend positions never triple margin.
+ * 2) If held >= 20m and sitting near breakeven or soft profit (-0.45% .. +1.05%), closes cleanly before a flush deepens.
+ *    Deep losses (<-0.45%) are NOT panic-closed and remain protected by the exchange SL.
+ */
+export function evaluateCounterTrendDefenseExit(input: CounterTrendDefenseInput): CounterTrendDefenseResult {
+  const {
+    symbol,
+    side,
+    entryPrice,
+    currentPrice,
+    openedAt,
+    nowTs = Date.now(),
+    primaryEvent,
+    aiAllowedDirectionMode,
+    symbolNewsScore = 0,
+    marketNewsScore = 0,
+    hasCriticalRiskNewsOnSymbol = false,
+  } = input;
+
+  if (symbol === 'XAUUSDT' && !hasCriticalRiskNewsOnSymbol) {
+    return { isCounterTrendOrNews: false, blockDca: false, shouldExit: false };
+  }
+
+  const effectiveMode = aiAllowedDirectionMode || resolveDefaultDirectionModeForEvent(primaryEvent);
+  const fightsRegime =
+    ((primaryEvent === 'MARKET_FLUSH_SHORT' || effectiveMode === 'SHORT_PREFERRED') && side === 'LONG') ||
+    ((primaryEvent === 'BULL_EXPANSION' || effectiveMode === 'LONG_PREFERRED') && side === 'SHORT');
+
+  const fightsNews =
+    hasCriticalRiskNewsOnSymbol ||
+    (side === 'LONG' && (symbolNewsScore <= -0.60 || marketNewsScore <= -0.62)) ||
+    (side === 'SHORT' && (symbolNewsScore >= 0.65 || marketNewsScore >= 0.65));
+
+  if (!fightsRegime && !fightsNews) {
+    return { isCounterTrendOrNews: false, blockDca: false, shouldExit: false };
+  }
+
+  const dirSign = side === 'LONG' ? 1 : -1;
+  const rawProfitPct = entryPrice > 0 ? ((currentPrice - entryPrice) / entryPrice) * dirSign * 100 : 0;
+  const holdMinutes = Math.max(0, (nowTs - (openedAt || nowTs)) / 60000);
+
+  if (holdMinutes >= 20 && rawProfitPct >= -0.45 && rawProfitPct <= 1.05) {
+    return {
+      isCounterTrendOrNews: true,
+      blockDca: true,
+      shouldExit: true,
+      reason: `Защита по режиму/новостям (${primaryEvent}): ранняя разгрузка контртрендовой ${side} ${symbol} в зоне ${rawProfitPct >= 0 ? '+' : ''}${rawProfitPct.toFixed(2)}% (удержание ${Math.round(holdMinutes)}м).`,
+    };
+  }
+
+  return {
+    isCounterTrendOrNews: true,
+    blockDca: true,
+    shouldExit: false,
+    reason: `Запрет добора ${side} ${symbol}: позиция против режима ${primaryEvent}/новостей.`,
+  };
+}
+
 export function buildAiConductorPrompt(
   snapshot: MarketSnapshotForAi,
   strategies: StrategyPerformanceInput[]
@@ -619,15 +886,21 @@ export function buildAiConductorPrompt(
     thr: s.confidenceThreshold,
   }));
 
+  const newsBlock =
+    Array.isArray(snapshot.recentNewsSummary) && snapshot.recentNewsSummary.length > 0
+      ? `Свежие новости и сигналы (bias=${(snapshot.newsBiasScore ?? 0).toFixed(2)}): ${JSON.stringify(snapshot.recentNewsSummary.slice(0, 8))}`
+      : 'Свежие новости: нейтральный фон без экстренных заголовков.';
+
   return [
-    'Ты — ИИ-дирижёр портфеля из 14 алготрейдинговых стратегий OKX Demo.',
-    'Твоя задача: проанализировать текущее рыночное событие и статистику стратегий, выбрать комбинацию из 3–5 лучших стратегий под текущее событие и предложить 1–3 аккуратных мутации параметров (чтобы исправлять проигрышные стратегии и усиливать прибыльные).',
-    `Текущий рынок: ${JSON.stringify(snapshot)}`,
+    'Ты — главный ИИ-дирижёр портфеля из 14 алготрейдинговых стратегий OKX Demo.',
+    'Твоя задача: проанализировать текущее рыночное событие, свежие новости, настройки риска и статистику стратегий, задать направление политики сделок, выбрать связку из 3–5 лучших стратегий (при MARKET_FLUSH_SHORT отдавай приоритет SHORT_ONLY/BOTH и отключай LONG_ONLY) и предложить 1–3 точечные мутации параметров (целевой TP в диапазоне 2.2–3.4% для высокого WinRate).',
+    `Текущий рынок: ${JSON.stringify({ ...snapshot, recentNewsSummary: undefined })}`,
+    newsBlock,
     `Матрица стратегий: ${JSON.stringify(rows)}`,
     'Правила ответа:',
     '1) Ответь ТОЛЬКО валидным JSON объектом без markdown-обёртки.',
-    '2) Формат JSON: {"summary":"краткий вывод на русском (2-3 предложения)","activeComboIds":["id1","id2","id3","id4"],"mutations":[{"agentId":"id","reason":"причина","confidenceThresholdDelta":0.01,"riskPerTradePct":1.2,"targetTpPct":4.8}]}',
-    '3) В activeComboIds обязательно включи от 3 до 5 реально существующих agentId из списка выше (минимум 3, никогда не меньше 3!), соответствующих событию primaryEvent.',
+    '2) Формат JSON: {"summary":"краткий вывод с опорой на рынок и новости (2-3 предложения)","allowedDirectionMode":"BOTH|SHORT_PREFERRED|LONG_PREFERRED|DEFENSE_ONLY","blockedSymbols":[],"activeComboIds":["id1","id2","id3","id4"],"mutations":[{"agentId":"id","reason":"причина","confidenceThresholdDelta":0.01,"riskPerTradePct":1.2,"targetTpPct":2.75}]}',
+    '3) В activeComboIds обязательно включи от 3 до 5 реально существующих agentId из списка выше (минимум 3!), строго соответствующих событию primaryEvent и новостям.',
   ].join('\n');
 }
 
@@ -683,6 +956,28 @@ export function parseAiConductorResponse(
       }
     }
 
+    const validDirectionModes = new Set<AiAllowedDirectionMode>([
+      'BOTH',
+      'SHORT_PREFERRED',
+      'LONG_PREFERRED',
+      'DEFENSE_ONLY',
+    ]);
+    const allowedDirectionMode: AiAllowedDirectionMode =
+      typeof parsed.allowedDirectionMode === 'string' &&
+      validDirectionModes.has(parsed.allowedDirectionMode as AiAllowedDirectionMode)
+        ? (parsed.allowedDirectionMode as AiAllowedDirectionMode)
+        : resolveDefaultDirectionModeForEvent(snapshot.primaryEvent);
+
+    const blockedSymbols: string[] = Array.isArray(parsed.blockedSymbols)
+      ? Array.from(
+          new Set(
+            parsed.blockedSymbols
+              .map((s: unknown) => String(s || '').toUpperCase().trim())
+              .filter((s: string) => s.endsWith('USDT') && s.length >= 6)
+          )
+        ).slice(0, 8) as string[]
+      : [];
+
     const mutations: StrategyMutationAction[] = Array.isArray(parsed.mutations)
       ? parsed.mutations
           .filter((m: any) => m && validIds.has(String(m.agentId || '')))
@@ -696,11 +991,11 @@ export function parseAiConductorResponse(
                 : undefined,
             riskPerTradePct:
               typeof m.riskPerTradePct === 'number'
-                ? Number(clampNum(m.riskPerTradePct, 0.8, 1.6).toFixed(2))
+                ? Number(clampNum(m.riskPerTradePct, 0.8, 1.5).toFixed(2))
                 : undefined,
             targetTpPct:
               typeof m.targetTpPct === 'number'
-                ? Number(clampNum(m.targetTpPct, 3.8, 6.2).toFixed(2))
+                ? Number(clampNum(m.targetTpPct, 2.2, 3.5).toFixed(2))
                 : undefined,
             atrMultiplier:
               typeof m.atrMultiplier === 'number'
@@ -712,7 +1007,7 @@ export function parseAiConductorResponse(
     const summary =
       typeof parsed.summary === 'string' && parsed.summary.trim().length > 10
         ? parsed.summary.trim().slice(0, 420)
-        : `ИИ активировал связку из ${comboIds.length} стратегий под событие «${snapshot.eventLabelRu}».`;
+        : `ИИ активировал связку из ${comboIds.length} стратегий (${allowedDirectionMode}) под событие «${snapshot.eventLabelRu}».`;
 
     return {
       timestamp: meta.nowTs ?? Date.now(),
@@ -722,6 +1017,8 @@ export function parseAiConductorResponse(
       primaryEvent: snapshot.primaryEvent,
       eventLabelRu: snapshot.eventLabelRu,
       summary,
+      allowedDirectionMode,
+      blockedSymbols,
       activeComboIds: comboIds,
       mutations,
     };
@@ -743,10 +1040,15 @@ export function rankStrategiesForSnapshot(
     let aBiasScore = 0;
     let bBiasScore = 0;
     if (snapshot.primaryEvent === 'BTC_BOUNCE_REVERSAL' || snapshot.primaryEvent === 'BULL_EXPANSION') {
-      if (a.directionBias === 'SHORT_ONLY') aBiasScore -= 2.0;
-      if (b.directionBias === 'SHORT_ONLY') bBiasScore -= 2.0;
-      if (a.directionBias === 'LONG_ONLY') aBiasScore += 0.8;
-      if (b.directionBias === 'LONG_ONLY') bBiasScore += 0.8;
+      if (a.directionBias === 'SHORT_ONLY') aBiasScore -= 3.5;
+      if (b.directionBias === 'SHORT_ONLY') bBiasScore -= 3.5;
+      if (a.directionBias === 'LONG_ONLY') aBiasScore += 1.4;
+      if (b.directionBias === 'LONG_ONLY') bBiasScore += 1.4;
+    } else if (snapshot.primaryEvent === 'MARKET_FLUSH_SHORT') {
+      if (a.directionBias === 'LONG_ONLY') aBiasScore -= 3.5;
+      if (b.directionBias === 'LONG_ONLY') bBiasScore -= 3.5;
+      if (a.directionBias === 'SHORT_ONLY') aBiasScore += 2.2;
+      if (b.directionBias === 'SHORT_ONLY') bBiasScore += 2.2;
     }
 
     const aPerf = a.tradesCount > 0 ? a.profitFactor * 0.6 + a.realizedPnlUsdt * 0.3 : 0.7;
@@ -775,16 +1077,16 @@ export function applyDeterministicEvolutionFallback(
     if (s.tradesCount >= 2 && (s.realizedPnlUsdt < -0.8 || s.winRatePct < 45)) {
       mutations.push({
         agentId: s.agentId,
-        reason: `Просадка (${s.realizedPnlUsdt.toFixed(2)} USDT, WR ${s.winRatePct.toFixed(0)}%): повышаем порог входа, снижаем риск и поджимаем TP.`,
+        reason: `Просадка (${s.realizedPnlUsdt.toFixed(2)} USDT, WR ${s.winRatePct.toFixed(0)}%): повышаем порог входа, снижаем риск и поджимаем TP ближе к рынку.`,
         confidenceThresholdDelta: 0.02,
-        riskPerTradePct: Number(clampNum(s.riskPerTradePct - 0.15, 0.9, 1.5).toFixed(2)),
-        targetTpPct: Number(clampNum(s.targetTpPct + 0.15, 3.8, 6.0).toFixed(2)),
+        riskPerTradePct: Number(clampNum(s.riskPerTradePct - 0.15, 0.9, 1.4).toFixed(2)),
+        targetTpPct: Number(clampNum(s.targetTpPct - 0.15, 2.25, 3.2).toFixed(2)),
       });
     } else if (s.tradesCount >= 2 && s.realizedPnlUsdt > 0.5 && s.winRatePct >= 65) {
       mutations.push({
         agentId: s.agentId,
         reason: `Лидер по результату (+${s.realizedPnlUsdt.toFixed(2)} USDT, WR ${s.winRatePct.toFixed(0)}%): закрепляем оптимальный R:R.`,
-        targetTpPct: Number(clampNum(s.targetTpPct + 0.1, 3.8, 6.0).toFixed(2)),
+        targetTpPct: Number(clampNum(s.targetTpPct + 0.1, 2.35, 3.3).toFixed(2)),
       });
     }
     if (mutations.length >= 3) break;
@@ -795,6 +1097,8 @@ export function applyDeterministicEvolutionFallback(
     .map((s) => s.name.split('·')[0].trim())
     .join(', ');
 
+  const allowedDirectionMode = resolveDefaultDirectionModeForEvent(snapshot.primaryEvent);
+
   return {
     timestamp: meta?.nowTs ?? Date.now(),
     source: 'QUANT_FALLBACK',
@@ -802,7 +1106,9 @@ export function applyDeterministicEvolutionFallback(
     latencyMs: meta?.latencyMs ?? 0,
     primaryEvent: snapshot.primaryEvent,
     eventLabelRu: snapshot.eventLabelRu,
-    summary: `Событие «${snapshot.eventLabelRu}» (BTC ${snapshot.btcChange24hPct >= 0 ? '+' : ''}${snapshot.btcChange24hPct.toFixed(1)}%, широта ${snapshot.marketBreadthPct.toFixed(0)}%). Выбрана связка из 4 стратегий: ${activeNames}.${mutations.length > 0 ? ` Скорректировано стратегий: ${mutations.length}.` : ''}`,
+    summary: `Событие «${snapshot.eventLabelRu}» (${allowedDirectionMode}, BTC ${snapshot.btcChange24hPct >= 0 ? '+' : ''}${snapshot.btcChange24hPct.toFixed(1)}%, широта ${snapshot.marketBreadthPct.toFixed(0)}%). Выбрана связка из 4 стратегий: ${activeNames}.${mutations.length > 0 ? ` Скорректировано стратегий: ${mutations.length}.` : ''}`,
+    allowedDirectionMode,
+    blockedSymbols: [],
     activeComboIds,
     mutations,
   };
@@ -843,11 +1149,11 @@ export function applyConductorDecisionToAgents<
         );
       }
       if (typeof mut.riskPerTradePct === 'number') {
-        agent.riskPerTradePct = Number(clampNum(mut.riskPerTradePct, 0.8, 1.6).toFixed(2));
+        agent.riskPerTradePct = Number(clampNum(mut.riskPerTradePct, 0.8, 1.5).toFixed(2));
       }
       if (typeof mut.targetTpPct === 'number') {
-        agent.targetTpPct = Number(clampNum(mut.targetTpPct, 3.8, 6.2).toFixed(2));
-        agent.tpSlRatio = Number(clampNum((agent.targetTpPct / 1.75), 2.0, 3.2).toFixed(1));
+        agent.targetTpPct = Number(clampNum(mut.targetTpPct, 2.2, 3.5).toFixed(2));
+        agent.tpSlRatio = Number(clampNum(agent.targetTpPct / 1.75, 1.2, 2.2).toFixed(1));
       }
       if (typeof mut.atrMultiplier === 'number') {
         agent.brain.atrMultiplier = Number(clampNum(mut.atrMultiplier, 1.2, 1.85).toFixed(2));

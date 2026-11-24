@@ -109,7 +109,8 @@ const BULLISH_RULES: Array<{ pattern: RegExp; weight: number; label: string }> =
   { pattern: /(лонги в приоритете|приоритет лонговый|приоритет на лонг)/i, weight: 2.8, label: 'приоритет лонг' },
   { pattern: /(кол на|спасибо за твой кол)/i, weight: 1.8, label: 'кол на актив' },
   { pattern: /(рынок снова в рост|ожидаем рост|продолжает рост|выкуп лимитной|крупный выкуп|приток в спотовые)/i, weight: 2.0, label: 'импульс роста' },
-  { pattern: /\b(bullish|breakout|inflow|accumulation|surge|massive investment)\b/i, weight: 1.8, label: 'bullish flow' },
+  { pattern: /(shorts?\s+(?:are\s+|were\s+)?liquidated|short\s+sellers\s+lose|short\s+squeeze|ликвидаци[йя]\s+шорт|вынос\s+шорт)/i, weight: 3.2, label: 'вынос/ликвидация шортов (рост)' },
+  { pattern: /\b(bullish|breakout|inflow|accumulation|surge|surges|rally|rallies|massive investment|circuit breaker.*surge)\b/i, weight: 1.9, label: 'bullish flow' },
   { pattern: /(дать отскок|ждем отскок|локальный отскок)/i, weight: 1.1, label: 'ожидание отскока' },
 ];
 
@@ -117,16 +118,62 @@ const BULLISH_RULES: Array<{ pattern: RegExp; weight: number; label: string }> =
  * Weighted bearish phrases (Russian + English) including natural trader idioms from @ne_investor.
  */
 const BEARISH_RULES: Array<{ pattern: RegExp; weight: number; label: string }> = [
-  { pattern: /\b(short|sell)\b/i, weight: 2.2, label: 'SHORT/SELL' },
+  { pattern: /\b(short|sell)\b(?!\s+(?:are\s+|were\s+)?liquidated|\s+sellers|\s+squeeze)/i, weight: 2.2, label: 'SHORT/SELL' },
   { pattern: /(взял шорт|открыл шорт|зашел в шорт|держим шорт|удерживаю шорт)/i, weight: 3.0, label: 'взял шорт' },
   { pattern: /(шорты в приоритете|приоритет.*шортовый|шортовый приоритет|приоритет на шорт)/i, weight: 3.0, label: 'приоритет шортовый' },
   { pattern: /(продолжает снижение|продолжает двигаться в нисходящем тренде|нисходящем тренде|продавец очень сильный|продажи очень сильные)/i, weight: 2.6, label: 'сильный продавец / снижение' },
   { pattern: /(покупатели.*держатся из последних сил|уровень уже слабый|в пробой уровня.*продажи)/i, weight: 2.2, label: 'слабость покупателей' },
   { pattern: /(упал ниже|провалился ниже|провалимся еще ниже|не собирается расти|пока не собирается расти)/i, weight: 2.5, label: 'пробой вниз / слабость' },
-  { pattern: /(ликвидаций лонгов|longs rekt|liquidation alert)/i, weight: 2.4, label: 'ликвидации лонгов' },
-  { pattern: /(чистый недельный отток|идут оттоки|крипта льется|настоящая распродажа|рынок обвалился|попали под распродажу|продавить рыночек)/i, weight: 2.2, label: 'оттоки / распродажа' },
-  { pattern: /\b(bearish|outflow|dump|crash|liquidated)\b/i, weight: 1.8, label: 'bearish flow' },
+  { pattern: /(longs?\s+(?:are\s+|were\s+)?liquidated|ликвидаци[йя]\s+лонг|longs rekt)/i, weight: 2.8, label: 'ликвидации лонгов' },
+  { pattern: /(чистый недельный отток|идут оттоки|крипта льется|настоящая распродажа|рынок обвалился|попали под распродажу|продавить рыночек|continues to crash|falls under|plunge|selloff)/i, weight: 2.4, label: 'оттоки / распродажа' },
+  { pattern: /\b(bearish|outflow|dump|crash)\b/i, weight: 2.0, label: 'bearish flow' },
+  { pattern: /(?<!shorts?\s+(?:are\s+|were\s+)?)(?<!шортов\s)\bliquidated\b/i, weight: 1.4, label: 'liquidation pressure' },
 ];
+
+export interface NewsHeadlineRiskAssessment {
+  isCriticalRisk: boolean;
+  severity: 'HIGH' | 'MEDIUM' | 'NONE';
+  directionImpact: 'BEARISH' | 'BULLISH' | 'NEUTRAL';
+  tag?: string;
+}
+
+/**
+ * Classifies critical security, delisting, regulatory, or sharp market-shock headlines
+ * so pre-trade policy can block risky entries on affected symbols.
+ */
+export function classifyHeadlineRisk(text: string): NewsHeadlineRiskAssessment {
+  const raw = String(text || '').trim();
+  if (!raw) return { isCriticalRisk: false, severity: 'NONE', directionImpact: 'NEUTRAL' };
+
+  if (/(hack(ed)?|exploit(ed)?|drained|delist(ing|ed)?|bankrupt|insolven|sec sues|trading halt|взлом|делистинг|банкрот|остановк[аи]\s+торгов)/i.test(raw)) {
+    return {
+      isCriticalRisk: true,
+      severity: 'HIGH',
+      directionImpact: 'BEARISH',
+      tag: 'CRITICAL_SECURITY_OR_DELIST_RISK',
+    };
+  }
+
+  if (/(continues to crash|market crash|flash crash|falls under|обвалил(ся|ось)|резкий пролив|распродажа)/i.test(raw)) {
+    return {
+      isCriticalRisk: false,
+      severity: 'MEDIUM',
+      directionImpact: 'BEARISH',
+      tag: 'MARKET_SELLOFF_PRESSURE',
+    };
+  }
+
+  if (/(shorts?\s+(?:are\s+|were\s+)?liquidated|short\s+squeeze|etf\s+inflow|massive\s+inflow|surges|вынос\s+шорт)/i.test(raw)) {
+    return {
+      isCriticalRisk: false,
+      severity: 'MEDIUM',
+      directionImpact: 'BULLISH',
+      tag: 'BULLISH_SQUEEZE_OR_INFLOW',
+    };
+  }
+
+  return { isCriticalRisk: false, severity: 'NONE', directionImpact: 'NEUTRAL' };
+}
 
 /**
  * Detects all whitelisted crypto symbols mentioned in the text, in order of appearance.

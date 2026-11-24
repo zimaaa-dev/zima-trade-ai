@@ -229,10 +229,11 @@ import {
   STRATEGY_CATALOG_14,
   EVENT_LABELS_RU,
   detectActiveMarketEvents,
-  evaluateBtcBounceShortVeto,
   evaluateSameDirectionCorrelationCap,
-  evaluateStrategyDirectionBias,
   evaluateStalePositionExit,
+  evaluateUnifiedTradePolicy,
+  evaluateCounterTrendDefenseExit,
+  resolveDefaultDirectionModeForEvent,
   resolveCorrelationCapBySlots,
   buildAiConductorPrompt,
   parseAiConductorResponse,
@@ -241,6 +242,7 @@ import {
   type StrategySeedSpec,
   type StrategyPerformanceInput,
   type MarketSnapshotForAi,
+  type MarketNewsSummaryItem,
   type AiConductorDecision,
   type MarketEventKey,
 } from './src/lib/ai-strategy-conductor.ts';
@@ -262,6 +264,7 @@ import {
   parseTelegramSignalPost,
   extractSignalsFromTelegramWebHtml,
   detectAllSymbolsInText,
+  classifyHeadlineRisk,
   type ParsedTelegramPostSignal,
 } from './src/lib/telegram-signal-parser.ts';
 import {
@@ -1547,14 +1550,16 @@ function loadPersistedState(): void {
             targetTpPct:
               typeof saved.targetTpPct === 'number' &&
               Number.isFinite(saved.targetTpPct) &&
-              saved.targetTpPct >= 3.75 &&
+              saved.targetTpPct >= 2.15 &&
+              saved.targetTpPct <= 3.55 &&
               !hasRunawayLegacyMutations
                 ? saved.targetTpPct
                 : spec.targetTpPct,
             tpSlRatio:
               typeof saved.tpSlRatio === 'number' &&
               Number.isFinite(saved.tpSlRatio) &&
-              saved.tpSlRatio >= 2.0 &&
+              saved.tpSlRatio >= 1.2 &&
+              saved.tpSlRatio <= 2.3 &&
               !hasRunawayLegacyMutations
                 ? saved.tpSlRatio
                 : spec.tpSlRatio,
@@ -5839,7 +5844,77 @@ const INSTITUTIONAL_WHITELIST_SET = new Set(INSTITUTIONAL_CRYPTO_WHITELIST);
 let lastMacroGuardLogTs = 0;
 let lastEmptyCandidatesLogTs = 0;
 let lastDcaGuardLogTs = 0;
-const okxDemoUnsupportedSymbols = new Set<string>();
+const okxDemoUnsupportedSymbols = new Set<string>(['CLUSDT', 'UNIUSDT', 'SKHYUSDT', 'SPCXUSDT']);
+
+function computeLiveNewsContext(nowTs = Date.now()): {
+  marketNewsScore: number;
+  bySymbol: Record<string, { score: number; hasCriticalRisk: boolean; criticalTag?: string }>;
+  summaryItems: MarketNewsSummaryItem[];
+} {
+  const maxAgeMs = 6 * 3600 * 1000;
+  const freshItems = (systemState.parsedNewsFeed || [])
+    .filter((item: any) => nowTs - (Number(item?.timestamp) || 0) <= maxAgeMs)
+    .slice(0, 24);
+
+  let marketScoreSum = 0;
+  let marketWeightSum = 0;
+  const symbolAgg: Record<string, { sum: number; wSum: number; hasCriticalRisk: boolean; criticalTag?: string }> = {};
+  const summaryItems: MarketNewsSummaryItem[] = [];
+
+  for (const item of freshItems) {
+    const rawText = String(item?.rawText || '');
+    const sym = String(item?.symbol || 'BTCUSDT').toUpperCase();
+    const ageHours = Math.max(0, (nowTs - (Number(item?.timestamp) || nowTs)) / 3600000);
+    const freshness = Math.max(0.25, 1 - ageHours / 6);
+    const risk = classifyHeadlineRisk(rawText);
+
+    // Re-score headline with latest parser rules so stale mislabeled short-squeeze news never persists
+    const reparsed = parseTelegramSignalPost(rawText, { fallbackSymbol: sym });
+    const score =
+      reparsed.isActionableSignal && reparsed.sentiment !== 'NEUTRAL'
+        ? reparsed.sentimentScore
+        : Number(item?.sentimentScore) || 0;
+    const sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL' =
+      score > 0.15 ? 'BULLISH' : score < -0.15 ? 'BEARISH' : 'NEUTRAL';
+
+    const weight = (Number(item?.impactWeight) || 0.8) * freshness;
+    marketScoreSum += score * weight;
+    marketWeightSum += weight;
+
+    if (!symbolAgg[sym]) {
+      symbolAgg[sym] = { sum: 0, wSum: 0, hasCriticalRisk: false };
+    }
+    symbolAgg[sym].sum += score * weight;
+    symbolAgg[sym].wSum += weight;
+    if (risk.isCriticalRisk) {
+      symbolAgg[sym].hasCriticalRisk = true;
+      symbolAgg[sym].criticalTag = risk.tag;
+    }
+
+    if (summaryItems.length < 8) {
+      summaryItems.push({
+        source: String(item?.sourceHandle || item?.sourceTitle || 'Feed'),
+        symbol: sym,
+        sentiment,
+        headline: rawText.slice(0, 130),
+      });
+    }
+  }
+
+  const bySymbol: Record<string, { score: number; hasCriticalRisk: boolean; criticalTag?: string }> = {};
+  for (const [sym, agg] of Object.entries(symbolAgg)) {
+    bySymbol[sym] = {
+      score: agg.wSum > 0 ? Number((agg.sum / agg.wSum).toFixed(2)) : 0,
+      hasCriticalRisk: agg.hasCriticalRisk,
+      criticalTag: agg.criticalTag,
+    };
+  }
+
+  const marketNewsScore =
+    marketWeightSum > 0 ? Number((marketScoreSum / marketWeightSum).toFixed(2)) : 0;
+
+  return { marketNewsScore, bySymbol, summaryItems };
+}
 
 // Autonomous Bot Trading Engine for Mode 1 (Shadow Forward-Testing)
 async function runBotEngineCycle() {
@@ -5933,6 +6008,36 @@ async function runBotEngineCycle() {
           btcEmaTrendBps,
           btcVwapDevPct,
         });
+        const cycleNewsCtx = computeLiveNewsContext(Date.now());
+        const cycleEvent: MarketEventKey =
+          systemState.currentAiConductorDecision?.primaryEvent ||
+          detectActiveMarketEvents({
+            btcChange24hPct: cachedMarketTrendAudit?.btcChange24hPct || 0,
+            btcEmaTrendBps,
+            btcVwapDevPct,
+            marketBreadthPct: cachedMarketTrendAudit?.marketBreadthPct || 50,
+            avgAtrPct: cachedMarketTrendAudit?.avgAtrPct || 2.5,
+            maxCrowdSharePct: 50,
+            isMacroBlocked: false,
+            isNightSession: false,
+            newsSentimentBias: cycleNewsCtx.marketNewsScore,
+          }).primaryEvent;
+        const cyclePolicyMode =
+          systemState.currentAiConductorDecision?.allowedDirectionMode ||
+          resolveDefaultDirectionModeForEvent(cycleEvent);
+        const posNewsMeta = cycleNewsCtx.bySymbol[pos.symbol];
+        const counterDefense = evaluateCounterTrendDefenseExit({
+          symbol: pos.symbol,
+          side: pos.side,
+          entryPrice: pos.entryVwap,
+          currentPrice: pos.currentPrice,
+          openedAt: pos.openedAt || Date.now(),
+          primaryEvent: cycleEvent,
+          aiAllowedDirectionMode: cyclePolicyMode,
+          symbolNewsScore: posNewsMeta?.score || 0,
+          marketNewsScore: cycleNewsCtx.marketNewsScore,
+          hasCriticalRiskNewsOnSymbol: Boolean(posNewsMeta?.hasCriticalRisk),
+        });
 
         const dcaFill = evaluateTrendGridSafetyOrderFill({
           side: pos.side,
@@ -5942,10 +6047,11 @@ async function runBotEngineCycle() {
           safetyOrders: pos.safetyOrders,
           priceDecimals,
           qtyDecimals,
-          tpTargetPct: pos.tpTargetPct || 4.50,
+          tpTargetPct: pos.tpTargetPct || 2.75,
         });
 
-        if (dcaFill.triggered && !dcaMarketCheck.allowed) {
+        const dcaBlocked = !dcaMarketCheck.allowed || counterDefense.blockDca;
+        if (dcaFill.triggered && dcaBlocked) {
           if (Date.now() - lastDcaGuardLogTs > 2 * 60 * 1000) {
             lastDcaGuardLogTs = Date.now();
             addBotLog({
@@ -5955,7 +6061,7 @@ async function runBotEngineCycle() {
               symbol: pos.symbol,
               side: pos.side,
               price: pos.currentPrice,
-              message: `${pos.symbol}: ${dcaMarketCheck.reason}`,
+              message: `${pos.symbol}: ${counterDefense.blockDca ? counterDefense.reason : dcaMarketCheck.reason}`,
               rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
             });
           }
@@ -5986,7 +6092,7 @@ async function runBotEngineCycle() {
                 ((prevQty * pos.entryVwap + appliedAddedQty * pos.currentPrice) / Math.max(1e-8, newQty)).toFixed(priceDecimals)
               );
               const newTpPrice = Number(
-                (newEntryVwap * (1 + dirSign * ((pos.tpTargetPct || 4.50) / 100))).toFixed(priceDecimals)
+                (newEntryVwap * (1 + dirSign * ((pos.tpTargetPct || 2.75) / 100))).toFixed(priceDecimals)
               );
               pos.qty = newQty;
               pos.entryVwap = newEntryVwap;
@@ -6033,7 +6139,7 @@ async function runBotEngineCycle() {
               symbol: pos.symbol,
               side: pos.side,
               price: pos.currentPrice,
-              message: `Сетка @ne_investor [Добор #${dcaFill.filledStepIndex}/2]: откуп просадки ${pos.side} ${pos.symbol} по $${pos.currentPrice.toFixed(priceDecimals)} (+${dcaFill.addedQty}). Средняя цена улучшена до $${pos.entryVwap.toFixed(priceDecimals)}, цель разгрузки TP смещена на $${dcaFill.newTpPrice.toFixed(priceDecimals)} (+${(pos.tpTargetPct || 4.50).toFixed(2)}%).`,
+              message: `Сетка @ne_investor [Добор #${dcaFill.filledStepIndex}/2]: откуп просадки ${pos.side} ${pos.symbol} по $${pos.currentPrice.toFixed(priceDecimals)} (+${dcaFill.addedQty}). Средняя цена улучшена до $${pos.entryVwap.toFixed(priceDecimals)}, цель разгрузки TP смещена на $${dcaFill.newTpPrice.toFixed(priceDecimals)} (+${(pos.tpTargetPct || 2.75).toFixed(2)}%).`,
               rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
             });
             savePersistedState();
@@ -6043,7 +6149,7 @@ async function runBotEngineCycle() {
         const diff = (pos.currentPrice - pos.entryVwap) * dirSign;
         pos.unrealizedPnl = Number((diff * pos.qty).toFixed(2));
 
-        // 2a. Breakeven & Trailing Stop Protection (activates at +1.85% price / +7.4% ROE at 4x, locks >= +0.35% above fees and trails 65% of wave)
+        // 2a. Early Breakeven & Trailing Stop Protection (activates at +1.05% spot / +4.2% ROE at 4x, locks >= +0.25% above fees and trails 62% of wave)
         const trailUpdate = computeTrailingStopPrice({
           side: pos.side,
           entryPrice: pos.entryVwap,
@@ -6051,9 +6157,9 @@ async function runBotEngineCycle() {
           currentSlPrice: pos.slPrice,
           previousPeakPrice: pos.peakPrice,
           priceDecimals,
-          activationPct: 1.85,
-          feeBufferPct: 0.35,
-          lockFraction: 0.65,
+          activationPct: 1.05,
+          feeBufferPct: 0.25,
+          lockFraction: 0.62,
         });
         pos.peakPrice = trailUpdate.newPeakPrice;
         if (trailUpdate.updated) {
@@ -6164,7 +6270,7 @@ async function runBotEngineCycle() {
           }
         }
 
-        // 2d. Trend-Grid Time-Decayed Harvest Check (lets momentum waves run toward +15%..+25% ROE before decaying after 2h–16h)
+        // 2d. Trend-Grid Time-Decayed Harvest Check (+3.2% initial -> +2.4% at 90m -> +1.7% at 4h -> +0.7% at 12h)
         const ftExitCheck = evaluateFreqtradeShouldExit({
           side: pos.side,
           entryPrice: pos.entryVwap,
@@ -6174,11 +6280,11 @@ async function runBotEngineCycle() {
           isBreakEven: pos.isBreakEven,
           openedAt: pos.openedAt || Date.now(),
           roiTable: {
-            0: 0.052,
-            120: 0.040,
-            300: 0.030,
-            600: 0.018,
-            960: 0.010,
+            0: 0.032,
+            90: 0.024,
+            240: 0.017,
+            480: 0.011,
+            720: 0.007,
           },
         });
 
@@ -6323,6 +6429,46 @@ async function runBotEngineCycle() {
             price: pos.currentPrice,
             pnl: tradeRecord.netPnlUsdt,
             message: `${staleExitCheck.reason} Итог: ${tradeRecord.netPnlUsdt >= 0 ? '+' : ''}$${tradeRecord.netPnlUsdt.toFixed(2)} USDT.`,
+            rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
+          });
+          continue;
+        }
+
+        // 2g. Counter-Trend AI Policy & News Defense Exit (unloads soft/breakeven counter-trend trades after >=20m instead of letting flush deepen)
+        if (counterDefense.shouldExit) {
+          if (pos.mode === 'LIVE' && pos.exchange === 'OKX') {
+            const closeRes = await closeRealOkxLivePosition({
+              symbol: pos.symbol,
+              side: pos.side,
+              baseQty: pos.qty,
+              algoId: pos.exchangeAlgoId,
+            });
+            if (!closeRes.ok) {
+              addBotLog({
+                botId: pos.botId || 'ai-conductor',
+                botName: 'Защита Режим+Новости',
+                action: 'RISK_GUARD',
+                symbol: pos.symbol,
+                side: pos.side,
+                price: pos.currentPrice,
+                message: `Ошибка разгрузки ${pos.symbol} по политике ИИ/новостей на OKX: ${closeRes.retMsg}.`,
+                rttMs: systemState.pings.okx,
+              });
+              continue;
+            }
+          }
+          systemState.activePositions.splice(i, 1);
+          const exitCode = pos.unrealizedPnl >= 0 ? 'TP_HIT' : 'SL_HIT';
+          const tradeRecord = recordClosedPosition(pos, pos.currentPrice, exitCode);
+          addBotLog({
+            botId: pos.botId || 'ai-conductor',
+            botName: 'Защита Режим+Новости',
+            action: exitCode,
+            symbol: pos.symbol,
+            side: pos.side,
+            price: pos.currentPrice,
+            pnl: tradeRecord.netPnlUsdt,
+            message: `${counterDefense.reason} Итог: ${tradeRecord.netPnlUsdt >= 0 ? '+' : ''}$${tradeRecord.netPnlUsdt.toFixed(2)} USDT.`,
             rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
           });
           continue;
@@ -6646,18 +6792,53 @@ async function runBotEngineCycle() {
           })
         );
 
-        // Sort candidates: strategy-compatible actionable signals (LONG/SHORT) first, ranked by highest |compositeScore|
+        // Build Unified Pre-Trade Policy Context (Rules + Settings + News + AI Conductor Policy)
+        const entryNewsCtx = computeLiveNewsContext(nowCycleTs);
+        const activePrimaryEvent: MarketEventKey =
+          systemState.currentAiConductorDecision?.primaryEvent ||
+          detectActiveMarketEvents({
+            btcChange24hPct: btcChange24h,
+            btcEmaTrendBps,
+            btcVwapDevPct,
+            marketBreadthPct: cachedMarketTrendAudit?.marketBreadthPct || 50,
+            avgAtrPct: cachedMarketTrendAudit?.avgAtrPct || 2.5,
+            maxCrowdSharePct: 50,
+            isMacroBlocked: macroWindow.isBlocked,
+            isNightSession: sessionRisk.isNightSession,
+            newsSentimentBias: entryNewsCtx.marketNewsScore,
+          }).primaryEvent;
+        const activePolicyMode =
+          systemState.currentAiConductorDecision?.allowedDirectionMode ||
+          resolveDefaultDirectionModeForEvent(activePrimaryEvent);
+        const aiBlockedSymbols = systemState.currentAiConductorDecision?.blockedSymbols || [];
+
+        const checkCandidatePolicy = (cand: (typeof evaluatedBatch)[number]) => {
+          if (cand.evalResult.action === 'SKIP') return { allowed: false };
+          const symNews = entryNewsCtx.bySymbol[cand.symbol];
+          return evaluateUnifiedTradePolicy({
+            symbol: cand.symbol,
+            side: cand.evalResult.action,
+            strategyId: actingBot.agentId,
+            strategyName: actingBot.name,
+            directionBias: actingBot.directionBias,
+            primaryEvent: activePrimaryEvent,
+            aiAllowedDirectionMode: activePolicyMode,
+            aiBlockedSymbols,
+            btcEmaTrendBps,
+            btcVwapDevPct,
+            macroBlocked: macroWindow.isBlocked,
+            goldAllowed,
+            symbolNewsScore: symNews?.score || 0,
+            marketNewsScore: entryNewsCtx.marketNewsScore,
+            hasCriticalRiskNewsOnSymbol: Boolean(symNews?.hasCriticalRisk),
+            criticalRiskTag: symNews?.criticalTag,
+          });
+        };
+
+        // Sort candidates: policy-compatible actionable signals (LONG/SHORT) first, ranked by highest |compositeScore|
         evaluatedBatch.sort((a, b) => {
-          const aCompat =
-            a.evalResult.action !== 'SKIP' &&
-            evaluateStrategyDirectionBias(actingBot.directionBias, a.evalResult.action).allowed
-              ? 1
-              : 0;
-          const bCompat =
-            b.evalResult.action !== 'SKIP' &&
-            evaluateStrategyDirectionBias(actingBot.directionBias, b.evalResult.action).allowed
-              ? 1
-              : 0;
+          const aCompat = checkCandidatePolicy(a).allowed ? 1 : 0;
+          const bCompat = checkCandidatePolicy(b).allowed ? 1 : 0;
           if (aCompat !== bCompat) return bCompat - aCompat;
           const aValid = a.evalResult.action !== 'SKIP' ? 1 : 0;
           const bValid = b.evalResult.action !== 'SKIP' ? 1 : 0;
@@ -6665,7 +6846,7 @@ async function runBotEngineCycle() {
           return Math.abs(b.evalResult.compositeScore) - Math.abs(a.evalResult.compositeScore);
         });
 
-        // Filter candidates sequentially through Direction Bias, BTC Bounce Short Veto, Same-Direction Correlation Cap, and OKX Crowd L/S Guard
+        // Filter candidates sequentially through Hybrid Policy Gate (Rules + Settings + News + AI), Same-Direction Correlation Cap, and OKX Crowd L/S Guard
         let chosenCandidate: (typeof evaluatedBatch)[number] | null = null;
         for (const cand of evaluatedBatch) {
           if (cand.evalResult.action === 'SKIP') {
@@ -6673,8 +6854,8 @@ async function runBotEngineCycle() {
             break;
           }
 
-          const biasCheck = evaluateStrategyDirectionBias(actingBot.directionBias, cand.evalResult.action);
-          if (!biasCheck.allowed) {
+          const policyVerdict = checkCandidatePolicy(cand);
+          if (!policyVerdict.allowed) {
             addBotLog({
               botId: actingBot.agentId,
               botName: actingBot.name,
@@ -6682,27 +6863,7 @@ async function runBotEngineCycle() {
               symbol: cand.symbol,
               side: cand.evalResult.action,
               price: cand.bestBid,
-              message: `${actingBot.name}: пропуск ${cand.evalResult.action} ${cand.symbol} — ${biasCheck.reason}`,
-              rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
-            });
-            continue;
-          }
-
-          const btcVeto = evaluateBtcBounceShortVeto({
-            symbol: cand.symbol,
-            side: cand.evalResult.action,
-            btcEmaTrendBps,
-            btcVwapDevPct,
-          });
-          if (!btcVeto.allowed) {
-            addBotLog({
-              botId: actingBot.agentId,
-              botName: actingBot.name,
-              action: 'RISK_GUARD',
-              symbol: cand.symbol,
-              side: cand.evalResult.action,
-              price: cand.bestBid,
-              message: `Защита от отскока BTC: ${btcVeto.reason}`,
+              message: `${actingBot.name} [${policyVerdict.vetoSource || 'POLICY'}]: пропуск ${cand.evalResult.action} ${cand.symbol} — ${policyVerdict.reason}`,
               rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
             });
             continue;
@@ -6954,7 +7115,7 @@ async function runBotEngineCycle() {
         }
 
         // Build Variant 3 Trend-Grid & DCA Pullback Plan (Base Order 40% + Safety Order #1 30% + Safety Order #2 30%)
-        const strategyTpPct = typeof actingBot.targetTpPct === 'number' ? actingBot.targetTpPct : 4.8;
+        const strategyTpPct = typeof actingBot.targetTpPct === 'number' ? actingBot.targetTpPct : 2.75;
         const gridPlan = buildTrendGridPlan({
           side,
           entryPrice: topBookPrice,
@@ -7032,7 +7193,13 @@ async function runBotEngineCycle() {
             });
             if (!liveRes.ok) {
               const errMsg = String(liveRes.retMsg || '');
-              if (errMsg.includes('51001') || errMsg.toLowerCase().includes('instrument id')) {
+              const lowerErr = errMsg.toLowerCase();
+              if (
+                errMsg.includes('51001') ||
+                errMsg.includes('51155') ||
+                lowerErr.includes('instrument id') ||
+                lowerErr.includes('compliance')
+              ) {
                 okxDemoUnsupportedSymbols.add(targetSymbol);
                 const nowTs = Date.now();
                 symbolCooldowns[targetSymbol] = {
@@ -7642,6 +7809,7 @@ async function computeLiveMarketSnapshotForAi(
     nightModeEnabled: systemState.nightModeEnabled !== false,
   });
 
+  const liveNewsCtx = computeLiveNewsContext(Date.now());
   const eventDet = detectActiveMarketEvents({
     btcChange24hPct: audit.btcChange24hPct || 0,
     btcEmaTrendBps: btcFeatures.emaTrendBps,
@@ -7651,6 +7819,7 @@ async function computeLiveMarketSnapshotForAi(
     maxCrowdSharePct,
     isMacroBlocked: macroWindow.isBlocked,
     isNightSession: sessionRisk.isNightSession,
+    newsSentimentBias: liveNewsCtx.marketNewsScore,
   });
 
   const workingCapitalUsdt = Math.max(1, Number((systemState.capitalUsdt + systemState.totalRealizedPnlUsdt).toFixed(2)));
@@ -7672,6 +7841,8 @@ async function computeLiveMarketSnapshotForAi(
     isNightSession: sessionRisk.isNightSession,
     openPositionsCount: systemState.activePositions.length,
     workingCapitalUsdt,
+    newsBiasScore: liveNewsCtx.marketNewsScore,
+    recentNewsSummary: liveNewsCtx.summaryItems,
   };
 }
 

@@ -7,6 +7,9 @@ import {
   evaluateSameDirectionCorrelationCap,
   evaluateStrategyDirectionBias,
   evaluateStalePositionExit,
+  evaluateUnifiedTradePolicy,
+  evaluateCounterTrendDefenseExit,
+  rankStrategiesForSnapshot,
   resolveCorrelationCapBySlots,
   buildAiConductorPrompt,
   parseAiConductorResponse,
@@ -17,14 +20,14 @@ import {
 } from './ai-strategy-conductor.ts';
 import { createDefaultBotBrain } from './bot-learning-math.ts';
 
-test('STRATEGY_CATALOG_14 defines 14 distinct strategies with disciplined risk and balanced TP', () => {
+test('STRATEGY_CATALOG_14 defines 14 distinct strategies with disciplined risk and realistic TP', () => {
   assert.equal(STRATEGY_CATALOG_14.length, 14);
   const ids = new Set(STRATEGY_CATALOG_14.map((s) => s.agentId));
   assert.equal(ids.size, 14);
 
   for (const s of STRATEGY_CATALOG_14) {
     assert.ok(s.riskPerTradePct >= 0.8 && s.riskPerTradePct <= 1.5, `${s.agentId} risk must stay <= 1.5%`);
-    assert.ok(s.targetTpPct >= 3.8 && s.targetTpPct <= 6.2, `${s.agentId} TP must target 3.8–6.2% (+15%..+25% ROE at 4x)`);
+    assert.ok(s.targetTpPct >= 2.2 && s.targetTpPct <= 3.3, `${s.agentId} TP must target 2.2–3.3% (+8.8%..+13.2% ROE at 4x)`);
     assert.ok(s.preferredEvents.length >= 1);
   }
 });
@@ -215,10 +218,10 @@ test('parseAiConductorResponse validates Ollama JSON, strips fences, filters unk
     'strat-gold-safe-haven',
   ]);
   assert.equal(parsed.mutations.length, 1);
-  // Clamped safely inside [ -0.03, 0.03 ] and [ 0.8, 1.6 ]
+  // Clamped safely inside [ -0.03, 0.03 ], [ 0.8, 1.5 ], and [ 2.2, 3.5 ]
   assert.equal(parsed.mutations[0].confidenceThresholdDelta, 0.03);
   assert.equal(parsed.mutations[0].riskPerTradePct, 0.8);
-  assert.equal(parsed.mutations[0].targetTpPct, 4.8);
+  assert.equal(parsed.mutations[0].targetTpPct, 3.5);
 });
 
 test('applyDeterministicEvolutionFallback and applyConductorDecisionToAgents update active combo and mutate weak bots', () => {
@@ -412,6 +415,151 @@ test('parseAiConductorResponse guarantees at least 3 strategies when LLM returns
   assert.equal(parsed.activeComboIds[0], 'strat-bull-breakout-pro');
   assert.equal(parsed.activeComboIds[1], 'strat-alt-rotation-alpha');
   assert.equal(new Set(parsed.activeComboIds).size, 3);
+});
+
+test('evaluateUnifiedTradePolicy & evaluateCounterTrendDefenseExit enforce Rules + Settings + News + AI Policy', () => {
+  // 1. During MARKET_FLUSH_SHORT, counter-trend LONG crypto entries must be blocked (unless strong BTC recovery or XAU)
+  const blockKnifeLong = evaluateUnifiedTradePolicy({
+    symbol: 'SUIUSDT',
+    side: 'LONG',
+    strategyId: 'agent-lgbm-nightly',
+    strategyName: 'Momentum',
+    directionBias: 'BOTH',
+    primaryEvent: 'MARKET_FLUSH_SHORT',
+    aiAllowedDirectionMode: 'SHORT_PREFERRED',
+    btcEmaTrendBps: -4.2,
+    btcVwapDevPct: -0.35,
+    macroBlocked: false,
+    goldAllowed: true,
+  });
+  assert.equal(blockKnifeLong.allowed, false);
+  assert.equal(blockKnifeLong.vetoSource, 'AI_POLICY');
+
+  // 2. Same flush allows SHORT and defensive XAUUSDT
+  const allowFlushShort = evaluateUnifiedTradePolicy({
+    symbol: 'SUIUSDT',
+    side: 'SHORT',
+    strategyId: 'strat-trend-flush-rider',
+    strategyName: 'Flush-Rider',
+    directionBias: 'SHORT_ONLY',
+    primaryEvent: 'MARKET_FLUSH_SHORT',
+    aiAllowedDirectionMode: 'SHORT_PREFERRED',
+    btcEmaTrendBps: -4.2,
+    btcVwapDevPct: -0.35,
+    macroBlocked: false,
+    goldAllowed: true,
+  });
+  assert.equal(allowFlushShort.allowed, true);
+
+  const allowGoldInFlush = evaluateUnifiedTradePolicy({
+    symbol: 'XAUUSDT',
+    side: 'LONG',
+    strategyId: 'strat-gold-safe-haven',
+    strategyName: 'Aurum-Shield',
+    directionBias: 'BOTH',
+    primaryEvent: 'MARKET_FLUSH_SHORT',
+    aiAllowedDirectionMode: 'SHORT_PREFERRED',
+    btcEmaTrendBps: -4.2,
+    btcVwapDevPct: -0.35,
+    macroBlocked: false,
+    goldAllowed: true,
+  });
+  assert.equal(allowGoldInFlush.allowed, true);
+
+  // 3. Respects user settings (goldAllowed: false) and critical symbol news
+  const blockedGoldSetting = evaluateUnifiedTradePolicy({
+    symbol: 'XAUUSDT',
+    side: 'LONG',
+    strategyId: 'strat-gold-safe-haven',
+    strategyName: 'Aurum-Shield',
+    primaryEvent: 'LOW_VOL_RANGE',
+    btcEmaTrendBps: 0,
+    btcVwapDevPct: 0,
+    macroBlocked: false,
+    goldAllowed: false,
+  });
+  assert.equal(blockedGoldSetting.allowed, false);
+  assert.equal(blockedGoldSetting.vetoSource, 'SETTINGS');
+
+  const blockedCriticalNews = evaluateUnifiedTradePolicy({
+    symbol: 'LINKUSDT',
+    side: 'LONG',
+    strategyId: 'agent-onnx-ppo-v2',
+    strategyName: 'Delta-L2',
+    primaryEvent: 'LOW_VOL_RANGE',
+    btcEmaTrendBps: 1.0,
+    btcVwapDevPct: 0.1,
+    macroBlocked: false,
+    goldAllowed: true,
+    hasCriticalRiskNewsOnSymbol: true,
+    criticalRiskTag: 'CRITICAL_SECURITY_OR_DELIST_RISK',
+  });
+  assert.equal(blockedCriticalNews.allowed, false);
+  assert.equal(blockedCriticalNews.vetoSource, 'NEWS');
+
+  // 4. Open counter-trend LONG in MARKET_FLUSH_SHORT blocks DCA and exits gracefully near breakeven after >=20m
+  const now = 1795456989000;
+  const softExitDefense = evaluateCounterTrendDefenseExit({
+    symbol: 'DOTUSDT',
+    side: 'LONG',
+    entryPrice: 1.0,
+    currentPrice: 1.003,
+    openedAt: now - 35 * 60000,
+    nowTs: now,
+    primaryEvent: 'MARKET_FLUSH_SHORT',
+  });
+  assert.equal(softExitDefense.blockDca, true);
+  assert.equal(softExitDefense.shouldExit, true);
+
+  // Deep loss (-1.5%) does NOT panic-close and keeps DCA blocked while letting hard SL handle risk
+  const deepHoldDefense = evaluateCounterTrendDefenseExit({
+    symbol: 'DOTUSDT',
+    side: 'LONG',
+    entryPrice: 1.0,
+    currentPrice: 0.985,
+    openedAt: now - 35 * 60000,
+    nowTs: now,
+    primaryEvent: 'MARKET_FLUSH_SHORT',
+  });
+  assert.equal(deepHoldDefense.blockDca, true);
+  assert.equal(deepHoldDefense.shouldExit, false);
+
+  // 5. rankStrategiesForSnapshot puts Flush-Rider ahead of Bounce-Hunter during MARKET_FLUSH_SHORT and injects news into prompt
+  const flushSnap: MarketSnapshotForAi = {
+    regimeLabel: 'Пролив',
+    primaryEvent: 'MARKET_FLUSH_SHORT',
+    secondaryEvents: [],
+    eventLabelRu: 'Общерыночный пролив и давление продаж',
+    btcPrice: 60100,
+    btcChange24hPct: -4.2,
+    btcEmaTrendBps: -7.5,
+    btcVwapDevPct: -0.45,
+    marketBreadthPct: 24,
+    avgAtrPct: 5.5,
+    maxCrowdSharePct: 72,
+    crowdedSymbols: [],
+    isMacroBlocked: false,
+    isNightSession: false,
+    openPositionsCount: 2,
+    workingCapitalUsdt: 300,
+    newsBiasScore: -0.75,
+    recentNewsSummary: [
+      { source: '@WatcherGuru', symbol: 'BTCUSDT', sentiment: 'BEARISH', headline: 'Crypto continues to crash' },
+    ],
+  };
+  const perfAll: StrategyPerformanceInput[] = STRATEGY_CATALOG_14.map((s) => ({
+    ...s,
+    isEnabled: s.defaultEnabled,
+    tradesCount: 0,
+    winRatePct: 0,
+    profitFactor: 1.5,
+    realizedPnlUsdt: 0,
+  }));
+  const rankedFlush = rankStrategiesForSnapshot(flushSnap, perfAll);
+  const topIds = rankedFlush.slice(0, 4).map((s) => s.agentId);
+  assert.ok(topIds.includes('strat-trend-flush-rider'));
+  assert.ok(!topIds.includes('strat-btc-bounce-hunter'));
+  assert.ok(buildAiConductorPrompt(flushSnap, perfAll).includes('@WatcherGuru'));
 });
 
 
