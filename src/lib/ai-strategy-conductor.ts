@@ -1172,12 +1172,18 @@ export function applyConductorDecisionToAgents<
     }
 
     const mut = mutationMap.get(agent.agentId);
+    if (!mut && agent.brain && agent.brain.confidenceThreshold > 0.29) {
+      agent.brain.confidenceThreshold = 0.29;
+      updatedCount++;
+    }
     if (mut) {
       if (!agent.brain) continue;
       if (typeof mut.confidenceThresholdDelta === 'number') {
         agent.brain.confidenceThreshold = Number(
-          clampNum(agent.brain.confidenceThreshold + mut.confidenceThresholdDelta, 0.16, 0.34).toFixed(3)
+          clampNum(agent.brain.confidenceThreshold + mut.confidenceThresholdDelta, 0.16, 0.29).toFixed(3)
         );
+      } else if (agent.brain.confidenceThreshold > 0.29) {
+        agent.brain.confidenceThreshold = 0.29;
       }
       if (typeof mut.riskPerTradePct === 'number') {
         agent.riskPerTradePct = Number(clampNum(mut.riskPerTradePct, 0.8, 1.5).toFixed(2));

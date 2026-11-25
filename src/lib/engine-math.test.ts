@@ -4,6 +4,7 @@ import {
   calculateRiskFirewallOrderSize,
   checkMarketGuards,
   evaluateDailyDrawdownKillSwitch,
+  evaluateAutoKillSwitchRecovery,
   executeMarketOrderL2,
   checkLimitOrderFill,
   dynamicTPCollapse,
@@ -393,6 +394,63 @@ test('OKX Crowd Long/Short Guard: blocks crowded side >= 78%, permits counter-cr
   assert.equal(xau.crowdedSide, 'UNKNOWN');
 });
 
+test('Risk Firewall: Auto Kill-Switch recovers after cooldown/stabilization while manual Kill-Switch never auto-recovers', () => {
+  const triggeredAt = 1795500000000;
+  const hourMs = 60 * 60 * 1000;
 
+  // 1. Manual emergency stop MUST NEVER auto-recover even after 24 hours
+  const manualStop = evaluateAutoKillSwitchRecovery({
+    isKillSwitchActive: true,
+    isAutoTriggered: false,
+    triggeredAt,
+    nowTs: triggeredAt + 24 * hourMs,
+    capitalUsdt: 300,
+    rolling24hPnlUsdt: 0,
+  });
+  assert.equal(manualStop.shouldRecover, false);
 
+  // 2. Auto stop does NOT recover before 3h cooldown even if PnL looks ok
+  const tooEarly = evaluateAutoKillSwitchRecovery({
+    isKillSwitchActive: true,
+    isAutoTriggered: true,
+    triggeredAt,
+    nowTs: triggeredAt + 2 * hourMs,
+    capitalUsdt: 300,
+    rolling24hPnlUsdt: -1.13,
+  });
+  assert.equal(tooEarly.shouldRecover, false);
 
+  // 3. Auto stop DOES recover after 3.5h when 24h drawdown stabilized above -2.5%
+  const stabilized = evaluateAutoKillSwitchRecovery({
+    isKillSwitchActive: true,
+    isAutoTriggered: true,
+    triggeredAt,
+    nowTs: triggeredAt + 3.5 * hourMs,
+    capitalUsdt: 300,
+    rolling24hPnlUsdt: -1.13, // -0.38%
+  });
+  assert.equal(stabilized.shouldRecover, true);
+  assert.match(stabilized.reason || '', /Авто-восстановление/);
+
+  // 4. Auto stop stays paused at 4h if 24h drawdown is still deep (-4.5%)
+  const stillDeep = evaluateAutoKillSwitchRecovery({
+    isKillSwitchActive: true,
+    isAutoTriggered: true,
+    triggeredAt,
+    nowTs: triggeredAt + 4 * hourMs,
+    capitalUsdt: 300,
+    rolling24hPnlUsdt: -13.5, // -4.5%
+  });
+  assert.equal(stillDeep.shouldRecover, false);
+
+  // 5. Auto stop resets cleanly after 8h session cooldown
+  const sessionReset = evaluateAutoKillSwitchRecovery({
+    isKillSwitchActive: true,
+    isAutoTriggered: true,
+    triggeredAt,
+    nowTs: triggeredAt + 8.1 * hourMs,
+    capitalUsdt: 300,
+    rolling24hPnlUsdt: -13.5,
+  });
+  assert.equal(sessionReset.shouldRecover, true);
+});

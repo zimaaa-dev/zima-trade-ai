@@ -161,6 +161,7 @@ import {
   calculateRiskFirewallOrderSize,
   checkMarketGuards,
   evaluateDailyDrawdownKillSwitch,
+  evaluateAutoKillSwitchRecovery,
   executeMarketOrderL2,
   dynamicTPCollapse,
   validateSignalFreshness,
@@ -701,6 +702,8 @@ interface AppSystemState {
   okxCachedOpenPositions?: NormalizedOkxOpenPosition[];
   isKillSwitchActive: boolean;
   killSwitchTriggerReason: string | null;
+  killSwitchAutoTriggered?: boolean;
+  killSwitchTriggeredAt?: number | null;
   lastUnblockedAt?: number;
   capitalUsdt: number;
   tradingCapitalCapUsdt: number | null;
@@ -806,6 +809,8 @@ const systemState: AppSystemState = {
   okxCachedOpenPositions: [],
   isKillSwitchActive: false,
   killSwitchTriggerReason: null,
+  killSwitchAutoTriggered: false,
+  killSwitchTriggeredAt: null,
   lastUnblockedAt: 0,
   capitalUsdt: 10.0,
   tradingCapitalCapUsdt: process.env.OKX_DEMO_TRADING !== 'false' ? 300.0 : null,
@@ -1082,6 +1087,8 @@ function buildPersistPayload() {
     totalRealizedPnlUsdt: systemState.totalRealizedPnlUsdt,
     isKillSwitchActive: systemState.isKillSwitchActive,
     killSwitchTriggerReason: systemState.killSwitchTriggerReason,
+    killSwitchAutoTriggered: Boolean(systemState.killSwitchAutoTriggered),
+    killSwitchTriggeredAt: systemState.killSwitchTriggeredAt || null,
     lastUnblockedAt: systemState.lastUnblockedAt || 0,
     botTradingEnabled: systemState.botTradingEnabled,
     nightModeEnabled: systemState.nightModeEnabled !== false,
@@ -1363,6 +1370,20 @@ function loadPersistedState(): void {
         systemState.killSwitchTriggerReason = parsed.killSwitchTriggerReason;
       } else {
         systemState.killSwitchTriggerReason = null;
+      }
+      if (!isLegacy10k && systemState.isKillSwitchActive) {
+        const inferredAuto =
+          typeof parsed.killSwitchAutoTriggered === 'boolean'
+            ? parsed.killSwitchAutoTriggered
+            : String(systemState.killSwitchTriggerReason || '').startsWith('Auto-triggered:');
+        systemState.killSwitchAutoTriggered = inferredAuto;
+        systemState.killSwitchTriggeredAt =
+          typeof parsed.killSwitchTriggeredAt === 'number'
+            ? parsed.killSwitchTriggeredAt
+            : Number(parsed.savedAt) || Date.now();
+      } else {
+        systemState.killSwitchAutoTriggered = false;
+        systemState.killSwitchTriggeredAt = null;
       }
 
       if (isLegacy10k) {
@@ -2619,6 +2640,8 @@ function buildTelegramCommandReply(
 
   if (cmd === '/kill') {
     systemState.isKillSwitchActive = true;
+    systemState.killSwitchAutoTriggered = false;
+    systemState.killSwitchTriggeredAt = Date.now();
     systemState.killSwitchTriggerReason = `Активирован через Telegram (${firstName}, ${chatIdStr})`;
     if (systemState.mode === 'LIVE') systemState.mode = 'SHADOW';
     savePersistedState();
@@ -4611,22 +4634,70 @@ async function fetchRealBybitKlines(symbol: string, interval: string = '5', limi
   return fallbackBars;
 }
 
-// Helper to construct complete and resilient SystemHealth payload
-function buildFullSystemHealthPayload() {
+function syncDrawdownAndAutoRecovery(): void {
   try {
     recalculateRolling24hPnl();
   } catch {
     // protect against calculation errors
   }
   try {
+    if (systemState.isKillSwitchActive && systemState.killSwitchAutoTriggered) {
+      const recovery = evaluateAutoKillSwitchRecovery({
+        isKillSwitchActive: systemState.isKillSwitchActive,
+        isAutoTriggered: Boolean(systemState.killSwitchAutoTriggered),
+        triggeredAt: systemState.killSwitchTriggeredAt ?? null,
+        nowTs: Date.now(),
+        capitalUsdt: systemState.capitalUsdt,
+        rolling24hPnlUsdt: systemState.rolling24hPnlUsdt,
+      });
+      if (recovery.shouldRecover) {
+        systemState.isKillSwitchActive = false;
+        systemState.killSwitchAutoTriggered = false;
+        systemState.killSwitchTriggeredAt = null;
+        systemState.killSwitchTriggerReason = null;
+        systemState.lastUnblockedAt = Date.now();
+        systemState.rolling24hPnlUsdt = 0.0;
+        emitAppNotification({
+          category: 'KILL_SWITCH',
+          severity: 'SUCCESS',
+          title: '🟢 Авто-восстановление риск-файрвола',
+          message: recovery.reason || 'Суточный лимит просадки остыл. Торговля ботов возобновлена.',
+          isUrgent: true,
+        });
+        dispatchTelegramNotification({
+          category: 'KILL_SWITCH',
+          title: '🟢 АВТО-ВОССТАНОВЛЕНИЕ ТОРГОВЛИ',
+          htmlBody: `${recovery.reason || 'Суточная просадка стабилизировалась.'}\n• Стоп-кран автоматически снят, боты возобновили сканирование рынка.`,
+          plainPreview: recovery.reason || 'Авто-снятие стоп-крана после охлаждения лимита просадки',
+          isManualOrUrgent: true,
+        }).catch(() => {});
+        savePersistedState(true);
+      }
+    }
+
     const dd = evaluateDailyDrawdownKillSwitch(systemState.capitalUsdt, systemState.rolling24hPnlUsdt);
     if (dd.isKillSwitchActive && !systemState.isKillSwitchActive) {
       systemState.isKillSwitchActive = true;
+      systemState.killSwitchAutoTriggered = true;
+      systemState.killSwitchTriggeredAt = Date.now();
       systemState.killSwitchTriggerReason = `Auto-triggered: 24h Drawdown ${dd.drawdownPct.toFixed(2)}% breached -5.0% threshold`;
+      emitAppNotification({
+        category: 'KILL_SWITCH',
+        severity: 'CRITICAL',
+        title: '🚨 Авто-Стоп-Кран (24ч просадка)',
+        message: `${systemState.killSwitchTriggerReason}. Авто-восстановление после охлаждения (3–8 ч).`,
+        isUrgent: true,
+      });
+      savePersistedState(true);
     }
   } catch {
     // protect against drawdown calculation errors
   }
+}
+
+// Helper to construct complete and resilient SystemHealth payload
+function buildFullSystemHealthPayload() {
+  syncDrawdownAndAutoRecovery();
 
   const rssMb = Math.round(process.memoryUsage().rss / (1024 * 1024));
   const totalSysMb = Math.min(4096, Math.round(os.totalmem() / (1024 * 1024)));
@@ -4645,6 +4716,8 @@ function buildFullSystemHealthPayload() {
     okxAvailableBalanceUsdt: systemState.okxAvailableBalanceUsdt,
     isKillSwitchActive: systemState.isKillSwitchActive,
     killSwitchTriggerReason: systemState.killSwitchTriggerReason,
+    killSwitchAutoTriggered: Boolean(systemState.killSwitchAutoTriggered),
+    killSwitchTriggeredAt: systemState.killSwitchTriggeredAt || null,
     capitalUsdt: systemState.capitalUsdt,
     tradingCapitalCapUsdt: systemState.tradingCapitalCapUsdt,
     rolling24hPnlUsdt: systemState.rolling24hPnlUsdt,
@@ -5244,6 +5317,8 @@ app.post('/api/system/mode', async (req: Request, res: Response) => {
 app.post('/api/kill-switch/trigger', (req: Request, res: Response) => {
   const { reason } = req.body;
   systemState.isKillSwitchActive = true;
+  systemState.killSwitchAutoTriggered = false;
+  systemState.killSwitchTriggeredAt = Date.now();
   systemState.killSwitchTriggerReason = reason || 'Manual Emergency Trigger from Terminal';
   if (systemState.mode === 'LIVE') {
     systemState.mode = 'SHADOW';
@@ -5261,6 +5336,8 @@ app.post('/api/kill-switch/trigger', (req: Request, res: Response) => {
 
 app.post('/api/kill-switch/reset', (_req: Request, res: Response) => {
   systemState.isKillSwitchActive = false;
+  systemState.killSwitchAutoTriggered = false;
+  systemState.killSwitchTriggeredAt = null;
   systemState.killSwitchTriggerReason = null;
   systemState.lastUnblockedAt = Date.now();
   systemState.rolling24hPnlUsdt = 0.0;
@@ -13133,8 +13210,9 @@ async function startServer() {
       }
     }, 20_000);
 
-    // Start background Autonomous Bot Trading Engine (optimized cycle with watchdog lock)
+    // Start background Autonomous Bot Trading Engine (optimized cycle with watchdog lock & auto kill-switch cooldown recovery)
     setInterval(() => {
+      syncDrawdownAndAutoRecovery();
       if (systemState.botTradingEnabled && !systemState.isKillSwitchActive) {
         runBotEngineCycle().catch((err) => console.warn('Bot engine error:', err));
       }

@@ -649,6 +649,16 @@ test('no simultaneous LONG+SHORT deadlock in [3.5..5.0] bps zone and blockedSymb
   assert.ok(parsed.blockedSymbols?.includes('XAUUSDT'));
   assert.ok(parsed.blockedSymbols?.includes('DOGEUSDT'));
   assert.ok((parsed.blockedSymbols?.length || 0) <= 3);
+
+  // Verify stuck 0.34 thresholds automatically heal down to <= 0.29 on conductor apply
+  const stuckAgents = STRATEGY_CATALOG_14.map((s) => {
+    const b = createDefaultBotBrain('ONNX_RL', s.agentId);
+    b.confidenceThreshold = 0.34;
+    return { ...s, isEnabled: s.defaultEnabled, brain: b };
+  });
+  const healed = applyConductorDecisionToAgents(stuckAgents, parsed);
+  assert.ok(healed.updatedCount > 0);
+  for (const ag of stuckAgents) {
+    assert.ok(ag.brain.confidenceThreshold <= 0.29);
+  }
 });
-
-

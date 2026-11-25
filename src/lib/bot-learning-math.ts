@@ -915,7 +915,13 @@ export function isTrendBreakoutContext(options?: SignalEvaluationContext): boole
     return true;
   }
   const ev = String(options.primaryEvent || '').toUpperCase();
-  if (ev === 'BULL_EXPANSION' || ev === 'BEAR_FLUSH' || ev === 'VOLATILITY_SPIKE') {
+  if (
+    ev === 'BULL_EXPANSION' ||
+    ev === 'BEAR_FLUSH' ||
+    ev === 'MARKET_FLUSH_SHORT' ||
+    ev === 'SHORT_SQUEEZE_UP' ||
+    ev === 'VOLATILITY_SPIKE'
+  ) {
     return true;
   }
   const reg = String(options.marketRegime || '').toUpperCase();
@@ -1027,9 +1033,21 @@ export function evaluateBotSignal(
   const minVwapDevShort = trendBreakout ? -1.95 : -0.58;
   const diLimit = trendBreakout ? 2.25 : 1.85;
 
+  const isLongExhausted = trendBreakout
+    ? features.rsi14 > maxRsiLong ||
+      (features.vwapDeviationPct > maxVwapDevLong && features.rsi14 >= 66) ||
+      features.vwapDeviationPct > 2.65
+    : features.rsi14 > maxRsiLong || features.vwapDeviationPct > maxVwapDevLong;
+
+  const isShortExhausted = trendBreakout
+    ? features.rsi14 < minRsiShort ||
+      (features.vwapDeviationPct < minVwapDevShort && features.rsi14 <= 34) ||
+      features.vwapDeviationPct < -2.65
+    : features.rsi14 < minRsiShort || features.vwapDeviationPct < minVwapDevShort;
+
   if (
     compositeScore > 0 &&
-    (features.rsi14 > maxRsiLong || features.vwapDeviationPct > maxVwapDevLong) &&
+    isLongExhausted &&
     (features.obi < 0.72 || features.sentimentSignal < 0)
   ) {
     return {
@@ -1042,7 +1060,7 @@ export function evaluateBotSignal(
   }
   if (
     compositeScore < 0 &&
-    (features.rsi14 < minRsiShort || features.vwapDeviationPct < minVwapDevShort) &&
+    isShortExhausted &&
     (features.obi > -0.72 || features.sentimentSignal > 0)
   ) {
     return {
@@ -1097,14 +1115,29 @@ export function evaluateBotSignal(
     features.rsi14 >= 46 &&
     features.obi <= 0.08;
 
+  // Strong directional EMA + Momentum trend continuation when L2 book is neutral (not opposing)
+  const momentumTrendLong =
+    compositeScore > 0 &&
+    features.momentumSignal >= 0.30 &&
+    features.emaTrendBps >= 12.0 &&
+    features.obi >= -0.03;
+  const momentumTrendShort =
+    compositeScore < 0 &&
+    features.momentumSignal <= -0.30 &&
+    features.emaTrendBps <= -12.0 &&
+    features.obi <= 0.03;
+
   if (gridPullbackLong || gridPullbackShort) {
     regimeTag = 'TREND_GRID_PULLBACK';
+  } else if (momentumTrendLong || momentumTrendShort) {
+    regimeTag = 'MOMENTUM_TREND';
   }
 
   if (
     compositeScore > 0 &&
     !tgBackedLong &&
     !gridPullbackLong &&
+    !momentumTrendLong &&
     (features.obi < 0.12 || features.momentumSignal < 0.08 || features.emaTrendBps < 1.5)
   ) {
     return {
@@ -1119,6 +1152,7 @@ export function evaluateBotSignal(
     compositeScore < 0 &&
     !tgBackedShort &&
     !gridPullbackShort &&
+    !momentumTrendShort &&
     (features.obi > -0.12 || features.momentumSignal > -0.08 || features.emaTrendBps > -1.5)
   ) {
     return {
@@ -1208,12 +1242,14 @@ export function updateBotBrainOnline(params: {
     sentimentWeight: Number((newW.sentimentWeight - oldW.sentimentWeight).toFixed(4)),
   };
 
-  // Adaptive threshold adjustment: tighten after losses, slightly relax after strong wins
+  // Adaptive threshold adjustment: tighten after losses (capped at 0.30 to avoid starving entries), relax after strong wins
   let nextThreshold = brain.confidenceThreshold;
   if (reward < -0.2) {
-    nextThreshold = clamp(nextThreshold + 0.008, 0.14, 0.48);
+    nextThreshold = clamp(nextThreshold + 0.008, 0.14, 0.30);
   } else if (reward > 0.4) {
-    nextThreshold = clamp(nextThreshold - 0.004, 0.14, 0.48);
+    nextThreshold = clamp(nextThreshold - 0.004, 0.14, 0.30);
+  } else if (nextThreshold > 0.30) {
+    nextThreshold = 0.30;
   }
   nextThreshold = Number(nextThreshold.toFixed(3));
 

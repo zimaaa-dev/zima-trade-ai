@@ -204,6 +204,61 @@ export function evaluateDailyDrawdownKillSwitch(initialCapital: number, rollingP
   };
 }
 
+export interface AutoKillSwitchRecoveryInput {
+  isKillSwitchActive: boolean;
+  isAutoTriggered: boolean;
+  triggeredAt: number | null;
+  nowTs: number;
+  capitalUsdt: number;
+  rolling24hPnlUsdt: number;
+  minCooldownMs?: number;
+  hardSessionResetMs?: number;
+  safeRecoveryPct?: number;
+}
+
+/**
+ * Evaluates whether an auto-triggered 24h drawdown Kill-Switch should automatically release
+ * after a minimum cooldown once 24h drawdown stabilizes or a new trading session begins.
+ * Manual operator triggers (`isAutoTriggered === false`) never auto-recover.
+ */
+export function evaluateAutoKillSwitchRecovery(input: AutoKillSwitchRecoveryInput): {
+  shouldRecover: boolean;
+  reason: string | null;
+  drawdownPct: number;
+} {
+  const drawdownPct = input.capitalUsdt > 0 ? (input.rolling24hPnlUsdt / input.capitalUsdt) * 100 : 0;
+  if (!input.isKillSwitchActive || !input.isAutoTriggered || !input.triggeredAt) {
+    return { shouldRecover: false, reason: null, drawdownPct };
+  }
+
+  const minCooldownMs = input.minCooldownMs ?? 3 * 60 * 60 * 1000;
+  const hardSessionResetMs = input.hardSessionResetMs ?? 8 * 60 * 60 * 1000;
+  const safeRecoveryPct = input.safeRecoveryPct ?? -2.5;
+  const elapsedMs = Math.max(0, input.nowTs - input.triggeredAt);
+
+  if (elapsedMs < minCooldownMs) {
+    return { shouldRecover: false, reason: null, drawdownPct };
+  }
+
+  if (drawdownPct > safeRecoveryPct) {
+    return {
+      shouldRecover: true,
+      reason: `Авто-восстановление после ${(elapsedMs / 3600000).toFixed(1)}ч паузы: 24ч просадка стабилизировалась (${drawdownPct.toFixed(2)}% > ${safeRecoveryPct.toFixed(1)}%).`,
+      drawdownPct,
+    };
+  }
+
+  if (elapsedMs >= hardSessionResetMs) {
+    return {
+      shouldRecover: true,
+      reason: `Авто-восстановление после ${(elapsedMs / 3600000).toFixed(1)}ч охлаждения дневного риск-лимита.`,
+      drawdownPct,
+    };
+  }
+
+  return { shouldRecover: false, reason: null, drawdownPct };
+}
+
 /**
  * 4. Virtual VWAP Slippage Simulation through L2-50 Orderbook
  */

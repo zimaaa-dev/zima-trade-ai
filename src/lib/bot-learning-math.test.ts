@@ -674,4 +674,60 @@ test('[Option 1] evaluateBotSignal unlocks trend breakouts up to RSI 74 / VWAP +
   assert.match(blowoffRes.reasonSummary, /RSI Exhaustion/);
 });
 
+test('MARKET_FLUSH_SHORT allows healthy-RSI trend continuation & neutral-OBI momentum entries, and online RL caps threshold <= 0.30', () => {
+  const brain = createDefaultBotBrain('ONNX_RL', 'agent-onnx-ppo-v2');
+  brain.confidenceThreshold = 0.29;
 
+  // 1. Live PIEVERSEUSDT case: RSI=42.1 (nowhere near oversold 26), VWAP=-2.08% in MARKET_FLUSH_SHORT -> must enter SHORT
+  const pieverseShort = evaluateBotSignal(
+    brain,
+    {
+      obi: -0.18,
+      spreadBps: 2.1,
+      rsi14: 42.1,
+      emaTrendBps: -48.0,
+      momentumSignal: -0.58,
+      vwapDeviationPct: -2.08,
+      vwapSignal: -0.45,
+      atrPct: 1.05,
+      sentimentSignal: -0.42,
+    },
+    { primaryEvent: 'MARKET_FLUSH_SHORT', strategyId: 'strat-crowd-contrarian' }
+  );
+  assert.equal(pieverseShort.action, 'SHORT');
+
+  // 2. Neutral L2 OBI (-0.004) but decisive bearish EMA (-75 bps) + strong momentum (-0.52) -> MOMENTUM_TREND SHORT
+  const neutralObiShort = evaluateBotSignal(
+    brain,
+    {
+      obi: -0.004,
+      spreadBps: 1.5,
+      rsi14: 38.0,
+      emaTrendBps: -75.5,
+      momentumSignal: -0.52,
+      vwapDeviationPct: -1.4,
+      vwapSignal: -0.35,
+      atrPct: 0.85,
+      sentimentSignal: -0.45,
+    },
+    { primaryEvent: 'MARKET_FLUSH_SHORT', strategyId: 'agent-onnx-ppo-v2' }
+  );
+  assert.equal(neutralObiShort.action, 'SHORT');
+  assert.match(neutralObiShort.reasonSummary, /MOMENTUM_TREND/);
+
+  // 3. Repeated losses via updateBotBrainOnline must cap confidenceThreshold at <= 0.30
+  let curBrain = { ...brain, confidenceThreshold: 0.295 };
+  for (let i = 0; i < 6; i++) {
+    const res = updateBotBrainOnline({
+      agentId: 'agent-onnx-ppo-v2',
+      brain: curBrain,
+      entryFeatures: { obi: -0.2, momentum: -0.5, vwap: -0.4, sentiment: -0.3 },
+      netPnlUsdt: -1.8,
+      riskBudgetUsdt: 3.6,
+      symbol: 'SOLUSDT',
+      side: 'SHORT',
+    });
+    curBrain = res.updatedBrain;
+  }
+  assert.ok(curBrain.confidenceThreshold <= 0.30);
+});
