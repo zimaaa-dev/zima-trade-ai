@@ -7,9 +7,10 @@ import https from 'https';
 import os from 'os';
 import dns from 'dns';
 import dotenv from 'dotenv';
-import { exec, execSync } from 'child_process';
+import { exec, execFile, execSync } from 'child_process';
 import util from 'util';
 const execPromise = util.promisify(exec);
+const execFilePromise = util.promisify(execFile);
 
 // Prefer IPv4 DNS resolution to prevent broken IPv6 blackholes on Cloud.ru / Russian VPS
 try {
@@ -144,18 +145,90 @@ import {
   OLLAMA_CLOUD_MODELS,
   type OllamaCloudModel,
 } from './src/lib/ollama-cloud-engine.ts';
+import { GeminiQuotaGuard } from './src/lib/gemini-quota-guard.ts';
 
-// Gemini AI Client configured per AI Studio guidelines (only initialized if key is valid to prevent console warnings)
-const geminiAi = isKeyValid(process.env.GEMINI_API_KEY)
-  ? new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
+const geminiQuotaGuard = new GeminiQuotaGuard(90 * 60_000);
+let cachedGeminiApiKey = '';
+let cachedGeminiClient: GoogleGenAI | null = null;
+
+function getGeminiClient(): GoogleGenAI | null {
+  const key = String(process.env.GEMINI_API_KEY || '').trim();
+  if (!isKeyValid(key)) {
+    cachedGeminiApiKey = '';
+    cachedGeminiClient = null;
+    return null;
+  }
+  if (cachedGeminiClient && cachedGeminiApiKey === key) {
+    return cachedGeminiClient;
+  }
+  cachedGeminiApiKey = key;
+  cachedGeminiClient = new GoogleGenAI({
+    apiKey: key,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
       },
-    })
-  : null;
+    },
+  });
+  return cachedGeminiClient;
+}
+
+async function callGeminiWithQuotaGuard(
+  contents: any,
+  options?: {
+    systemInstruction?: string;
+    jsonMode?: boolean;
+    timeoutMs?: number;
+    isBackground?: boolean;
+  }
+): Promise<{ ok: true; text: string; modelUsed: string; latencyMs: number } | null> {
+  const client = getGeminiClient();
+  if (!client) return null;
+
+  const nowTs = Date.now();
+  const candidates = geminiQuotaGuard.getAvailableModels({
+    isBackground: options?.isBackground,
+    nowTs,
+  });
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  geminiQuotaGuard.recordAttempt({ isBackground: options?.isBackground, nowTs });
+  const timeoutMs = options?.timeoutMs || 14000;
+  const startedAt = Date.now();
+
+  for (const modelName of candidates) {
+    try {
+      const genRes = await Promise.race([
+        client.models.generateContent({
+          model: modelName,
+          contents,
+          config: {
+            ...(options?.systemInstruction ? { systemInstruction: options.systemInstruction } : {}),
+            ...(options?.jsonMode ? { responseMimeType: 'application/json' } : {}),
+          },
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Gemini timeout')), timeoutMs)
+        ),
+      ]);
+      const text = String(genRes?.text || '').trim();
+      if (text) {
+        return {
+          ok: true,
+          text,
+          modelUsed: modelName,
+          latencyMs: Date.now() - startedAt,
+        };
+      }
+    } catch (err: any) {
+      const info = geminiQuotaGuard.recordError(modelName, err, Date.now());
+      console.info(`[Gemini] ${modelName}: ${info.summary}; falling back cleanly.`);
+    }
+  }
+  return null;
+}
 
 import {
   calculateRiskFirewallOrderSize,
@@ -182,6 +255,12 @@ import {
   type GitCommitItem,
 } from './src/lib/updater-math.ts';
 import {
+  shouldSyncFileToRepo,
+  resolveGitHubTokenFromEnv,
+  buildGitBasicAuthHeader,
+  redactGitHubSecrets,
+} from './src/lib/github-push.ts';
+import {
   calculateClosedTradeMetrics,
   calculatePortfolioSummary,
   calculateMskPeriodBreakdown,
@@ -190,6 +269,7 @@ import {
   formatSignedPct,
   shouldSendDailyTelegramDigest,
   computeWorkingCapitalUsdt,
+  resolveHonestExitReason,
   type ClosedTradeRecord,
   type WalletLedgerEntry,
 } from './src/lib/wallet-math.ts';
@@ -306,6 +386,76 @@ import {
   type OkxPositionsHistoryRow,
   type NormalizedOkxOpenPosition,
 } from './src/lib/bot-engine-resilience.ts';
+import {
+  buildRuntimeSafetyConfig,
+  enforceDcaDisabledPatch,
+} from './src/lib/runtime-config.ts';
+import {
+  buildMarketSnapshotMeta,
+  validateOkxOrderbookFreshness,
+  validateOkxKlinesIntegrity,
+  canUseMarketDataForLiveEntry,
+  type OkxMarketSnapshotMeta,
+} from './src/lib/okx-market-data.ts';
+import {
+  createOkxInstrumentRegistry,
+  ingestOkxSwapCatalogRows,
+  resolveInstrumentForOrder,
+} from './src/lib/okx-instrument-registry.ts';
+import {
+  generateDeterministicClOrdId,
+  parseOkxOrderDetails,
+  shouldLookupOrderBeforeRetry,
+  evaluateProtectionSafety,
+  type ExchangeOrderRecord,
+} from './src/lib/okx-execution-service.ts';
+import {
+  reconcileStartupState,
+  type SystemRuntimePhase,
+  type SystemRecoveryLogEntry,
+} from './src/lib/trade-reconciliation.ts';
+import {
+  createDefaultVirtualPortfolios,
+  resolvePortfolioIdForStrategy,
+  syncPortfoliosWithAccount,
+  applyVirtualPortfolioTradeClose,
+  validatePortfolioAllocations,
+  type VirtualPortfolio,
+} from './src/lib/virtual-portfolio.ts';
+import {
+  createPortfolioLedgerEntry,
+  verifyPortfoliosReconcileWithAccount,
+  type PortfolioLedgerRecord,
+  type ExchangeFillRecord,
+  type RiskEventRecord,
+} from './src/lib/portfolio-ledger.ts';
+import {
+  checkOwnershipForEntry,
+  acquirePositionOwnership,
+  releasePositionOwnership,
+  type PositionOwnershipRecord,
+} from './src/lib/position-ownership.ts';
+import {
+  computePositionStopRiskUsdt,
+  evaluateGlobalRiskGate,
+  type KillSwitchPolicyMode,
+} from './src/lib/global-risk-manager.ts';
+import {
+  buildMtfContextSnapshot,
+  aggregateBarsToTimeframe,
+  canStrategyTradeUnderMtf,
+  type MtfContextSnapshot,
+  type MtfTimeframeKey,
+} from './src/lib/mtf-context.ts';
+import { validateAiCoordinatorContractV1 } from './src/lib/strategy-contracts.ts';
+import {
+  createDefaultShadowCandidates,
+  simulateShadowTradeResult,
+  evaluateShadowCandidate,
+  type ShadowCandidate,
+  type ShadowTradeRecord,
+  type ShadowEvaluationReport,
+} from './src/lib/shadow-learning.ts';
 
 // Ollama Cloud Multi-Key Rotation & Model Orchestrator
 const initialOllamaKeys = [
@@ -353,7 +503,12 @@ async function callOllamaCloud(
 
 async function callFreeCloudLlmFallback(
   prompt: string,
-  options?: { timeoutMs?: number; jsonMode?: boolean; systemInstruction?: string }
+  options?: {
+    timeoutMs?: number;
+    jsonMode?: boolean;
+    systemInstruction?: string;
+    isBackgroundConductor?: boolean;
+  }
 ): Promise<{
   ok: boolean;
   text: string;
@@ -403,35 +558,21 @@ async function callFreeCloudLlmFallback(
     }
   }
 
-  // 1. Google Gemini API (gemini-4-hydrogen) via @google/genai
-  if (geminiAi && isKeyValid(process.env.GEMINI_API_KEY)) {
-    try {
-      const genRes = await Promise.race([
-        geminiAi.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: prompt,
-          config: {
-            ...(options?.systemInstruction ? { systemInstruction: options.systemInstruction } : {}),
-            ...(options?.jsonMode ? { responseMimeType: 'application/json' } : {}),
-          },
-        }),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Gemini timeout')), timeoutMs)
-        ),
-      ]);
-      const text = String(genRes?.text || '').trim();
-      if (text) {
-        return {
-          ok: true,
-          text,
-          source: 'GEMINI_AI',
-          modelUsed: 'gemini-4-hydrogen',
-          latencyMs: Date.now() - startedAt,
-        };
-      }
-    } catch (err: any) {
-      console.warn('Gemini AI Conductor fallback warning:', err?.message || err);
-    }
+  // 1. Google Gemini API (gemini-4-hydrogen -> gemini-3.1-flash-lite with 429 quota cooldown guard)
+  const geminiRes = await callGeminiWithQuotaGuard(prompt, {
+    systemInstruction: options?.systemInstruction,
+    jsonMode: options?.jsonMode,
+    timeoutMs,
+    isBackground: options?.isBackgroundConductor,
+  });
+  if (geminiRes && geminiRes.ok && geminiRes.text) {
+    return {
+      ok: true,
+      text: geminiRes.text,
+      source: 'GEMINI_AI',
+      modelUsed: geminiRes.modelUsed,
+      latencyMs: geminiRes.latencyMs,
+    };
   }
 
   // 2. Groq Cloud Free API (skipped temporarily for 15m if VPS IP is geo-blocked with HTTP 403)
@@ -700,6 +841,14 @@ interface AppSystemState {
   okxAvailableBalanceUsdt?: number;
   okxLastSyncedAt?: number;
   okxCachedOpenPositions?: NormalizedOkxOpenPosition[];
+  runtimePhase: SystemRuntimePhase;
+  dcaEnabled: false;
+  okxMarketDataHealthy: boolean;
+  lastRecoveryAt: number | null;
+  orphanedSymbols: string[];
+  unverifiedProtectionSymbols: string[];
+  exchangeOrders: ExchangeOrderRecord[];
+  systemRecoveryLog: SystemRecoveryLogEntry[];
   isKillSwitchActive: boolean;
   killSwitchTriggerReason: string | null;
   killSwitchAutoTriggered?: boolean;
@@ -739,6 +888,15 @@ interface AppSystemState {
   xaiDecisions: XaiDecisionRecord[];
   telegramBot: TelegramBotRuntimeState;
   notifications: AppNotification[];
+  virtualPortfolios: VirtualPortfolio[];
+  portfolioLedger: PortfolioLedgerRecord[];
+  exchangeFills: ExchangeFillRecord[];
+  positionOwnership: PositionOwnershipRecord[];
+  riskEvents: RiskEventRecord[];
+  shadowCandidates: ShadowCandidate[];
+  shadowTrades: ShadowTradeRecord[];
+  shadowEvaluations: ShadowEvaluationReport[];
+  killSwitchPolicy: KillSwitchPolicyMode;
 }
 
 
@@ -807,6 +965,14 @@ const systemState: AppSystemState = {
   okxDemoTrading: process.env.OKX_DEMO_TRADING !== 'false',
   okxPosMode: 'net_mode',
   okxCachedOpenPositions: [],
+  runtimePhase: 'RECOVERY',
+  dcaEnabled: false,
+  okxMarketDataHealthy: true,
+  lastRecoveryAt: null,
+  orphanedSymbols: [],
+  unverifiedProtectionSymbols: [],
+  exchangeOrders: [],
+  systemRecoveryLog: [],
   isKillSwitchActive: false,
   killSwitchTriggerReason: null,
   killSwitchAutoTriggered: false,
@@ -1061,6 +1227,15 @@ const systemState: AppSystemState = {
       deliveredToTelegramAt: Date.now() - 45000,
     },
   ],
+  virtualPortfolios: createDefaultVirtualPortfolios(10.0),
+  portfolioLedger: [],
+  exchangeFills: [],
+  positionOwnership: [],
+  riskEvents: [],
+  shadowCandidates: createDefaultShadowCandidates(),
+  shadowTrades: [],
+  shadowEvaluations: [],
+  killSwitchPolicy: 'BLOCK_NEW_ENTRIES_ONLY',
 };
 
 // Persistent Disk Storage Engine (High-Performance Debounced JSON WAL Store)
@@ -1115,8 +1290,20 @@ function buildPersistPayload() {
     parsedNewsFeed: systemState.parsedNewsFeed,
     botTradeLogs: systemState.botTradeLogs,
     xaiDecisions: systemState.xaiDecisions,
+    exchangeOrders: (systemState.exchangeOrders || []).slice(0, 200),
+    systemRecoveryLog: (systemState.systemRecoveryLog || []).slice(0, 40),
+    unverifiedProtectionSymbols: systemState.unverifiedProtectionSymbols || [],
     telegramBot: systemState.telegramBot,
     notifications: systemState.notifications.slice(0, 50),
+    virtualPortfolios: systemState.virtualPortfolios || [],
+    portfolioLedger: (systemState.portfolioLedger || []).slice(0, 300),
+    exchangeFills: (systemState.exchangeFills || []).slice(0, 200),
+    positionOwnership: systemState.positionOwnership || [],
+    riskEvents: (systemState.riskEvents || []).slice(0, 150),
+    shadowCandidates: systemState.shadowCandidates || [],
+    shadowTrades: (systemState.shadowTrades || []).slice(0, 300),
+    shadowEvaluations: (systemState.shadowEvaluations || []).slice(0, 40),
+    killSwitchPolicy: systemState.killSwitchPolicy || 'BLOCK_NEW_ENTRIES_ONLY',
   };
 }
 
@@ -1360,6 +1547,17 @@ function loadPersistedState(): void {
           lastBlockedAt: parsed.policyStats.lastBlockedAt,
         };
       }
+      if (Array.isArray(parsed.exchangeOrders)) {
+        systemState.exchangeOrders = parsed.exchangeOrders.slice(0, 200);
+      }
+      if (Array.isArray(parsed.systemRecoveryLog)) {
+        systemState.systemRecoveryLog = parsed.systemRecoveryLog.slice(0, 40);
+      }
+      if (Array.isArray(parsed.unverifiedProtectionSymbols)) {
+        systemState.unverifiedProtectionSymbols = parsed.unverifiedProtectionSymbols.map((s: any) => String(s));
+      }
+      systemState.dcaEnabled = false;
+      systemState.runtimePhase = systemState.mode === 'LIVE' && systemState.activeExchange === 'OKX' ? 'RECOVERY' : 'READY';
       if (typeof parsed.lastUnblockedAt === 'number') systemState.lastUnblockedAt = parsed.lastUnblockedAt;
       if (typeof parsed.isKillSwitchActive === 'boolean' && !isLegacy10k) {
         systemState.isKillSwitchActive = parsed.isKillSwitchActive;
@@ -1788,6 +1986,41 @@ function loadPersistedState(): void {
           };
         });
       }
+      if (Array.isArray(parsed.virtualPortfolios) && parsed.virtualPortfolios.length > 0) {
+        systemState.virtualPortfolios = parsed.virtualPortfolios;
+      }
+      if (Array.isArray(parsed.portfolioLedger)) {
+        systemState.portfolioLedger = parsed.portfolioLedger.slice(0, 300);
+      }
+      if (Array.isArray(parsed.exchangeFills)) {
+        systemState.exchangeFills = parsed.exchangeFills.slice(0, 200);
+      }
+      if (Array.isArray(parsed.positionOwnership)) {
+        systemState.positionOwnership = parsed.positionOwnership;
+      }
+      if (Array.isArray(parsed.riskEvents)) {
+        systemState.riskEvents = parsed.riskEvents.slice(0, 150);
+      }
+      if (Array.isArray(parsed.shadowCandidates) && parsed.shadowCandidates.length > 0) {
+        systemState.shadowCandidates = parsed.shadowCandidates.map((c: any) => ({
+          ...c,
+          autoApplyAllowed: false as const,
+          params: { ...(c.params || {}), dcaEnabled: false as const },
+        }));
+      }
+      if (Array.isArray(parsed.shadowTrades)) {
+        systemState.shadowTrades = parsed.shadowTrades.slice(0, 300);
+      }
+      if (Array.isArray(parsed.shadowEvaluations)) {
+        systemState.shadowEvaluations = parsed.shadowEvaluations.slice(0, 40);
+      }
+      if (
+        parsed.killSwitchPolicy === 'BLOCK_NEW_ENTRIES_ONLY' ||
+        parsed.killSwitchPolicy === 'EMERGENCY_CLOSE_AND_BLOCK'
+      ) {
+        systemState.killSwitchPolicy = parsed.killSwitchPolicy;
+      }
+      syncVirtualPortfolioAndOwnershipState();
       if (typeof parsed.savedAt === 'number') {
         lastSavedAtTs = parsed.savedAt;
       }
@@ -3135,17 +3368,21 @@ const instrumentRules: Record<string, InstrumentRules> = {
   },
 };
 
-// Live OKX V5 SWAP instrument cache (refreshed from /api/v5/public/instruments?instType=SWAP)
+// Live OKX V5 SWAP instrument cache + strict verified registry (refreshed from /api/v5/public/instruments?instType=SWAP)
 const okxSwapInstrumentsCache: Record<string, OkxSwapInstrument> = { ...DEFAULT_OKX_SWAP_INSTRUMENTS };
+const okxInstrumentRegistry = createOkxInstrumentRegistry(DEFAULT_OKX_SWAP_INSTRUMENTS);
 let lastOkxInstrumentsFetchTs = 0;
 
-async function refreshOkxSwapInstrumentsCache(force = false): Promise<void> {
+async function refreshOkxSwapInstrumentsCache(force = false): Promise<boolean> {
   const now = Date.now();
-  if (!force && now - lastOkxInstrumentsFetchTs < 5 * 60 * 1000) return;
+  if (!force && okxInstrumentRegistry.lastRefreshOk && now - lastOkxInstrumentsFetchTs < 5 * 60 * 1000) {
+    return true;
+  }
   lastOkxInstrumentsFetchTs = now;
   try {
     const { ok, data } = await fetchOkxPublicJson('/api/v5/public/instruments?instType=SWAP', 5000);
     if (ok && Array.isArray(data?.data)) {
+      const verifiedCount = ingestOkxSwapCatalogRows(okxInstrumentRegistry, data.data, now);
       for (const row of data.data) {
         const instId = String(row.instId || '').toUpperCase();
         if (!instId.endsWith('-USDT-SWAP')) continue;
@@ -3159,18 +3396,30 @@ async function refreshOkxSwapInstrumentsCache(force = false): Promise<void> {
           okxSwapInstrumentsCache[sym] = { instId, symbol: sym, ctVal, lotSz, minSz, tickSz, maxLever };
         }
       }
+      return verifiedCount > 0;
     }
-  } catch {
-    // keep cached/default specs
+    okxInstrumentRegistry.lastError = 'OKX instruments catalog returned empty response';
+  } catch (err: any) {
+    okxInstrumentRegistry.lastError = err?.message || 'OKX instruments fetch failed';
   }
+  return false;
 }
 
-function getOkxSwapInstrument(symbol: string): OkxSwapInstrument {
+function getOkxSwapInstrument(symbol: string): OkxSwapInstrument | null {
   const sym = symbol.toUpperCase();
-  if (okxSwapInstrumentsCache[sym]) {
-    return okxSwapInstrumentsCache[sym];
+  const strictRes = resolveInstrumentForOrder({
+    state: okxInstrumentRegistry,
+    symbol: sym,
+    mode: systemState.mode,
+    activeExchange: systemState.activeExchange,
+  });
+  if (strictRes.ok && strictRes.instrument) {
+    return strictRes.instrument;
   }
-  return {
+  if (systemState.mode === 'LIVE' && systemState.activeExchange === 'OKX') {
+    return null;
+  }
+  return okxSwapInstrumentsCache[sym] || {
     instId: toOkxSwapInstId(sym),
     symbol: sym,
     ctVal: 1,
@@ -3192,7 +3441,8 @@ function resolveInstrumentRules(symbol: string, referencePrice?: number): Instru
     if (Date.now() - lastOkxInstrumentsFetchTs > 5 * 60 * 1000) {
       refreshOkxSwapInstrumentsCache(false).catch(() => {});
     }
-    return buildOkxInstrumentRules(getOkxSwapInstrument(sym), price);
+    const inst = getOkxSwapInstrument(sym) || okxSwapInstrumentsCache[sym] || DEFAULT_OKX_SWAP_INSTRUMENTS.BTCUSDT;
+    return buildOkxInstrumentRules(inst, price);
   }
 
   const isMicroAccount = (systemState.capitalUsdt + systemState.totalRealizedPnlUsdt) < 500;
@@ -3512,8 +3762,14 @@ async function fetchRealBybitTickers(): Promise<any[]> {
     if (okxList.length > 0) {
       cachedTickers = okxList;
       systemState.screenerSymbols = okxList;
+      systemState.okxMarketDataHealthy = true;
       lastTickersFetchTs = now;
       return cachedTickers;
+    }
+    if (systemState.mode === 'LIVE') {
+      // Strict Stage 1 invariant: NEVER fall back to Bybit tickers in OKX LIVE mode
+      systemState.okxMarketDataHealthy = false;
+      return [];
     }
   }
 
@@ -4072,15 +4328,16 @@ async function syncOkxAccountState(options?: { forceReconcile?: boolean }): Prom
             : Number(removed.currentPrice) || Number(removed.entryVwap);
 
         const dirSign = removed.side === 'LONG' ? 1 : -1;
-        const estPnl = (exitPrice - removed.entryVwap) * dirSign;
-        const exitReason: 'TP_HIT' | 'SL_HIT' = estPnl >= 0 ? 'TP_HIT' : 'SL_HIT';
+        const estGross = (exitPrice - removed.entryVwap) * dirSign * Number(removed.qty || 0);
+        const estFees = (Number(removed.entryVwap || 0) + exitPrice) * Number(removed.qty || 0) * 0.0005;
+        const exitReason: 'TP_HIT' | 'SL_HIT' = estGross - estFees > 0 ? 'TP_HIT' : 'SL_HIT';
         const tradeRecord = recordClosedPosition(removed, exitPrice, exitReason);
         reconciledCount += 1;
 
         addBotLog({
           botId: removed.botId || 'system',
           botName: removed.botName || 'Синхронизация OKX',
-          action: exitReason,
+          action: tradeRecord.exitReason,
           symbol: removed.symbol,
           side: removed.side,
           price: exitPrice,
@@ -4106,6 +4363,31 @@ async function syncOkxAccountState(options?: { forceReconcile?: boolean }): Prom
     });
   }
 
+  // Refresh startup/live reconciliation phase & ORPHANED symbol lock map (never auto-close stray exchange positions)
+  if (systemState.mode === 'LIVE' && systemState.activeExchange === 'OKX') {
+    const recStartup = reconcileStartupState({
+      mode: systemState.mode,
+      activeExchange: systemState.activeExchange,
+      okxKeysConfigured: areOkxKeysConfigured(),
+      okxSyncOk: posRes.ok,
+      instrumentCatalogVerified: okxInstrumentRegistry.lastRefreshOk,
+      activePositions: systemState.activePositions,
+      okxOpenPositions: systemState.okxCachedOpenPositions || [],
+    });
+    systemState.orphanedSymbols = recStartup.blockedSymbols;
+    if (systemState.runtimePhase !== 'READY' && recStartup.nextPhase === 'READY') {
+      systemState.runtimePhase = 'READY';
+      systemState.lastRecoveryAt = Date.now();
+      systemState.systemRecoveryLog.unshift(recStartup.logEntry);
+      if (systemState.systemRecoveryLog.length > 40) systemState.systemRecoveryLog.pop();
+    } else if (!posRes.ok && systemState.runtimePhase === 'RECOVERY') {
+      systemState.runtimePhase = 'DEGRADED';
+    }
+  } else {
+    systemState.orphanedSymbols = [];
+    systemState.runtimePhase = 'READY';
+  }
+
   return {
     ok: true,
     equityUsdt: systemState.okxAccountEquityUsdt,
@@ -4117,6 +4399,49 @@ async function syncOkxAccountState(options?: { forceReconcile?: boolean }): Prom
     retMsg: 'OK',
     rttMs: balRes.rttMs,
   };
+}
+
+async function runStartupReconciliation(): Promise<void> {
+  if (systemState.mode !== 'LIVE' || systemState.activeExchange !== 'OKX') {
+    systemState.runtimePhase = 'READY';
+    systemState.orphanedSymbols = [];
+    systemState.lastRecoveryAt = Date.now();
+    return;
+  }
+
+  systemState.runtimePhase = 'RECOVERY';
+  const catalogOk = await refreshOkxSwapInstrumentsCache(true).catch(() => false);
+  const syncRes = areOkxKeysConfigured()
+    ? await syncOkxAccountState({ forceReconcile: true }).catch(() => ({ ok: false, retMsg: 'Sync exception' }))
+    : { ok: false, retMsg: 'OKX keys missing' };
+
+  const verdict = reconcileStartupState({
+    mode: systemState.mode,
+    activeExchange: systemState.activeExchange,
+    okxKeysConfigured: areOkxKeysConfigured(),
+    okxSyncOk: Boolean(syncRes.ok),
+    instrumentCatalogVerified: Boolean(catalogOk || okxInstrumentRegistry.lastRefreshOk),
+    activePositions: systemState.activePositions,
+    okxOpenPositions: systemState.okxCachedOpenPositions || [],
+  });
+
+  systemState.runtimePhase = verdict.nextPhase;
+  systemState.orphanedSymbols = verdict.blockedSymbols;
+  systemState.lastRecoveryAt = Date.now();
+  systemState.systemRecoveryLog.unshift(verdict.logEntry);
+  if (systemState.systemRecoveryLog.length > 40) systemState.systemRecoveryLog.pop();
+
+  if (verdict.orphanedExchangePositions.length > 0) {
+    addBotLog({
+      botId: 'system',
+      botName: 'Startup Reconciliation',
+      action: 'RISK_GUARD',
+      symbol: verdict.blockedSymbols.join(','),
+      message: `На старте обнаружены ORPHANED позиции на OKX (${verdict.blockedSymbols.join(', ')}). Авто-закрытие отключено, новые входы по этим парам заблокированы до ручной сверки.`,
+      rttMs: systemState.pings.okx,
+    });
+  }
+  savePersistedState();
 }
 
 async function fetchOkxPendingAlgos(symbolOrInstId: string): Promise<Array<{ instId: string; algoId: string }>> {
@@ -4167,6 +4492,30 @@ async function fetchOkxPendingAlgoId(symbol: string): Promise<string | undefined
   return algos[0]?.algoId;
 }
 
+async function queryOkxOrderByClientOrOrderId(params: {
+  symbol: string;
+  ordId?: string;
+  clOrdId?: string;
+}): Promise<any | null> {
+  const instId = toOkxSwapInstId(params.symbol);
+  const queryParts = [`instId=${encodeURIComponent(instId)}`];
+  if (params.ordId) {
+    queryParts.push(`ordId=${encodeURIComponent(params.ordId)}`);
+  } else if (params.clOrdId) {
+    queryParts.push(`clOrdId=${encodeURIComponent(params.clOrdId)}`);
+  } else {
+    return null;
+  }
+  const res = await executeOkxPrivateRequest({
+    method: 'GET',
+    requestPath: `/api/v5/trade/order?${queryParts.join('&')}`,
+  }).catch(() => ({ ok: false, data: null }));
+  if (res.ok && Array.isArray(res.data) && res.data.length > 0) {
+    return res.data[0];
+  }
+  return null;
+}
+
 async function executeRealOkxLiveEntry(params: {
   symbol: string;
   side: 'LONG' | 'SHORT';
@@ -4175,20 +4524,40 @@ async function executeRealOkxLiveEntry(params: {
   slPrice?: number;
   tpPrice?: number;
   priceDecimals?: number;
+  strategyId?: string;
+  virtualPortfolioId?: string;
 }): Promise<{
   attempted: boolean;
   ok: boolean;
   orderId?: string;
+  clientOrderId?: string;
   algoId?: string;
   contractsSz?: string;
   executedBaseQty: number;
+  averageFillPrice?: number;
+  feeUsdt?: number;
+  protectionVerified?: boolean;
   retMsg: string;
 }> {
   if (!areOkxKeysConfigured()) {
     return { attempted: false, ok: false, executedBaseQty: 0, retMsg: 'OKX ключи не заданы' };
   }
   await refreshOkxSwapInstrumentsCache(false);
-  const inst = getOkxSwapInstrument(params.symbol);
+  const strictInst = resolveInstrumentForOrder({
+    state: okxInstrumentRegistry,
+    symbol: params.symbol,
+    mode: systemState.mode,
+    activeExchange: systemState.activeExchange,
+  });
+  if (!strictInst.ok || !strictInst.instrument) {
+    return {
+      attempted: false,
+      ok: false,
+      executedBaseQty: 0,
+      retMsg: strictInst.reason || `Спецификация OKX для ${params.symbol} не подтверждена`,
+    };
+  }
+  const inst = strictInst.instrument;
   const conv = convertBaseQtyToOkxContracts(params.baseQty, inst);
   if (!conv.ok) {
     return { attempted: false, ok: false, executedBaseQty: 0, retMsg: conv.reason || 'Конвертация контрактов OKX не удалась' };
@@ -4215,9 +4584,9 @@ async function executeRealOkxLiveEntry(params: {
     };
   }
 
-  // 2. Place Market Entry with attached Algo SL/TP
-  const clOrdId = `zt${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`.slice(0, 32);
-  const attachAlgoClOrdId = `za${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`.slice(0, 32);
+  // 2. Place Market Entry with deterministic clOrdId + attached Algo SL/TP
+  const clOrdId = generateDeterministicClOrdId('zt');
+  const attachAlgoClOrdId = generateDeterministicClOrdId('za');
   const orderPayload = buildOkxMarketOrderPayload({
     symbol: params.symbol,
     side: params.side,
@@ -4230,32 +4599,202 @@ async function executeRealOkxLiveEntry(params: {
     posMode: systemState.okxPosMode || 'net_mode',
   });
 
+  const createdTs = Date.now();
   const ordRes = await executeOkxPrivateRequest({
     method: 'POST',
     requestPath: '/api/v5/trade/order',
     bodyObj: orderPayload,
   });
 
-  const item = Array.isArray(ordRes.data) ? ordRes.data[0] : null;
-  if (!ordRes.ok || (item && item.sCode !== '0')) {
+  let item = Array.isArray(ordRes.data) ? ordRes.data[0] : null;
+  let orderId: string | undefined = item?.ordId ? String(item.ordId) : undefined;
+
+  // Idempotent timeout recovery: lookup original order by clOrdId before retrying or marking failed
+  if ((!ordRes.ok || (item && item.sCode !== '0')) && shouldLookupOrderBeforeRetry({ submitOk: ordRes.ok, errorMsg: item?.sMsg || ordRes.retMsg })) {
+    const recoveredRow = await queryOkxOrderByClientOrOrderId({ symbol: params.symbol, clOrdId });
+    if (recoveredRow && recoveredRow.ordId) {
+      orderId = String(recoveredRow.ordId);
+      item = { ordId: orderId, sCode: '0', sMsg: '' };
+    }
+  }
+
+  if (!orderId && (!ordRes.ok || (item && item.sCode !== '0'))) {
+    const rejectReason = item?.sMsg || ordRes.retMsg;
+    const rejectedRec: ExchangeOrderRecord = {
+      clientOrderId: clOrdId,
+      exchangeOrderId: null,
+      strategyId: params.strategyId || 'unknown',
+      virtualPortfolioId: params.virtualPortfolioId || params.strategyId || 'default',
+      symbol: params.symbol,
+      side: params.side,
+      requestedQty: conv.actualBaseQty,
+      filledQty: 0,
+      averageFillPrice: 0,
+      fee: 0,
+      status: shouldLookupOrderBeforeRetry({ submitOk: ordRes.ok, errorMsg: rejectReason })
+        ? 'AMBIGUOUS_TIMEOUT'
+        : 'REJECTED',
+      createdAt: createdTs,
+      updatedAt: Date.now(),
+      cancelReason: rejectReason,
+      protectionVerified: false,
+    };
+    systemState.exchangeOrders.unshift(rejectedRec);
+    if (systemState.exchangeOrders.length > 200) systemState.exchangeOrders.pop();
     return {
       attempted: true,
       ok: false,
+      clientOrderId: clOrdId,
       executedBaseQty: 0,
-      retMsg: item?.sMsg || ordRes.retMsg,
+      retMsg: rejectReason,
     };
   }
 
-  const orderId = item?.ordId || clOrdId;
-  const algoId = (await fetchOkxPendingAlgoId(params.symbol)) || undefined;
+  // 3. Query /api/v5/trade/order to confirm actual exchange fill (`accFillSz`, `avgPx`, `fee`)
+  let parsedFill = parseOkxOrderDetails({
+    orderRow: null,
+    instrument: inst,
+    requestedBaseQty: conv.actualBaseQty,
+  });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 250));
+    const orderRow = await queryOkxOrderByClientOrOrderId({
+      symbol: params.symbol,
+      ordId: orderId,
+      clOrdId,
+    });
+    if (orderRow) {
+      parsedFill = parseOkxOrderDetails({
+        orderRow,
+        instrument: inst,
+        requestedBaseQty: conv.actualBaseQty,
+      });
+      if (parsedFill.isTerminal || parsedFill.hasAnyFill) {
+        break;
+      }
+    }
+  }
+
+  const confirmedQty = parsedFill.found ? parsedFill.filledBaseQty : 0;
+  if (parsedFill.found && confirmedQty <= 0 && parsedFill.isTerminal) {
+    const canceledRec: ExchangeOrderRecord = {
+      clientOrderId: clOrdId,
+      exchangeOrderId: orderId || null,
+      strategyId: params.strategyId || 'unknown',
+      virtualPortfolioId: params.virtualPortfolioId || params.strategyId || 'default',
+      symbol: params.symbol,
+      side: params.side,
+      requestedQty: conv.actualBaseQty,
+      filledQty: 0,
+      averageFillPrice: 0,
+      fee: 0,
+      status: 'CANCELED',
+      createdAt: createdTs,
+      updatedAt: Date.now(),
+      cancelReason: `OKX order ${parsedFill.state} with 0 accFillSz`,
+      protectionVerified: false,
+    };
+    systemState.exchangeOrders.unshift(canceledRec);
+    if (systemState.exchangeOrders.length > 200) systemState.exchangeOrders.pop();
+    return {
+      attempted: true,
+      ok: false,
+      orderId,
+      clientOrderId: clOrdId,
+      executedBaseQty: 0,
+      retMsg: `OKX ордер отменён без исполнения (state=${parsedFill.state})`,
+    };
+  }
+
+  const finalExecutedBaseQty = confirmedQty > 0 ? confirmedQty : conv.actualBaseQty;
+
+  // 4. Verify protective Algo SL exists on OKX; if missing after fill, attempt one standalone conditional SL attach
+  let algoId = (await fetchOkxPendingAlgoId(params.symbol)) || undefined;
+  let fallbackSlConfirmed = false;
+  if (!algoId && params.slPrice && params.slPrice > 0) {
+    const slSide = params.side === 'LONG' ? 'sell' : 'buy';
+    const prec = params.priceDecimals ?? 4;
+    const standaloneSl = await executeOkxPrivateRequest({
+      method: 'POST',
+      requestPath: '/api/v5/trade/order-algo',
+      bodyObj: {
+        instId: toOkxSwapInstId(params.symbol),
+        tdMode: 'isolated',
+        side: slSide,
+        ordType: 'conditional',
+        sz: conv.contractsSz,
+        reduceOnly: true,
+        slTriggerPx: Number(params.slPrice).toFixed(prec),
+        slOrdPx: '-1',
+        slTriggerPxType: 'mark',
+        ...(systemState.okxPosMode === 'long_short_mode'
+          ? { posSide: params.side === 'LONG' ? 'long' : 'short' }
+          : {}),
+      },
+    }).catch(() => ({ ok: false, data: null }));
+    const slItem = Array.isArray(standaloneSl.data) ? standaloneSl.data[0] : null;
+    if (standaloneSl.ok && slItem?.algoId) {
+      algoId = String(slItem.algoId);
+      fallbackSlConfirmed = true;
+    }
+  }
+
+  const protVerdict = evaluateProtectionSafety({
+    filledBaseQty: finalExecutedBaseQty,
+    algoId: algoId || null,
+    fallbackSlOrderConfirmed: fallbackSlConfirmed,
+  });
+
+  if (protVerdict.blockFurtherRiskExpansion) {
+    if (!systemState.unverifiedProtectionSymbols.includes(params.symbol)) {
+      systemState.unverifiedProtectionSymbols.push(params.symbol);
+    }
+    addBotLog({
+      botId: params.strategyId || 'system',
+      botName: 'OKX Execution Safety',
+      action: 'RISK_GUARD',
+      symbol: params.symbol,
+      side: params.side,
+      price: parsedFill.avgPx || undefined,
+      message: `ВНИМАНИЕ: Защитный Stop-Loss по ${params.symbol} не подтверждён на OKX после исполнения! Дальнейшее наращивание риска заблокировано.`,
+      rttMs: systemState.pings.okx,
+    });
+  }
+
+  const orderStatus: ExchangeOrderRecord['status'] =
+    parsedFill.found && parsedFill.state === 'partially_filled' ? 'PARTIALLY_FILLED' : 'FILLED';
+
+  const orderRec: ExchangeOrderRecord = {
+    clientOrderId: clOrdId,
+    exchangeOrderId: orderId || clOrdId,
+    strategyId: params.strategyId || 'unknown',
+    virtualPortfolioId: params.virtualPortfolioId || params.strategyId || 'default',
+    symbol: params.symbol,
+    side: params.side,
+    requestedQty: conv.actualBaseQty,
+    filledQty: finalExecutedBaseQty,
+    averageFillPrice: parsedFill.avgPx || 0,
+    fee: parsedFill.feeUsdt,
+    status: orderStatus,
+    createdAt: createdTs,
+    updatedAt: Date.now(),
+    protectionAlgoId: algoId || null,
+    protectionVerified: protVerdict.protectionVerified,
+  };
+  systemState.exchangeOrders.unshift(orderRec);
+  if (systemState.exchangeOrders.length > 200) systemState.exchangeOrders.pop();
 
   return {
     attempted: true,
     ok: true,
-    orderId,
+    orderId: orderId || clOrdId,
+    clientOrderId: clOrdId,
     algoId,
     contractsSz: conv.contractsSz,
-    executedBaseQty: conv.actualBaseQty,
+    executedBaseQty: finalExecutedBaseQty,
+    averageFillPrice: parsedFill.avgPx || undefined,
+    feeUsdt: parsedFill.feeUsdt,
+    protectionVerified: protVerdict.protectionVerified,
     retMsg: 'OK',
   };
 }
@@ -4265,36 +4804,12 @@ async function executeRealOkxLiveAddQty(params: {
   side: 'LONG' | 'SHORT';
   addedBaseQty: number;
 }): Promise<{ attempted: boolean; ok: boolean; orderId?: string; executedBaseQty: number; retMsg: string }> {
-  if (!areOkxKeysConfigured()) {
-    return { attempted: false, ok: false, executedBaseQty: 0, retMsg: 'OKX ключи не заданы' };
-  }
-  const inst = getOkxSwapInstrument(params.symbol);
-  const conv = convertBaseQtyToOkxContracts(params.addedBaseQty, inst);
-  if (!conv.ok) {
-    return { attempted: false, ok: false, executedBaseQty: 0, retMsg: conv.reason || 'Недостаточный лот OKX для добора' };
-  }
-
-  const payload = buildOkxMarketOrderPayload({
-    symbol: params.symbol,
-    side: params.side,
-    contractsSz: conv.contractsSz,
-    posMode: systemState.okxPosMode || 'net_mode',
-  });
-  const ordRes = await executeOkxPrivateRequest({
-    method: 'POST',
-    requestPath: '/api/v5/trade/order',
-    bodyObj: payload,
-  });
-  const item = Array.isArray(ordRes.data) ? ordRes.data[0] : null;
-  if (!ordRes.ok || (item && item.sCode !== '0')) {
-    return { attempted: true, ok: false, executedBaseQty: 0, retMsg: item?.sMsg || ordRes.retMsg };
-  }
+  // Stage 3 hard guard: DCA=OFF completely disables adding size to losing/existing positions
   return {
-    attempted: true,
-    ok: true,
-    orderId: item?.ordId,
-    executedBaseQty: conv.actualBaseQty,
-    retMsg: 'OK',
+    attempted: false,
+    ok: false,
+    executedBaseQty: 0,
+    retMsg: `DCA_DISABLED_BY_SYSTEM_POLICY (${params.symbol})`,
   };
 }
 
@@ -4373,7 +4888,10 @@ async function closeRealOkxLivePosition(params: {
   }
 
   // 2. Fallback: explicit reduceOnly Market close using exchange contract sizing
-  const inst = getOkxSwapInstrument(params.symbol);
+  const inst = getOkxSwapInstrument(params.symbol) || okxSwapInstrumentsCache[params.symbol.toUpperCase()];
+  if (!inst) {
+    return { ok: false, retMsg: closeAllRes.retMsg || `Нет спецификации OKX для закрытия ${params.symbol}` };
+  }
   const conv = convertBaseQtyToOkxContracts(params.baseQty, inst);
   if (!conv.ok) {
     return { ok: false, retMsg: closeAllRes.retMsg || conv.reason || 'Ошибка конвертации контрактов OKX' };
@@ -4398,9 +4916,13 @@ async function closeRealOkxLivePosition(params: {
   return { ok: true, orderId: item?.ordId, retMsg: 'OK' };
 }
 
+const latestOkxOrderbookMetaBySymbol: Record<string, OkxMarketSnapshotMeta> = {};
+const latestOkxKlinesMetaBySymbol: Record<string, { fetchedAt: number; sourceExchange: 'OKX' | 'BYBIT'; sourceKind: 'OKX_REST_WS' | 'BYBIT_FALLBACK' | 'SYNTHETIC_FALLBACK' }> = {};
+
 async function fetchRealOkxOrderbook(symbol: string): Promise<OrderbookL2 | null> {
+  const sym = symbol.toUpperCase();
+  const instId = toOkxSwapInstId(sym);
   try {
-    const instId = toOkxSwapInstId(symbol);
     const { ok, data, rttMs } = await fetchOkxPublicJson(`/api/v5/market/books?instId=${encodeURIComponent(instId)}&sz=50`, 4000);
     if (ok && Array.isArray(data?.data) && data.data.length > 0) {
       systemState.pings.okx = Math.min(200, Math.max(10, rttMs));
@@ -4415,10 +4937,25 @@ async function fetchRealOkxOrderbook(symbol: string): Promise<OrderbookL2 | null
         price: parseFloat(a[0]),
         qty: parseFloat(a[1]),
       }));
+      const localTs = Date.now();
+      const exchangeTs = parseInt(bookData.ts || localTs.toString(), 10);
+      const seqId = parseInt(bookData.seqId || Math.floor(localTs / 100).toString(), 10);
       if (bids.length > 0 && asks.length > 0) {
+        latestOkxOrderbookMetaBySymbol[sym] = buildMarketSnapshotMeta({
+          exchange: 'OKX',
+          instId,
+          symbol: sym,
+          sourceKind: 'OKX_REST_WS',
+          exchangeTs,
+          localTs,
+          seqId,
+          connectionOk: true,
+          complete: true,
+          nowTs: localTs,
+        });
         return {
-          timestamp: parseInt(bookData.ts || Date.now().toString(), 10),
-          seqId: parseInt(bookData.seqId || Math.floor(Date.now() / 100).toString(), 10),
+          timestamp: exchangeTs,
+          seqId,
           bids,
           asks,
         };
@@ -4427,28 +4964,46 @@ async function fetchRealOkxOrderbook(symbol: string): Promise<OrderbookL2 | null
   } catch {
     // ignore OKX orderbook error
   }
+  latestOkxOrderbookMetaBySymbol[sym] = buildMarketSnapshotMeta({
+    exchange: 'OKX',
+    instId,
+    symbol: sym,
+    sourceKind: 'STALE_CACHE',
+    exchangeTs: 0,
+    localTs: 0,
+    seqId: null,
+    connectionOk: false,
+    complete: false,
+  });
   return null;
 }
 
-// Fetch real L2-50 orderbook from active exchange (Bybit V5 or OKX V5)
+// Fetch real L2-50 orderbook from active exchange (OKX V5 strict in OKX LIVE; Bybit V5 only when activeExchange === 'BYBIT' or SHADOW fallback)
 async function fetchRealBybitOrderbook(symbol: string): Promise<OrderbookL2> {
+  const sym = symbol.toUpperCase();
   const now = Date.now();
-  const cached = cachedOrderbooks[symbol];
+  const cached = cachedOrderbooks[sym];
   if (cached && now - cached.fetchedAt < 1000) {
     return cached.book;
   }
 
   if (systemState.activeExchange === 'OKX') {
-    const okxBook = await fetchRealOkxOrderbook(symbol);
+    const okxBook = await fetchRealOkxOrderbook(sym);
     if (okxBook) {
-      cachedOrderbooks[symbol] = { book: okxBook, fetchedAt: now };
+      cachedOrderbooks[sym] = { book: okxBook, fetchedAt: now };
+      systemState.okxMarketDataHealthy = true;
       return okxBook;
+    }
+    if (systemState.mode === 'LIVE') {
+      // Strict Stage 1 invariant: NEVER fall back to Bybit or synthetic orderbook in OKX LIVE
+      systemState.okxMarketDataHealthy = false;
+      return { timestamp: 0, seqId: 0, bids: [], asks: [] };
     }
   }
 
   try {
     const { ok, data, rttMs } = await fetchBybitPublicJson(
-      `/v5/market/orderbook?category=linear&symbol=${encodeURIComponent(symbol)}&limit=50`,
+      `/v5/market/orderbook?category=linear&symbol=${encodeURIComponent(sym)}&limit=50`,
       4000
     );
     if (ok && data?.result) {
@@ -4474,25 +5029,24 @@ async function fetchRealBybitOrderbook(symbol: string): Promise<OrderbookL2> {
           asks,
         };
 
-        cachedOrderbooks[symbol] = { book, fetchedAt: now };
+        cachedOrderbooks[sym] = { book, fetchedAt: now };
         return book;
       }
     }
   } catch (err) {
-    console.warn(`Failed to fetch real Bybit book for ${symbol}:`, err);
+    console.warn(`Failed to fetch real Bybit book for ${sym}:`, err);
   }
 
-  const fallbackOkxBook = await fetchRealOkxOrderbook(symbol);
+  const fallbackOkxBook = await fetchRealOkxOrderbook(sym);
   if (fallbackOkxBook) {
-    cachedOrderbooks[symbol] = { book: fallbackOkxBook, fetchedAt: now };
+    cachedOrderbooks[sym] = { book: fallbackOkxBook, fetchedAt: now };
     return fallbackOkxBook;
   }
 
-  // Graceful fallback to cached or synthesized depth if rate-limited
   if (cached) return cached.book;
 
-  const mid = resolveSafeSymbolFallbackPrice(symbol);
-  const inst = resolveInstrumentRules(symbol, mid);
+  const mid = resolveSafeSymbolFallbackPrice(sym);
+  const inst = resolveInstrumentRules(sym, mid);
   const tick = inst.tickSize;
   const priceDecimals = tick < 0.01 ? 4 : tick < 0.1 ? 2 : 1;
   const bids = [];
@@ -4513,8 +5067,9 @@ async function fetchRealBybitOrderbook(symbol: string): Promise<OrderbookL2> {
 const cachedKlines: Record<string, { bars: KlineBar[]; fetchedAt: number }> = {};
 
 async function fetchRealOkxKlines(symbol: string, interval: string = '5', limit: number = 60): Promise<KlineBar[]> {
+  const sym = symbol.toUpperCase();
   try {
-    const instId = toOkxSwapInstId(symbol);
+    const instId = toOkxSwapInstId(sym);
     const barMap: Record<string, string> = {
       '1': '1m',
       '3': '3m',
@@ -4531,7 +5086,7 @@ async function fetchRealOkxKlines(symbol: string, interval: string = '5', limit:
       4500
     );
     if (ok && Array.isArray(data?.data) && data.data.length > 0) {
-      const bars: KlineBar[] = data.data
+      const bars: (KlineBar & { confirm?: string })[] = data.data
         .slice()
         .reverse()
         .map((row: string[]) => ({
@@ -4542,9 +5097,17 @@ async function fetchRealOkxKlines(symbol: string, interval: string = '5', limit:
           close: parseFloat(row[4]),
           volume: parseFloat(row[5]),
           turnover: parseFloat(row[7] || row[6] || '0'),
+          confirm: row[8] !== undefined ? String(row[8]) : undefined,
         }))
         .filter((b: KlineBar) => b.close > 0);
-      if (bars.length >= 15) return bars;
+      if (bars.length >= 15) {
+        latestOkxKlinesMetaBySymbol[`${sym}_${interval}`] = {
+          fetchedAt: Date.now(),
+          sourceExchange: 'OKX',
+          sourceKind: 'OKX_REST_WS',
+        };
+        return bars;
+      }
     }
   } catch {
     // ignore OKX klines error
@@ -4552,9 +5115,10 @@ async function fetchRealOkxKlines(symbol: string, interval: string = '5', limit:
   return [];
 }
 
-// Fetch real historical klines (candles) from active exchange (Bybit V5 or OKX V5)
+// Fetch real historical klines (candles) from active exchange (OKX V5 strict in OKX LIVE; Bybit V5 otherwise)
 async function fetchRealBybitKlines(symbol: string, interval: string = '5', limit: number = 60): Promise<KlineBar[]> {
-  const cacheKey = `${systemState.activeExchange}_${symbol}_${interval}_${limit}`;
+  const sym = symbol.toUpperCase();
+  const cacheKey = `${systemState.activeExchange}_${sym}_${interval}_${limit}`;
   const now = Date.now();
   const cached = cachedKlines[cacheKey];
   if (cached && now - cached.fetchedAt < 12000) {
@@ -4562,22 +5126,26 @@ async function fetchRealBybitKlines(symbol: string, interval: string = '5', limi
   }
 
   if (systemState.activeExchange === 'OKX') {
-    const okxBars = await fetchRealOkxKlines(symbol, interval, limit);
+    const okxBars = await fetchRealOkxKlines(sym, interval, limit);
     if (okxBars.length >= 15) {
       cachedKlines[cacheKey] = { bars: okxBars, fetchedAt: now };
       return okxBars;
+    }
+    if (systemState.mode === 'LIVE') {
+      // Strict Stage 1 invariant: NEVER fall back to Bybit or synthetic candles in OKX LIVE
+      systemState.okxMarketDataHealthy = false;
+      return [];
     }
   }
 
   try {
     const { ok, data } = await fetchBybitPublicJson(
-      `/v5/market/kline?category=linear&symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${limit}`,
+      `/v5/market/kline?category=linear&symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(interval)}&limit=${limit}`,
       4500
     );
     if (ok && data) {
       const rawList = data?.result?.list;
       if (Array.isArray(rawList) && rawList.length > 0) {
-        // Bybit returns newest first; reverse to chronological (oldest -> newest)
         const bars: KlineBar[] = rawList
           .slice()
           .reverse()
@@ -4594,15 +5162,20 @@ async function fetchRealBybitKlines(symbol: string, interval: string = '5', limi
 
         if (bars.length >= 15) {
           cachedKlines[cacheKey] = { bars, fetchedAt: now };
+          latestOkxKlinesMetaBySymbol[`${sym}_${interval}`] = {
+            fetchedAt: now,
+            sourceExchange: 'BYBIT',
+            sourceKind: 'BYBIT_FALLBACK',
+          };
           return bars;
         }
       }
     }
   } catch (err) {
-    console.warn(`Failed to fetch real klines for ${symbol}:`, err);
+    console.warn(`Failed to fetch real klines for ${sym}:`, err);
   }
 
-  const backupOkxBars = await fetchRealOkxKlines(symbol, interval, limit);
+  const backupOkxBars = await fetchRealOkxKlines(sym, interval, limit);
   if (backupOkxBars.length >= 15) {
     cachedKlines[cacheKey] = { bars: backupOkxBars, fetchedAt: now };
     return backupOkxBars;
@@ -4610,8 +5183,7 @@ async function fetchRealBybitKlines(symbol: string, interval: string = '5', limi
 
   if (cached) return cached.bars;
 
-  // Deterministic fallback klines anchored to live screener / position price for this exact symbol
-  const basePrice = resolveSafeSymbolFallbackPrice(symbol);
+  const basePrice = resolveSafeSymbolFallbackPrice(sym);
   const fallbackBars: KlineBar[] = [];
   let p = basePrice * 0.992;
   for (let i = 0; i < limit; i++) {
@@ -4695,9 +5267,128 @@ function syncDrawdownAndAutoRecovery(): void {
   }
 }
 
+// Stage 2, 4, 5 Helpers: Virtual Portfolios, Position Ownership, Stop-Risk, MTF Context
+function recordRiskEvent(params: Omit<RiskEventRecord, 'id' | 'timestamp'>): void {
+  const evt: RiskEventRecord = {
+    id: `risk-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    timestamp: Date.now(),
+    ...params,
+  };
+  systemState.riskEvents = [evt, ...(systemState.riskEvents || [])].slice(0, 150);
+}
+
+function computeTotalOpenStopRiskPct(): number {
+  const effectiveCap = Math.max(1, Number(systemState.capitalUsdt) || 1);
+  const totalRiskUsdt = (systemState.activePositions || []).reduce((acc: number, pos: any) => {
+    const entry = Number(pos?.entryVwap) || 0;
+    const sl = Number(pos?.slPrice) || entry;
+    const qty = Number(pos?.qty) || 0;
+    return acc + computePositionStopRiskUsdt({ entryPrice: entry, stopLossPrice: sl, qty });
+  }, 0);
+  return Number(((totalRiskUsdt / effectiveCap) * 100).toFixed(2));
+}
+
+function syncVirtualPortfolioAndOwnershipState(): VirtualPortfolio[] {
+  const nowTs = Date.now();
+  const baseCap = Math.max(0, Number(systemState.capitalUsdt) || 0);
+  const currentPortfolios =
+    Array.isArray(systemState.virtualPortfolios) && systemState.virtualPortfolios.length > 0
+      ? systemState.virtualPortfolios
+      : createDefaultVirtualPortfolios(baseCap, nowTs);
+
+  const synced = syncPortfoliosWithAccount({
+    portfolios: currentPortfolios,
+    totalAccountCapitalUsdt: baseCap,
+    activePositions: (systemState.activePositions || []).map((p: any) => ({
+      symbol: String(p.symbol || ''),
+      botId: p.botId,
+      virtualPortfolioId: p.virtualPortfolioId || resolvePortfolioIdForStrategy(p.botId),
+      qty: Number(p.qty) || 0,
+      entryVwap: Number(p.entryVwap) || 0,
+      leverage: Number(p.leverage) || 4,
+      unrealizedPnl: Number(p.unrealizedPnl) || 0,
+    })),
+    nowTs,
+  });
+  systemState.virtualPortfolios = synced;
+
+  let ownership: PositionOwnershipRecord[] = [];
+  for (const p of systemState.activePositions || []) {
+    if (!p?.symbol) continue;
+    const botId = String(p.botId || 'manual-terminal');
+    const vpId = p.virtualPortfolioId || resolvePortfolioIdForStrategy(botId);
+    ownership = acquirePositionOwnership(ownership, {
+      symbol: String(p.symbol),
+      side: p.side === 'SHORT' ? 'SHORT' : 'LONG',
+      ownerStrategyId: botId,
+      ownerPortfolioId: vpId,
+      clientOrderId: p.exchangeOrderId || p.id,
+      exchangeOrderId: p.exchangeOrderId ?? null,
+      acquiredAt: Number(p.openedAt) || nowTs,
+      status: 'ACTIVE',
+    });
+  }
+  for (const orphSym of systemState.orphanedSymbols || []) {
+    if (!orphSym) continue;
+    ownership = acquirePositionOwnership(ownership, {
+      symbol: String(orphSym),
+      side: 'LONG',
+      ownerStrategyId: 'okx-orphaned',
+      ownerPortfolioId: 'vp-reserve',
+      acquiredAt: nowTs,
+      status: 'ORPHANED',
+    });
+  }
+  systemState.positionOwnership = ownership;
+  return synced;
+}
+
+const mtfContextCache: Record<string, { snapshot: MtfContextSnapshot; fetchedAt: number }> = {};
+
+async function buildSymbolMtfContext(sym: string, preloadedBars15m?: KlineBar[]): Promise<MtfContextSnapshot> {
+  const key = String(sym || 'BTCUSDT').toUpperCase();
+  const nowTs = Date.now();
+  const cached = mtfContextCache[key];
+  if (cached && nowTs - cached.fetchedAt < 35_000) {
+    return cached.snapshot;
+  }
+
+  const [bars1m, bars5m, bars15m, bars1h, bars4h, bars1d] = await Promise.all([
+    fetchRealBybitKlines(key, '1', 45).catch(() => []),
+    fetchRealBybitKlines(key, '5', 45).catch(() => []),
+    preloadedBars15m && preloadedBars15m.length >= 15
+      ? Promise.resolve(preloadedBars15m)
+      : fetchRealBybitKlines(key, '15', 45).catch(() => []),
+    fetchRealBybitKlines(key, '60', 32).catch(() => []),
+    fetchRealBybitKlines(key, '240', 24).catch(() => []),
+    fetchRealBybitKlines(key, 'D', 18).catch(() => []),
+  ]);
+
+  const effective5m = bars5m.length >= 14 ? bars5m : aggregateBarsToTimeframe(bars1m, 5);
+  const effective15m = bars15m.length >= 12 ? bars15m : aggregateBarsToTimeframe(effective5m, 15);
+  const effective1h = bars1h.length >= 10 ? bars1h : aggregateBarsToTimeframe(effective15m, 60);
+
+  const snapshot = buildMtfContextSnapshot({
+    symbol: key,
+    barsByTf: {
+      '1m': bars1m,
+      '5m': effective5m,
+      '15m': effective15m,
+      '1H': effective1h,
+      '4H': bars4h,
+      '1D': bars1d,
+    } as Partial<Record<MtfTimeframeKey, KlineBar[]>>,
+    nowTs,
+  });
+
+  mtfContextCache[key] = { snapshot, fetchedAt: nowTs };
+  return snapshot;
+}
+
 // Helper to construct complete and resilient SystemHealth payload
 function buildFullSystemHealthPayload() {
   syncDrawdownAndAutoRecovery();
+  const syncedPortfolios = syncVirtualPortfolioAndOwnershipState();
 
   const rssMb = Math.round(process.memoryUsage().rss / (1024 * 1024));
   const totalSysMb = Math.min(4096, Math.round(os.totalmem() / (1024 * 1024)));
@@ -4714,6 +5405,23 @@ function buildFullSystemHealthPayload() {
     okxAccountLevel: systemState.okxAccountLevel || null,
     okxAccountEquityUsdt: systemState.okxAccountEquityUsdt,
     okxAvailableBalanceUsdt: systemState.okxAvailableBalanceUsdt,
+    runtimePhase: systemState.runtimePhase,
+    dcaEnabled: false as const,
+    okxMarketDataHealthy: systemState.okxMarketDataHealthy,
+    okxInstrumentCatalogVerified: okxInstrumentRegistry.lastRefreshOk,
+    lastRecoveryAt: systemState.lastRecoveryAt,
+    orphanedPositionsCount: (systemState.orphanedSymbols || []).length,
+    orphanedSymbols: systemState.orphanedSymbols || [],
+    unverifiedProtectionSymbols: systemState.unverifiedProtectionSymbols || [],
+    exchangeOrdersCount: (systemState.exchangeOrders || []).length,
+    virtualPortfoliosCount: syncedPortfolios.length,
+    activeOwnershipCount: (systemState.positionOwnership || []).length,
+    shadowCandidatesCount: (systemState.shadowCandidates || []).length,
+    mtfServiceReady: true,
+    totalOpenStopRiskPct: computeTotalOpenStopRiskPct(),
+    killSwitchPolicy: systemState.killSwitchPolicy || 'BLOCK_NEW_ENTRIES_ONLY',
+    riskEventsCount: (systemState.riskEvents || []).length,
+    systemRecoveryLog: (systemState.systemRecoveryLog || []).slice(0, 10),
     isKillSwitchActive: systemState.isKillSwitchActive,
     killSwitchTriggerReason: systemState.killSwitchTriggerReason,
     killSwitchAutoTriggered: Boolean(systemState.killSwitchAutoTriggered),
@@ -5067,6 +5775,10 @@ app.post('/api/exchange/okx-close-stray', async (req: Request, res: Response) =>
 
     for (const target of targets) {
       const inst = getOkxSwapInstrument(target.symbol);
+      if (!inst) {
+        failed.push({ instId: target.instId, error: `OKX instrument spec unverified for ${target.symbol}` });
+        continue;
+      }
       const baseQty = convertOkxContractsToBaseQty(Math.abs(target.posContracts), inst) || Math.abs(target.posContracts);
       const closeRes = await closeRealOkxLivePosition({
         symbol: target.symbol,
@@ -5087,8 +5799,9 @@ app.post('/api/exchange/okx-close-stray', async (req: Request, res: Response) =>
         const removed = systemState.activePositions.splice(idx, 1)[0];
         const exitPx = target.markPx > 0 ? target.markPx : Number(removed.currentPrice) || removed.entryVwap;
         const dirSign = removed.side === 'LONG' ? 1 : -1;
-        const estPnl = (exitPx - removed.entryVwap) * dirSign;
-        const exitReason: 'TP_HIT' | 'SL_HIT' = estPnl >= 0 ? 'TP_HIT' : 'SL_HIT';
+        const estGross = (exitPx - removed.entryVwap) * dirSign * Number(removed.qty || 0);
+        const estFees = (Number(removed.entryVwap || 0) + exitPx) * Number(removed.qty || 0) * 0.0005;
+        const exitReason: 'TP_HIT' | 'SL_HIT' = estGross - estFees > 0 ? 'TP_HIT' : 'SL_HIT';
         const tradeRecord = recordClosedPosition(removed, exitPx, exitReason);
         addBotLog({
           botId: removed.botId || 'manual',
@@ -5287,6 +6000,7 @@ app.post('/api/system/mode', async (req: Request, res: Response) => {
 
   systemState.mode = mode;
   if (mode === 'LIVE' && activeEx === 'OKX') {
+    await runStartupReconciliation().catch(() => {});
     systemState.capitalUsdt = computeWorkingCapitalUsdt({
       mode: systemState.mode,
       activeExchange: systemState.activeExchange,
@@ -5294,12 +6008,18 @@ app.post('/api/system/mode', async (req: Request, res: Response) => {
       fallbackCapitalUsdt: systemState.capitalUsdt,
       capitalCapUsdt: systemState.tradingCapitalCapUsdt,
     });
+  } else {
+    systemState.runtimePhase = 'READY';
+    systemState.orphanedSymbols = [];
   }
   savePersistedState(true);
   res.json({
     success: true,
     mode: systemState.mode,
     activeExchange: activeEx,
+    runtimePhase: systemState.runtimePhase,
+    dcaEnabled: false,
+    orphanedSymbols: systemState.orphanedSymbols,
     bybitKeysConfigured,
     okxKeysConfigured,
     okxDemoTrading: systemState.okxDemoTrading,
@@ -5557,7 +6277,107 @@ app.post('/api/risk/calculate-size', (req: Request, res: Response) => {
 // Execute simulated or live order
 app.post('/api/orders/execute', async (req: Request, res: Response) => {
   const { symbol, side, orderType, qty, limitPrice, stopLossPrice, tpGrid } = req.body;
+  const activeEx = systemState.activeExchange || 'OKX';
+  if (systemState.isKillSwitchActive) {
+    res.status(403).json({ success: false, reason: 'Order blocked by active Risk Firewall Kill-Switch' });
+    return;
+  }
+  if (systemState.mode === 'LIVE' && activeEx === 'OKX') {
+    if (systemState.runtimePhase !== 'READY') {
+      res.status(403).json({
+        success: false,
+        reason: `OKX LIVE заблокирован в фазе ${systemState.runtimePhase}. Дождитесь завершения Startup Reconciliation.`,
+      });
+      return;
+    }
+    if ((systemState.unverifiedProtectionSymbols || []).length > 0) {
+      res.status(403).json({
+        success: false,
+        reason: `Открытие новых позиций остановлено: неподтверждённый SL у ${systemState.unverifiedProtectionSymbols.join(', ')}`,
+      });
+      return;
+    }
+    if ((systemState.orphanedSymbols || []).includes(String(symbol || '').toUpperCase())) {
+      res.status(403).json({
+        success: false,
+        reason: `Пара ${String(symbol || '').toUpperCase()} помечена как ORPHANED после сверки OKX. Сначала проведите ручную сверку.`,
+      });
+      return;
+    }
+  }
+
+  syncVirtualPortfolioAndOwnershipState();
+  const manualVpId = 'vp-trend-momentum';
+  const ownershipCheck = checkOwnershipForEntry({
+    ownershipRecords: systemState.positionOwnership || [],
+    symbol: String(symbol || ''),
+    side: side === 'SHORT' ? 'SHORT' : 'LONG',
+    strategyId: 'manual-terminal',
+    portfolioId: manualVpId,
+    okxPosMode: systemState.okxPosMode || 'net_mode',
+  });
+  if (!ownershipCheck.allowed) {
+    recordRiskEvent({
+      severity: 'WARNING',
+      code: 'OWNERSHIP_CONFLICT',
+      symbol: String(symbol || '').toUpperCase(),
+      strategyId: 'manual-terminal',
+      virtualPortfolioId: manualVpId,
+      reason: ownershipCheck.reason || 'Конфликт владения символом',
+      actionTaken: 'MANUAL_ORDER_BLOCKED',
+    });
+    res.status(409).json({
+      success: false,
+      reason: `Позиция по ${String(symbol || '').toUpperCase()} уже занята (${ownershipCheck.reason})`,
+    });
+    return;
+  }
+
   const book = await fetchRealBybitOrderbook(symbol);
+  if (!book || book.bids.length === 0 || book.asks.length === 0) {
+    res.status(400).json({ success: false, reason: `Свежий стакан ${activeEx} для ${symbol} недоступен` });
+    return;
+  }
+
+  if (systemState.mode === 'LIVE' && activeEx === 'OKX') {
+    const symKey = String(symbol || '').toUpperCase();
+    const rawMeta = latestOkxOrderbookMetaBySymbol[symKey];
+    const meta = rawMeta
+      ? { ...rawMeta, ageMs: rawMeta.localTs > 0 ? Math.max(0, Date.now() - rawMeta.localTs) : Number.POSITIVE_INFINITY }
+      : buildMarketSnapshotMeta({
+          exchange: 'OKX',
+          instId: toOkxSwapInstId(symKey),
+          symbol: symKey,
+          sourceKind: 'STALE_CACHE',
+          exchangeTs: 0,
+          localTs: 0,
+          connectionOk: false,
+          complete: false,
+        });
+    const obVerdict = validateOkxOrderbookFreshness({
+      book,
+      meta,
+      mode: systemState.mode,
+      activeExchange: activeEx,
+    });
+    if (!obVerdict.allowed) {
+      res.status(400).json({ success: false, reason: `OKX Market Data Gate: ${obVerdict.reason}` });
+      return;
+    }
+    await refreshOkxSwapInstrumentsCache(false).catch(() => {});
+    const specCheck = resolveInstrumentForOrder({
+      state: okxInstrumentRegistry,
+      symbol: symKey,
+      mode: systemState.mode,
+      activeExchange: activeEx,
+      referencePrice: book.bids[0].price,
+    });
+    if (!specCheck.ok) {
+      res.status(400).json({ success: false, reason: specCheck.reason || `Спецификация OKX для ${symKey} не подтверждена` });
+      return;
+    }
+  }
+
   const inst = resolveInstrumentRules(symbol, book.bids[0]?.price);
 
   // Check Spread Guard
@@ -5577,17 +6397,11 @@ app.post('/api/orders/execute', async (req: Request, res: Response) => {
     return;
   }
 
-  if (systemState.isKillSwitchActive) {
-    res.status(403).json({ success: false, reason: 'Order blocked by active Risk Firewall Kill-Switch' });
-    return;
-  }
-
   // Calculate dynamic TP collapse
   const collapsedTPs = dynamicTPCollapse(parseFloat(qty), tpGrid || [], inst);
 
   if (orderType === 'MARKET') {
     const t0 = Date.now();
-    const activeEx = systemState.activeExchange || 'OKX';
     const takerFeeRate = activeEx === 'OKX' ? 0.0005 : 0.00055;
     const exec = executeMarketOrderL2(book, side === 'LONG' ? 'BUY' : 'SELL', parseFloat(qty), takerFeeRate);
     let liveExchangeOrder: {
@@ -5610,6 +6424,8 @@ app.post('/api/orders/execute', async (req: Request, res: Response) => {
           slPrice: parseFloat(stopLossPrice) || undefined,
           tpPrice: collapsedTPs[0]?.price || undefined,
           priceDecimals,
+          strategyId: 'manual-terminal',
+          virtualPortfolioId: 'manual-terminal',
         });
         if (!liveExchangeOrder.ok) {
           res.status(400).json({
@@ -5664,9 +6480,52 @@ app.post('/api/orders/execute', async (req: Request, res: Response) => {
       tpGrid: collapsedTPs,
       fundingPaid: 0.0,
       openedAt: Date.now(),
+      botId: 'manual-terminal',
+      botName: 'Ручной терминал',
+      virtualPortfolioId: manualVpId,
     };
 
     systemState.activePositions.unshift(newPos);
+    systemState.positionOwnership = acquirePositionOwnership(systemState.positionOwnership || [], {
+      symbol,
+      side,
+      ownerStrategyId: 'manual-terminal',
+      ownerPortfolioId: manualVpId,
+      clientOrderId: newPos.id,
+      exchangeOrderId: liveExchangeOrder?.orderId ?? null,
+    });
+    const manualFill: ExchangeFillRecord = {
+      id: `fill-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: Date.now(),
+      clientOrderId: newPos.id,
+      exchangeOrderId: liveExchangeOrder?.orderId ?? null,
+      strategyId: 'manual-terminal',
+      virtualPortfolioId: manualVpId,
+      symbol,
+      side,
+      filledQty: executedQty,
+      fillPrice: exec.vwapPrice,
+      feeUsdt: Number((exec.vwapPrice * executedQty * takerFeeRate).toFixed(4)),
+      mode: systemState.mode,
+    };
+    systemState.exchangeFills = [manualFill, ...(systemState.exchangeFills || [])].slice(0, 200);
+    const manualMargin = Number(((exec.vwapPrice * executedQty) / posLeverage).toFixed(4));
+    const syncedManualPortfolios = syncVirtualPortfolioAndOwnershipState();
+    const manualVp = syncedManualPortfolios.find((v) => v.id === manualVpId);
+    systemState.portfolioLedger = [
+      createPortfolioLedgerEntry({
+        virtualPortfolioId: manualVpId,
+        strategyId: 'manual-terminal',
+        symbol,
+        eventType: 'RESERVE_MARGIN',
+        amountUsdt: -manualMargin,
+        balanceAfterUsdt: manualVp?.freeCapitalUsdt ?? systemState.capitalUsdt,
+        clientOrderId: newPos.id,
+        exchangeOrderId: liveExchangeOrder?.orderId,
+        description: `Резерв маржи ${side} ${symbol} (${executedQty}) в ручном терминале`,
+      }),
+      ...(systemState.portfolioLedger || []),
+    ].slice(0, 300);
     savePersistedState();
 
     const exSourceLabel =
@@ -5764,6 +6623,11 @@ function recordClosedPosition(
     takerFeeRate: posEx === 'OKX' ? 0.0005 : 0.00055,
   });
 
+  const effectiveExitReason = resolveHonestExitReason({
+    requestedReason: exitReason,
+    netPnlUsdt: metrics.netPnlUsdt,
+  });
+
   const trade: ClosedTradeRecord = {
     id: `trd-${pos.symbol.toLowerCase()}-${Date.now().toString().slice(-5)}-${Math.random().toString(36).slice(2, 5)}`,
     symbol: pos.symbol,
@@ -5778,7 +6642,7 @@ function recordClosedPosition(
     netPnlUsdt: metrics.netPnlUsdt,
     roePct: metrics.roePct,
     mode: pos.mode || systemState.mode,
-    exitReason,
+    exitReason: effectiveExitReason,
     botId: pos.botId || 'manual',
     botName: pos.botName || 'Ручной ордер (Оператор)',
     openedAt: pos.openedAt || Date.now() - 600000,
@@ -5797,7 +6661,7 @@ function recordClosedPosition(
   if (!isPartial && pos.symbol) {
     const nowTs = Date.now();
     const prevCd = symbolCooldowns[pos.symbol];
-    if (exitReason === 'SL_HIT' && trade.netPnlUsdt < 0) {
+    if (effectiveExitReason === 'SL_HIT' && trade.netPnlUsdt <= 0) {
       const nextConsecutiveSl = (prevCd?.consecutiveSlCount || 0) + 1;
       // 45 min cooldown after 1st SL; 90 min StoplossGuard after 2+ consecutive SLs on the same coin
       const cooldownMs = nextConsecutiveSl >= 2 ? 90 * 60 * 1000 : 45 * 60 * 1000;
@@ -5808,12 +6672,12 @@ function recordClosedPosition(
         consecutiveSlCount: nextConsecutiveSl,
         lastClosedAt: nowTs,
       };
-    } else if (exitReason === 'TP_HIT' || trade.netPnlUsdt >= 0) {
+    } else if (effectiveExitReason === 'TP_HIT' && trade.netPnlUsdt > 0) {
       // 25 min post-win cooldown (Freqtrade NFI standard) to prevent re-entering at the top of the same wave
       symbolCooldowns[pos.symbol] = {
         symbol: pos.symbol,
         untilTs: nowTs + 25 * 60 * 1000,
-        lastExitReason: exitReason,
+        lastExitReason: effectiveExitReason,
         consecutiveSlCount: 0,
         lastClosedAt: nowTs,
       };
@@ -5823,9 +6687,9 @@ function recordClosedPosition(
   const currentWalletBalance = Number((systemState.capitalUsdt + systemState.totalRealizedPnlUsdt).toFixed(2));
   const reasonLabel = isPartial
     ? 'TP1 Частичный фиксаж (60%)'
-    : exitReason === 'TP_HIT'
+    : effectiveExitReason === 'TP_HIT'
     ? 'Take-Profit'
-    : exitReason === 'SL_HIT'
+    : effectiveExitReason === 'SL_HIT'
     ? 'Stop-Loss'
     : 'Ручное закрытие';
 
@@ -5909,7 +6773,7 @@ function recordClosedPosition(
       if (xaiRecord) {
         xaiRecord.rlOutcome = {
           closedAt: Date.now(),
-          exitReason,
+          exitReason: effectiveExitReason,
           netPnlUsdt: combinedTradeNetPnl,
           reward: rlUpdate.reward,
           weightDelta: { obiWeight: 0, momentumWeight: 0, vwapWeight: 0, sentimentWeight: 0 },
@@ -5932,10 +6796,10 @@ function recordClosedPosition(
 
   if (!isPartial) {
     const pnlSign = trade.netPnlUsdt >= 0 ? '+' : '';
-    const isSL = exitReason === 'SL_HIT';
-    const isTP = exitReason === 'TP_HIT';
+    const isSL = effectiveExitReason === 'SL_HIT';
+    const isTP = effectiveExitReason === 'TP_HIT' && trade.netPnlUsdt > 0;
     const actorText =
-      exitReason === 'MANUAL_CLOSE'
+      effectiveExitReason === 'MANUAL_CLOSE'
         ? `Оператор закрыл ${trade.side} ${trade.symbol} (${trade.botName || 'OKX'})`
         : `${trade.botName || 'Оператор'} закрыл ${trade.side} ${trade.symbol}`;
 
@@ -5949,6 +6813,83 @@ function recordClosedPosition(
       pnl: trade.netPnlUsdt,
       isUrgent: isSL, // SL is critical, immediate Telegram push
     });
+
+    // Stage 2: Update virtual portfolio ledger & release symbol ownership on full trade close
+    const closedVpId = pos.virtualPortfolioId || resolvePortfolioIdForStrategy(pos.botId);
+    systemState.virtualPortfolios = applyVirtualPortfolioTradeClose({
+      portfolios:
+        Array.isArray(systemState.virtualPortfolios) && systemState.virtualPortfolios.length > 0
+          ? systemState.virtualPortfolios
+          : createDefaultVirtualPortfolios(systemState.capitalUsdt),
+      portfolioId: closedVpId,
+      strategyId: pos.botId || 'manual',
+      symbol: trade.symbol,
+      realizedNetPnlUsdt: trade.netPnlUsdt,
+      feeUsdt: trade.feeUsdt,
+      fundingUsdt: trade.fundingUsdt,
+      nowTs: trade.closedAt,
+    });
+    systemState.positionOwnership = releasePositionOwnership(
+      systemState.positionOwnership || [],
+      trade.symbol,
+      trade.side
+    );
+    const updatedPortfolios = syncVirtualPortfolioAndOwnershipState();
+    const closedVp = updatedPortfolios.find((vp) => vp.id === closedVpId);
+    systemState.portfolioLedger = [
+      createPortfolioLedgerEntry({
+        virtualPortfolioId: closedVpId,
+        strategyId: trade.botId,
+        symbol: trade.symbol,
+        eventType: 'REALIZED_PNL',
+        amountUsdt: trade.netPnlUsdt,
+        balanceAfterUsdt: closedVp?.allocatedCapitalUsdt ?? currentWalletBalance,
+        description: `${reasonLabel} ${trade.side} ${trade.symbol} ($${exitPrice.toFixed(2)}) · комиссия -$${trade.feeUsdt.toFixed(2)}`,
+        nowTs: trade.closedAt,
+      }),
+      ...(systemState.portfolioLedger || []),
+    ].slice(0, 300);
+
+    // Stage 5: Parallel isolated Shadow Learning evaluation (never mutates production parameters)
+    const matchingCandidates = (systemState.shadowCandidates || []).filter(
+      (cand) => cand.baseStrategyId === trade.botId
+    );
+    if (matchingCandidates.length > 0) {
+      const regimeTag = String(systemState.currentMarketRegime || 'RANGE');
+      for (const cand of matchingCandidates) {
+        const simTrade = simulateShadowTradeResult({
+          candidate: cand,
+          symbol: trade.symbol,
+          side: trade.side,
+          regime: regimeTag,
+          entryPrice: trade.entryPrice,
+          exitPrice: trade.exitPrice,
+          qty: trade.qty,
+          fundingUsdt: trade.fundingUsdt,
+          isOutOfSample: true,
+          openedAt: trade.openedAt,
+          closedAt: trade.closedAt,
+        });
+        systemState.shadowTrades = [simTrade, ...(systemState.shadowTrades || [])].slice(0, 300);
+        const evalReport = evaluateShadowCandidate({
+          candidate: cand,
+          trades: systemState.shadowTrades,
+          baselineCapitalUsdt: Math.max(10, systemState.capitalUsdt),
+          nowTs: trade.closedAt,
+        });
+        cand.status =
+          evalReport.recommendation === 'KEEP'
+            ? 'RECOMMEND_KEEP'
+            : evalReport.recommendation === 'REJECT'
+            ? 'RECOMMEND_REJECT'
+            : 'NEEDS_MORE_DATA';
+        cand.updatedAt = trade.closedAt;
+        systemState.shadowEvaluations = [
+          evalReport,
+          ...(systemState.shadowEvaluations || []).filter((e) => e.candidateId !== cand.id),
+        ].slice(0, 40);
+      }
+    }
   }
 
   savePersistedState();
@@ -6314,7 +7255,7 @@ async function runBotEngineCycle() {
       ]);
     }
 
-    // 1. Fetch real Bybit tickers & BTC market trend once per cycle (shared by DCA guard + candidate evaluation)
+    // 1. Fetch tickers & BTC market trend once per cycle (strictly OKX-only in OKX LIVE mode)
     const [tickers, cycleBtcBook, cycleBtcKlines] = await Promise.all([
       fetchRealBybitTickers(),
       fetchRealBybitOrderbook('BTCUSDT'),
@@ -6324,48 +7265,89 @@ async function runBotEngineCycle() {
     for (const t of tickers) {
       priceMap[t.symbol] = t.price;
     }
-    const cycleBtcFeatures = extractMarketFeatures({
-      bids: cycleBtcBook.bids,
-      asks: cycleBtcBook.asks,
-      klines: cycleBtcKlines,
-      sentimentScore: 0,
+
+    const cycleBtcBookMetaRaw = latestOkxOrderbookMetaBySymbol['BTCUSDT'];
+    const cycleBtcBookMeta = cycleBtcBookMetaRaw
+      ? {
+          ...cycleBtcBookMetaRaw,
+          ageMs:
+            cycleBtcBookMetaRaw.localTs > 0
+              ? Math.max(0, Date.now() - cycleBtcBookMetaRaw.localTs)
+              : Number.POSITIVE_INFINITY,
+        }
+      : buildMarketSnapshotMeta({
+          exchange: systemState.activeExchange === 'BYBIT' ? 'BYBIT' : 'OKX',
+          instId: 'BTC-USDT-SWAP',
+          symbol: 'BTCUSDT',
+          sourceKind: 'STALE_CACHE',
+          exchangeTs: 0,
+          localTs: 0,
+          connectionOk: false,
+          complete: false,
+        });
+    const cycleBtcKlineMeta = latestOkxKlinesMetaBySymbol['BTCUSDT_15'];
+    const cycleBtcObCheck = validateOkxOrderbookFreshness({
+      book: cycleBtcBook,
+      meta: cycleBtcBookMeta,
+      mode: systemState.mode,
+      activeExchange: systemState.activeExchange,
     });
+    const cycleBtcKlineCheck = validateOkxKlinesIntegrity({
+      bars: cycleBtcKlines,
+      sourceExchange: cycleBtcKlineMeta?.sourceExchange || (systemState.activeExchange === 'BYBIT' ? 'BYBIT' : 'OKX'),
+      sourceKind: cycleBtcKlineMeta?.sourceKind || 'SYNTHETIC_FALLBACK',
+      mode: systemState.mode,
+      activeExchange: systemState.activeExchange,
+      intervalMs: 15 * 60_000,
+    });
+    const cycleMarketGate = canUseMarketDataForLiveEntry({
+      mode: systemState.mode,
+      activeExchange: systemState.activeExchange,
+      orderbookVerdict: cycleBtcObCheck,
+      klinesValid: cycleBtcKlineCheck.allowed,
+      klinesReason: cycleBtcKlineCheck.reason,
+      tickersHealthy: tickers.length > 0,
+    });
+    if (systemState.activeExchange === 'OKX' && systemState.mode === 'LIVE') {
+      systemState.okxMarketDataHealthy = cycleMarketGate.allowed;
+    }
+
+    const cycleBtcFeatures =
+      cycleBtcBook.bids.length > 0 && cycleBtcBook.asks.length > 0 && cycleBtcKlines.length > 0
+        ? extractMarketFeatures({
+            bids: cycleBtcBook.bids,
+            asks: cycleBtcBook.asks,
+            klines: cycleBtcKlineCheck.closedBars.length >= 15 ? cycleBtcKlineCheck.closedBars : cycleBtcKlines,
+            sentimentScore: 0,
+          })
+        : {
+            obi: 0,
+            spreadBps: 0,
+            atrPct: 1.5,
+            rsi14: 50,
+            emaTrendBps: 0,
+            vwapDeviationPct: 0,
+            momentumSignal: 0,
+            vwapSignal: 0,
+            sentimentSignal: 0,
+          };
     const btcEmaTrendBps = cycleBtcFeatures.emaTrendBps;
     const btcVwapDevPct = cycleBtcFeatures.vwapDeviationPct;
 
-    // 2. Mark-to-Market Evaluation & Institutional Multi-Stage SL/TP/Trailing Triggers on open positions
+    // 2. Mark-to-Market Evaluation & Institutional Multi-Stage SL/TP/Trailing Triggers on open positions (DCA=OFF)
     for (let i = systemState.activePositions.length - 1; i >= 0; i--) {
       const pos = systemState.activePositions[i];
       const livePrice = priceMap[pos.symbol];
       if (livePrice && livePrice > 0) {
         const inst = resolveInstrumentRules(pos.symbol, livePrice);
         const priceDecimals = inst.tickSize < 0.01 ? 4 : inst.tickSize < 0.1 ? 2 : 1;
-        const qtyDecimals = Math.max(0, -Math.floor(Math.log10(inst.qtyStep) + 1e-9));
 
         pos.currentPrice = livePrice;
         const dirSign = pos.side === 'LONG' ? 1 : -1;
 
-        // 2.0. Variant 3 Trend-Grid Safety Orders (@ne_investor Pullback Averaging):
-        // Ensure legacy positions also have safetyOrders initialized
-        if (!Array.isArray(pos.safetyOrders)) {
-          const fallbackPlan = buildTrendGridPlan({
-            side: pos.side,
-            entryPrice: pos.entryVwap,
-            totalPlannedQty: pos.qty * 2.5,
-            atrPct: 1.35,
-            qtyStep: inst.qtyStep,
-            minQty: inst.minQty,
-            priceDecimals,
-          });
-          pos.safetyOrders = fallbackPlan.safetyOrders;
-          pos.tpTargetPct = fallbackPlan.tpTargetPct;
-        }
+        // Stage 3 P0 Safety Rule: DCA / Safety Orders (SO1/SO2) are globally locked OFF
+        pos.safetyOrders = [];
 
-        const dcaMarketCheck = evaluateGridDcaMarketGuard({
-          side: pos.side,
-          btcEmaTrendBps,
-          btcVwapDevPct,
-        });
         const cycleNewsCtx = computeLiveNewsContext(Date.now());
         const cycleEvent: MarketEventKey =
           systemState.currentAiConductorDecision?.primaryEvent ||
@@ -6396,113 +7378,6 @@ async function runBotEngineCycle() {
           marketNewsScore: cycleNewsCtx.marketNewsScore,
           hasCriticalRiskNewsOnSymbol: Boolean(posNewsMeta?.hasCriticalRisk),
         });
-
-        const dcaFill = evaluateTrendGridSafetyOrderFill({
-          side: pos.side,
-          currentPrice: pos.currentPrice,
-          currentQty: pos.qty,
-          currentEntryVwap: pos.entryVwap,
-          safetyOrders: pos.safetyOrders,
-          priceDecimals,
-          qtyDecimals,
-          tpTargetPct: pos.tpTargetPct || 2.75,
-        });
-
-        const dcaBlocked = !dcaMarketCheck.allowed || counterDefense.blockDca;
-        if (dcaFill.triggered && dcaBlocked) {
-          if (Date.now() - lastDcaGuardLogTs > 2 * 60 * 1000) {
-            lastDcaGuardLogTs = Date.now();
-            addBotLog({
-              botId: pos.botId || 'agent-tg-crypto-alpha',
-              botName: pos.botName || 'Риск-Файрвол Сетки',
-              action: 'RISK_GUARD',
-              symbol: pos.symbol,
-              side: pos.side,
-              price: pos.currentPrice,
-              message: `${pos.symbol}: ${counterDefense.blockDca ? counterDefense.reason : dcaMarketCheck.reason}`,
-              rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
-            });
-          }
-        } else if (dcaFill.triggered) {
-          let appliedAddedQty = dcaFill.addedQty;
-          if (pos.mode === 'LIVE' && pos.exchange === 'OKX') {
-            const addRes = await executeRealOkxLiveAddQty({
-              symbol: pos.symbol,
-              side: pos.side,
-              addedBaseQty: dcaFill.addedQty,
-            });
-            if (!addRes.ok) {
-              addBotLog({
-                botId: pos.botId || 'agent-tg-crypto-alpha',
-                botName: pos.botName || 'Сетка @ne_investor',
-                action: 'RISK_GUARD',
-                symbol: pos.symbol,
-                side: pos.side,
-                price: pos.currentPrice,
-                message: `OKX Live Добор #${dcaFill.filledStepIndex}/2 отклонён: ${addRes.retMsg}`,
-                rttMs: systemState.pings.okx,
-              });
-            } else {
-              if (addRes.executedBaseQty > 0) appliedAddedQty = addRes.executedBaseQty;
-              const prevQty = pos.qty;
-              const newQty = Number((prevQty + appliedAddedQty).toFixed(qtyDecimals));
-              const newEntryVwap = Number(
-                ((prevQty * pos.entryVwap + appliedAddedQty * pos.currentPrice) / Math.max(1e-8, newQty)).toFixed(priceDecimals)
-              );
-              const newTpPrice = Number(
-                (newEntryVwap * (1 + dirSign * ((pos.tpTargetPct || 2.75) / 100))).toFixed(priceDecimals)
-              );
-              pos.qty = newQty;
-              pos.entryVwap = newEntryVwap;
-              pos.safetyOrders = dcaFill.updatedSafetyOrders;
-              pos.tpGrid = [{ price: newTpPrice, qty: newQty }];
-              pos.peakPrice = pos.currentPrice;
-              pos.isBreakEven = false;
-              pos.isTrailing = false;
-
-              const protRes = await updateOkxLivePositionProtection({
-                symbol: pos.symbol,
-                algoId: pos.exchangeAlgoId,
-                slPrice: pos.slPrice,
-                tpPrice: newTpPrice,
-                priceDecimals,
-              });
-              if (protRes.algoId) pos.exchangeAlgoId = protRes.algoId;
-
-              addBotLog({
-                botId: pos.botId || 'agent-tg-crypto-alpha',
-                botName: pos.botName || 'Сетка @ne_investor',
-                action: 'LIMIT_FILL',
-                symbol: pos.symbol,
-                side: pos.side,
-                price: pos.currentPrice,
-                message: `OKX ${pos.okxDemo ? 'Demo' : 'Live'} [Добор #${dcaFill.filledStepIndex}/2]: откуп просадки ${pos.side} ${pos.symbol} по $${pos.currentPrice.toFixed(priceDecimals)} (+${appliedAddedQty}). Средняя цена улучшена до $${pos.entryVwap.toFixed(priceDecimals)}, цель TP/SL синхронизирована на бирже ($${newTpPrice.toFixed(priceDecimals)}).`,
-                rttMs: systemState.pings.okx,
-              });
-              savePersistedState();
-            }
-          } else {
-            pos.qty = dcaFill.newQty;
-            pos.entryVwap = dcaFill.newEntryVwap;
-            pos.safetyOrders = dcaFill.updatedSafetyOrders;
-            pos.tpGrid = [{ price: dcaFill.newTpPrice, qty: dcaFill.newQty }];
-            pos.peakPrice = pos.currentPrice;
-            pos.isBreakEven = false;
-            pos.isTrailing = false;
-
-            addBotLog({
-              botId: pos.botId || 'agent-tg-crypto-alpha',
-              botName: pos.botName || 'Сетка @ne_investor',
-              action: 'LIMIT_FILL',
-              symbol: pos.symbol,
-              side: pos.side,
-              price: pos.currentPrice,
-              message: `Сетка @ne_investor [Добор #${dcaFill.filledStepIndex}/2]: откуп просадки ${pos.side} ${pos.symbol} по $${pos.currentPrice.toFixed(priceDecimals)} (+${dcaFill.addedQty}). Средняя цена улучшена до $${pos.entryVwap.toFixed(priceDecimals)}, цель разгрузки TP смещена на $${dcaFill.newTpPrice.toFixed(priceDecimals)} (+${(pos.tpTargetPct || 2.75).toFixed(2)}%).`,
-              rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
-            });
-            savePersistedState();
-          }
-        }
 
         const diff = (pos.currentPrice - pos.entryVwap) * dirSign;
         pos.unrealizedPnl = Number((diff * pos.qty).toFixed(2));
@@ -6563,14 +7438,15 @@ async function runBotEngineCycle() {
           const isProfitableTrailExit = (pos.isTrailing || pos.isBreakEven) && diff > pos.entryVwap * 0.0020;
           const exitReasonCode = isProfitableTrailExit ? 'TP_HIT' : 'SL_HIT';
           const tradeRecord = recordClosedPosition(pos, pos.currentPrice, exitReasonCode);
-          const slTag = pos.isTrailing
-            ? 'Трейлинг-стоп сетки (фиксация волны от пика)'
-            : 'Защитный стоп сетки (за пределами уровней добора)';
+          const slTag =
+            tradeRecord.exitReason === 'TP_HIT'
+              ? 'Трейлинг-стоп сетки (фиксация волны от пика)'
+              : 'Защитный стоп сетки (за пределами уровней добора)';
 
           addBotLog({
             botId: pos.botId || 'agent-risk-firewall',
             botName: pos.botName || 'Риск-Файрвол',
-            action: exitReasonCode,
+            action: tradeRecord.exitReason,
             symbol: pos.symbol,
             side: pos.side,
             price: pos.currentPrice,
@@ -6609,19 +7485,16 @@ async function runBotEngineCycle() {
             }
             systemState.activePositions.splice(i, 1);
             const tradeRecord = recordClosedPosition(pos, pos.currentPrice, 'TP_HIT');
-            const filledStepsCount = Array.isArray(pos.safetyOrders)
-              ? pos.safetyOrders.filter((so: TrendGridSafetyOrder) => so.filled).length
-              : 0;
 
             addBotLog({
               botId: pos.botId || 'agent-tp-grid',
               botName: pos.botName || 'Take-Profit Сетки',
-              action: 'TP_HIT',
+              action: tradeRecord.exitReason,
               symbol: pos.symbol,
               side: pos.side,
               price: pos.currentPrice,
               pnl: tradeRecord.netPnlUsdt,
-              message: `Разгрузка сетки Take-Profit ($${targetTp.price.toFixed(priceDecimals)}, сработало доборов: ${filledStepsCount}/2) по ${pos.symbol}! Чистый профит +$${tradeRecord.netPnlUsdt.toFixed(2)} USDT.`,
+              message: `Фиксация Take-Profit ($${targetTp.price.toFixed(priceDecimals)}, DCA=OFF) по ${pos.symbol}! Чистый профит ${tradeRecord.netPnlUsdt >= 0 ? '+' : ''}$${tradeRecord.netPnlUsdt.toFixed(2)} USDT.`,
               rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
             });
             continue;
@@ -6674,12 +7547,12 @@ async function runBotEngineCycle() {
           addBotLog({
             botId: pos.botId || 'agent-tp-grid',
             botName: pos.botName || 'Take-Profit Сетки',
-            action: 'TP_HIT',
+            action: tradeRecord.exitReason,
             symbol: pos.symbol,
             side: pos.side,
             price: pos.currentPrice,
             pnl: tradeRecord.netPnlUsdt,
-            message: `Фиксация волны сетки [${ftExitCheck.exitReasonTag}] по ${pos.symbol} (удержание ${ftExitCheck.holdDurationMinutes}м, цена $${pos.currentPrice.toFixed(priceDecimals)}): чистый PnL +$${tradeRecord.netPnlUsdt.toFixed(2)} USDT!`,
+            message: `Фиксация волны сетки [${ftExitCheck.exitReasonTag}] по ${pos.symbol} (удержание ${ftExitCheck.holdDurationMinutes}м, цена $${pos.currentPrice.toFixed(priceDecimals)}): чистый PnL ${tradeRecord.netPnlUsdt >= 0 ? '+' : ''}$${tradeRecord.netPnlUsdt.toFixed(2)} USDT!`,
             rttMs: pos.exchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
           });
           continue;
@@ -6728,12 +7601,13 @@ async function runBotEngineCycle() {
             }
           }
           systemState.activePositions.splice(i, 1);
-          const exitCode = pos.unrealizedPnl >= 0 ? 'TP_HIT' : 'SL_HIT';
+          const estNetReversal = diff * pos.qty - (pos.entryVwap + pos.currentPrice) * pos.qty * 0.0005;
+          const exitCode = estNetReversal > 0 ? 'TP_HIT' : 'SL_HIT';
           const tradeRecord = recordClosedPosition(pos, pos.currentPrice, exitCode);
           addBotLog({
             botId: 'agent-tg-crypto-alpha',
             botName: 'Alpha-Signal · Индекс Каналов',
-            action: exitCode,
+            action: tradeRecord.exitReason,
             symbol: pos.symbol,
             side: pos.side,
             price: pos.currentPrice,
@@ -6776,12 +7650,13 @@ async function runBotEngineCycle() {
             }
           }
           systemState.activePositions.splice(i, 1);
-          const exitCode = pos.unrealizedPnl >= 0 ? 'TP_HIT' : 'SL_HIT';
+          const estNetStale = diff * pos.qty - (pos.entryVwap + pos.currentPrice) * pos.qty * 0.0005;
+          const exitCode = estNetStale > 0 ? 'TP_HIT' : 'SL_HIT';
           const tradeRecord = recordClosedPosition(pos, pos.currentPrice, exitCode);
           addBotLog({
             botId: pos.botId || 'agent-tp-grid',
             botName: pos.botName || 'Ротация капитала',
-            action: exitCode,
+            action: tradeRecord.exitReason,
             symbol: pos.symbol,
             side: pos.side,
             price: pos.currentPrice,
@@ -6816,12 +7691,13 @@ async function runBotEngineCycle() {
             }
           }
           systemState.activePositions.splice(i, 1);
-          const exitCode = pos.unrealizedPnl >= 0 ? 'TP_HIT' : 'SL_HIT';
+          const estNetDefense = diff * pos.qty - (pos.entryVwap + pos.currentPrice) * pos.qty * 0.0005;
+          const exitCode = estNetDefense > 0 ? 'TP_HIT' : 'SL_HIT';
           const tradeRecord = recordClosedPosition(pos, pos.currentPrice, exitCode);
           addBotLog({
             botId: pos.botId || 'ai-conductor',
             botName: 'Защита Режим+Новости',
-            action: exitCode,
+            action: tradeRecord.exitReason,
             symbol: pos.symbol,
             side: pos.side,
             price: pos.currentPrice,
@@ -6915,6 +7791,51 @@ async function runBotEngineCycle() {
     });
 
     if (mergedPositions.totalLiveCount < maxAllowedOpenPositions) {
+      if (systemState.mode === 'LIVE' && systemState.activeExchange === 'OKX') {
+        if (systemState.runtimePhase !== 'READY') {
+          if (Date.now() - lastMacroGuardLogTs > 2 * 60 * 1000) {
+            lastMacroGuardLogTs = Date.now();
+            addBotLog({
+              botId: 'system',
+              botName: 'Startup Reconciliation',
+              action: 'RISK_GUARD',
+              symbol: 'GATE',
+              message: `Новые входы заблокированы: контур в фазе ${systemState.runtimePhase} (ожидается READY).`,
+              rttMs: systemState.pings.okx,
+            });
+          }
+          return;
+        }
+        if ((systemState.unverifiedProtectionSymbols || []).length > 0) {
+          if (Date.now() - lastMacroGuardLogTs > 2 * 60 * 1000) {
+            lastMacroGuardLogTs = Date.now();
+            addBotLog({
+              botId: 'system',
+              botName: 'Protection Safety',
+              action: 'RISK_GUARD',
+              symbol: systemState.unverifiedProtectionSymbols[0],
+              message: `Новые входы остановлены: не подтверждён защитный SL на бирже для ${systemState.unverifiedProtectionSymbols.join(', ')}.`,
+              rttMs: systemState.pings.okx,
+            });
+          }
+          return;
+        }
+        if (!cycleMarketGate.allowed) {
+          if (Date.now() - lastMacroGuardLogTs > 2 * 60 * 1000) {
+            lastMacroGuardLogTs = Date.now();
+            addBotLog({
+              botId: 'system',
+              botName: 'OKX Market Data Gate',
+              action: 'RISK_GUARD',
+              symbol: 'BTCUSDT',
+              message: `Новые входы в OKX LIVE заблокированы: ${cycleMarketGate.reason}`,
+              rttMs: systemState.pings.okx,
+            });
+          }
+          return;
+        }
+      }
+
       // Macro News Blackout Window Guard (FOMC / CPI / NFP / Live Macro Shock)
       const macroHeadline = getRecentMacroHeadlineFromFeed();
       const macroWindow = evaluateMacroNewsWindow({
@@ -7010,15 +7931,17 @@ async function runBotEngineCycle() {
           maxVolatilityPct: dynamicMaxVolPct,
         });
 
-        // Freqtrade ProtectionManager: filter out symbols already open (terminal OR OKX exchange), unsupported on Demo, or on cooldown
+        // Freqtrade ProtectionManager: filter out symbols already open (terminal OR OKX exchange), ORPHANED symbols, unsupported on Demo, or on cooldown
         const nowCycleTs = Date.now();
+        const orphanedSet = new Set((systemState.orphanedSymbols || []).map((x) => x.toUpperCase()));
         const hasLiveOkxCatalog =
           systemState.activeExchange === 'OKX' &&
-          lastOkxInstrumentsFetchTs > 0 &&
+          okxInstrumentRegistry.lastRefreshOk &&
           Object.keys(okxSwapInstrumentsCache).length > 30;
         const availableCandidates = rankedPairlist.filter((s) => {
           if (!isEligibleDynamicCryptoSymbol(s, goldAllowed)) return false;
           if (!allowedUniverseSet.has(s) || mergedPositions.openSymbolsSet.has(s)) return false;
+          if (orphanedSet.has(s.toUpperCase())) return false;
           if (systemState.activeExchange === 'OKX' && okxDemoUnsupportedSymbols.has(s)) return false;
           if (hasLiveOkxCatalog && !okxSwapInstrumentsCache[s]) return false;
           if (!evaluateSymbolCooldownGuard(symbolCooldowns, s, nowCycleTs).allowed) return false;
@@ -7088,6 +8011,49 @@ async function runBotEngineCycle() {
             const cBestBid = cBook.bids[0]?.price || priceMap[sym] || 100;
             const cBestAsk = cBook.asks[0]?.price || priceMap[sym] || 100;
 
+            const cBookMetaRaw = latestOkxOrderbookMetaBySymbol[sym];
+            const cBookMeta = cBookMetaRaw
+              ? {
+                  ...cBookMetaRaw,
+                  ageMs:
+                    cBookMetaRaw.localTs > 0
+                      ? Math.max(0, Date.now() - cBookMetaRaw.localTs)
+                      : Number.POSITIVE_INFINITY,
+                }
+              : buildMarketSnapshotMeta({
+                  exchange: systemState.activeExchange === 'BYBIT' ? 'BYBIT' : 'OKX',
+                  instId: toOkxSwapInstId(sym),
+                  symbol: sym,
+                  sourceKind: 'STALE_CACHE',
+                  exchangeTs: 0,
+                  localTs: 0,
+                  connectionOk: false,
+                  complete: false,
+                });
+            const cKlineMeta = latestOkxKlinesMetaBySymbol[`${sym}_15`];
+            const cObCheck = validateOkxOrderbookFreshness({
+              book: cBook,
+              meta: cBookMeta,
+              mode: systemState.mode,
+              activeExchange: systemState.activeExchange,
+            });
+            const cKlineCheck = validateOkxKlinesIntegrity({
+              bars: cKlines,
+              sourceExchange: cKlineMeta?.sourceExchange || (systemState.activeExchange === 'BYBIT' ? 'BYBIT' : 'OKX'),
+              sourceKind: cKlineMeta?.sourceKind || 'SYNTHETIC_FALLBACK',
+              mode: systemState.mode,
+              activeExchange: systemState.activeExchange,
+              intervalMs: 15 * 60_000,
+            });
+            const cMarketGate = canUseMarketDataForLiveEntry({
+              mode: systemState.mode,
+              activeExchange: systemState.activeExchange,
+              orderbookVerdict: cObCheck,
+              klinesValid: cKlineCheck.allowed,
+              klinesReason: cKlineCheck.reason,
+              tickersHealthy: tickers.length > 0 && cBook.bids.length > 0 && cBook.asks.length > 0,
+            });
+
             // Prioritize fresh (<=12h) exact symbol signals; ignore news headlines and stale (>12h) commentary
             const exactSymbolFeed = systemState.parsedNewsFeed.filter(
               (item) =>
@@ -7129,21 +8095,42 @@ async function runBotEngineCycle() {
               ? Math.max(-1, Math.min(1, relStrengthScore * 0.55 + feedBias * 0.45))
               : Math.max(-1, Math.min(1, relStrengthScore * 0.65));
 
-            const cFeatures = extractMarketFeatures({
-              bids: cBook.bids,
-              asks: cBook.asks,
-              klines: cKlines,
-              sentimentScore: rawSentiment,
-            });
-            const cEval = evaluateBotSignal(actingBot.brain!, cFeatures, {
+            const usedBars = cKlineCheck.closedBars.length >= 15 ? cKlineCheck.closedBars : cKlines;
+            const cFeatures =
+              cBook.bids.length > 0 && cBook.asks.length > 0 && usedBars.length > 0
+                ? extractMarketFeatures({
+                    bids: cBook.bids,
+                    asks: cBook.asks,
+                    klines: usedBars,
+                    sentimentScore: rawSentiment,
+                  })
+                : {
+                    obi: 0,
+                    spreadBps: 999,
+                    atrPct: 1.5,
+                    rsi14: 50,
+                    emaTrendBps: 0,
+                    vwapDeviationPct: 0,
+                    momentumSignal: 0,
+                    vwapSignal: 0,
+                    sentimentSignal: 0,
+                  };
+            const rawEval = evaluateBotSignal(actingBot.brain!, cFeatures, {
               marketRegime: systemState.currentMarketRegime,
               primaryEvent: systemState.currentAiConductorDecision?.primaryEvent,
               strategyId: actingBot.agentId,
             });
+            const cEval = cMarketGate.allowed
+              ? rawEval
+              : {
+                  ...rawEval,
+                  action: 'SKIP' as const,
+                  reasonSummary: `OKX Market Data Gate: ${cMarketGate.reason}`,
+                };
             return {
               symbol: sym,
               book: cBook,
-              klines: cKlines,
+              klines: usedBars,
               bestBid: cBestBid,
               bestAsk: cBestAsk,
               features: cFeatures,
@@ -7294,6 +8281,67 @@ async function runBotEngineCycle() {
             }
           }
 
+          // Stage 2: Check single-owner Position Ownership before allowing entry
+          const actingPortfolioId = resolvePortfolioIdForStrategy(actingBot.agentId, actingBot.strategyFamily);
+          const ownVerdict = checkOwnershipForEntry({
+            ownershipRecords: systemState.positionOwnership || [],
+            symbol: cand.symbol,
+            side: cand.evalResult.action,
+            strategyId: actingBot.agentId,
+            portfolioId: actingPortfolioId,
+            okxPosMode: systemState.okxPosMode || 'net_mode',
+          });
+          if (!ownVerdict.allowed) {
+            recordRiskEvent({
+              severity: 'INFO',
+              code: 'OWNERSHIP_CONFLICT',
+              symbol: cand.symbol,
+              strategyId: actingBot.agentId,
+              virtualPortfolioId: actingPortfolioId,
+              reason: ownVerdict.reason || 'Символ уже занят другой стратегией',
+              actionTaken: 'SKIP_CANDIDATE',
+            });
+            continue;
+          }
+
+          // Stage 4: Multi-Timeframe (1m-1D) Context Validation Gate
+          const candMtf = await buildSymbolMtfContext(cand.symbol, cand.klines).catch(() => null);
+          const isMeanRevStrategy =
+            String(actingBot.strategyFamily || '').toLowerCase().includes('mean') ||
+            actingBot.agentId.includes('reverter') ||
+            actingBot.agentId.includes('bounce') ||
+            actingBot.agentId.includes('contrarian');
+          if (candMtf) {
+            const mtfGate = canStrategyTradeUnderMtf({
+              mtf: candMtf,
+              side: cand.evalResult.action,
+              isMeanReversionStrategy: isMeanRevStrategy,
+            });
+            if (!mtfGate.allowed) {
+              recordRiskEvent({
+                severity: 'INFO',
+                code: 'MTF_CONFLICT',
+                symbol: cand.symbol,
+                strategyId: actingBot.agentId,
+                virtualPortfolioId: actingPortfolioId,
+                reason: mtfGate.reason || 'Конфликт MTF контекста 1m–1D',
+                actionTaken: 'SKIP_CANDIDATE',
+              });
+              addBotLog({
+                botId: actingBot.agentId,
+                botName: actingBot.name,
+                action: 'RISK_GUARD',
+                symbol: cand.symbol,
+                side: cand.evalResult.action,
+                price: cand.bestBid,
+                message: `MTF-фильтр (1m–1D) отклонил ${cand.evalResult.action} ${cand.symbol}: ${mtfGate.reason}`,
+                rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
+              });
+              continue;
+            }
+          }
+
+          (cand as any).mtfContext = candMtf || undefined;
           chosenCandidate = cand;
           break;
         }
@@ -7301,6 +8349,7 @@ async function runBotEngineCycle() {
           return;
         }
         const bestCandidate = chosenCandidate;
+        const bestMtfContext: MtfContextSnapshot | undefined = (bestCandidate as any).mtfContext;
 
         const targetSymbol = bestCandidate.symbol;
         const book = bestCandidate.book;
@@ -7450,12 +8499,34 @@ async function runBotEngineCycle() {
         const topBookPrice = side === 'LONG' ? bestAsk : bestBid;
         if (activeEx === 'OKX') {
           await refreshOkxSwapInstrumentsCache(false).catch(() => {});
+          if (systemState.mode === 'LIVE') {
+            const strictCheck = resolveInstrumentForOrder({
+              state: okxInstrumentRegistry,
+              symbol: targetSymbol,
+              mode: systemState.mode,
+              activeExchange: activeEx,
+              referencePrice: topBookPrice,
+            });
+            if (!strictCheck.ok) {
+              addBotLog({
+                botId: actingBot.agentId,
+                botName: actingBot.name,
+                action: 'RISK_GUARD',
+                symbol: targetSymbol,
+                side,
+                price: topBookPrice,
+                message: `OKX Instrument Gate заблокировал ${targetSymbol}: ${strictCheck.reason}`,
+                rttMs: systemState.pings.okx,
+              });
+              return;
+            }
+          }
         }
         const inst = resolveInstrumentRules(targetSymbol, topBookPrice);
         const priceDecimals = inst.tickSize < 0.01 ? 4 : inst.tickSize < 0.1 ? 2 : 1;
         const qtyDecimals = Math.max(0, -Math.floor(Math.log10(inst.qtyStep) + 1e-9));
 
-        // Worst-case Trend-Grid stop distance sizing: caps total filled Base+SO1+SO2 catastrophic SL loss at <= botRiskPct
+        // Single-shot Stop-Loss sizing (Stage 3 P0: DCA=OFF, no SO1/SO2 averaging)
         const gridRiskMetrics = computeEffectiveGridRiskStopPct(features.atrPct);
         const effectiveSlPct = gridRiskMetrics.effectiveWorstCaseStopPct;
         const slDist = topBookPrice * (effectiveSlPct / 100);
@@ -7477,8 +8548,65 @@ async function runBotEngineCycle() {
           riskPctLimit: botRiskPct / 100,
         });
 
-        // Strict Risk Firewall enforcement
-        if (!sizeCalc.allowed || sizeCalc.qty <= 0 || usedMargin + sizeCalc.marginRequired > effectiveCapital * 0.8) {
+        // Strict Risk Firewall & Stage 2 Global Risk Manager enforcement
+        const targetPortfolioId = resolvePortfolioIdForStrategy(actingBot.agentId, actingBot.strategyFamily);
+        const syncedPortfoliosPre = syncVirtualPortfolioAndOwnershipState();
+        const targetPortfolio =
+          syncedPortfoliosPre.find((vp) => vp.id === targetPortfolioId) || syncedPortfoliosPre[0];
+        const currentDdPct =
+          systemState.capitalUsdt > 0 ? (systemState.rolling24hPnlUsdt / systemState.capitalUsdt) * 100 : 0;
+        const runtimeSafetyCfg = buildRuntimeSafetyConfig({
+          activeExchange: activeEx,
+          mode: systemState.mode,
+          okxDemoTrading: systemState.okxDemoTrading,
+        });
+        const globalRiskVerdict = evaluateGlobalRiskGate({
+          mode: systemState.mode,
+          runtimePhase: systemState.runtimePhase,
+          runtimeSafetyConfig: runtimeSafetyCfg,
+          isKillSwitchActive: systemState.isKillSwitchActive,
+          killSwitchReason: systemState.killSwitchTriggerReason,
+          totalAccountCapitalUsdt: effectiveCapital,
+          rolling24hDrawdownPct: currentDdPct,
+          portfolio: targetPortfolio,
+          activePositions: (systemState.activePositions || []).map((p: any) => ({
+            symbol: p.symbol,
+            side: p.side,
+            qty: Number(p.qty) || 0,
+            entryVwap: Number(p.entryVwap) || 0,
+            slPrice: Number(p.slPrice) || Number(p.entryVwap) || 0,
+            leverage: Number(p.leverage) || 4,
+            virtualPortfolioId: p.virtualPortfolioId,
+          })),
+          candidate: {
+            symbol: targetSymbol,
+            side,
+            entryPrice: topBookPrice,
+            stopLossPrice: slPrice,
+            qty: sizeCalc.qty,
+            requestedLeverage: botLeverage,
+            isDcaAddOrder: false,
+          },
+        });
+
+        if (
+          !sizeCalc.allowed ||
+          sizeCalc.qty <= 0 ||
+          usedMargin + sizeCalc.marginRequired > effectiveCapital * 0.8 ||
+          !globalRiskVerdict.allowed
+        ) {
+          const rejectReason =
+            sizeCalc.rejectReason ||
+            (!globalRiskVerdict.allowed ? globalRiskVerdict.reason : 'Превышен лимит загрузки свободной маржи (80%)');
+          recordRiskEvent({
+            severity: 'WARNING',
+            code: globalRiskVerdict.rejectCode || 'RISK_FIREWALL_BLOCK',
+            symbol: targetSymbol,
+            strategyId: actingBot.agentId,
+            virtualPortfolioId: targetPortfolioId,
+            reason: rejectReason || 'Отказ риск-менеджера',
+            actionTaken: 'ENTRY_REJECTED',
+          });
           addBotLog({
             botId: actingBot.agentId,
             botName: actingBot.name,
@@ -7486,13 +8614,13 @@ async function runBotEngineCycle() {
             symbol: targetSymbol,
             side,
             price: topBookPrice,
-            message: `Риск-Файрвол заблокировал ордер ${targetSymbol}: ${sizeCalc.rejectReason || 'Превышен лимит загрузки свободной маржи (80%)'}.`,
+            message: `Риск-Файрвол заблокировал ордер ${targetSymbol}: ${rejectReason}.`,
             rttMs: activeEx === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
           });
           return;
         }
 
-        // Build Variant 3 Trend-Grid & DCA Pullback Plan (Base Order 40% + Safety Order #1 30% + Safety Order #2 30%)
+        // Single-shot entry plan (dcaEnabled: false => 100% baseOrderQty, safetyOrders: [])
         const strategyTpPct = typeof actingBot.targetTpPct === 'number' ? actingBot.targetTpPct : 2.75;
         const gridPlan = buildTrendGridPlan({
           side,
@@ -7503,6 +8631,7 @@ async function runBotEngineCycle() {
           minQty: inst.minQty,
           priceDecimals,
           tpTargetPct: strategyTpPct,
+          dcaEnabled: false,
         });
 
         let plannedQty = gridPlan.baseOrderQty;
@@ -7542,8 +8671,7 @@ async function runBotEngineCycle() {
         }
 
         let qty = l2Exec.executedQty;
-        const entryPrice = l2Exec.vwapPrice;
-        // Re-anchor grid plan to exact executed VWAP price
+        let entryPrice = l2Exec.vwapPrice;
         let finalGridPlan = buildTrendGridPlan({
           side,
           entryPrice,
@@ -7553,6 +8681,7 @@ async function runBotEngineCycle() {
           minQty: inst.minQty,
           priceDecimals,
           tpTargetPct: strategyTpPct,
+          dcaEnabled: false,
         });
 
         let exchangeOrderId: string | undefined;
@@ -7568,6 +8697,8 @@ async function runBotEngineCycle() {
               slPrice: finalGridPlan.catastrophicSlPrice,
               tpPrice: finalGridPlan.initialTpPrice,
               priceDecimals,
+              strategyId: actingBot.agentId,
+              virtualPortfolioId: actingBot.agentId,
             });
             if (!liveRes.ok) {
               const errMsg = String(liveRes.retMsg || '');
@@ -7602,6 +8733,20 @@ async function runBotEngineCycle() {
             }
             if (liveRes.executedBaseQty > 0) {
               qty = liveRes.executedBaseQty;
+            }
+            if (liveRes.averageFillPrice && liveRes.averageFillPrice > 0) {
+              entryPrice = liveRes.averageFillPrice;
+              finalGridPlan = buildTrendGridPlan({
+                side,
+                entryPrice,
+                totalPlannedQty: qty,
+                atrPct: features.atrPct,
+                qtyStep: inst.qtyStep,
+                minQty: inst.minQty,
+                priceDecimals,
+                tpTargetPct: strategyTpPct,
+                dcaEnabled: false,
+              });
             }
             exchangeOrderId = liveRes.orderId;
             exchangeAlgoId = liveRes.algoId;
@@ -7652,12 +8797,23 @@ async function runBotEngineCycle() {
           exchangeAlgoId,
           slPrice: finalGridPlan.catastrophicSlPrice,
           tpGrid,
-          safetyOrders: finalGridPlan.safetyOrders,
+          safetyOrders: [],
           tpTargetPct: finalGridPlan.tpTargetPct,
           fundingPaid: 0.0,
           openedAt: Date.now(),
           botId: actingBot.agentId,
           botName: actingBot.name,
+          virtualPortfolioId: targetPortfolioId,
+          mtfSummary: bestMtfContext
+            ? {
+                globalMacroBias: bestMtfContext.globalMacroBias,
+                primaryTrend4h: bestMtfContext.primaryTrend4h,
+                structure1h: bestMtfContext.structure1h,
+                setup15m: bestMtfContext.setup15m,
+                confirm5m: bestMtfContext.confirm5m,
+                alignmentScore: bestMtfContext.alignmentScore,
+              }
+            : undefined,
           xaiDecisionId: xaiId,
           isBreakEven: false,
           isTrailing: false,
@@ -7670,6 +8826,47 @@ async function runBotEngineCycle() {
         };
 
         systemState.activePositions.unshift(newPos);
+        systemState.positionOwnership = acquirePositionOwnership(systemState.positionOwnership || [], {
+          symbol: targetSymbol,
+          side,
+          ownerStrategyId: actingBot.agentId,
+          ownerPortfolioId: targetPortfolioId,
+          clientOrderId: posId,
+          exchangeOrderId: exchangeOrderId ?? null,
+        });
+        const entryMarginUsdt = Number(((newPos.entryVwap * newPos.qty) / newPos.leverage).toFixed(4));
+        const entryFeeUsdt = Number((newPos.entryVwap * newPos.qty * takerFeeRate).toFixed(4));
+        const botFill: ExchangeFillRecord = {
+          id: `fill-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: Date.now(),
+          clientOrderId: posId,
+          exchangeOrderId: exchangeOrderId ?? null,
+          strategyId: actingBot.agentId,
+          virtualPortfolioId: targetPortfolioId,
+          symbol: targetSymbol,
+          side,
+          filledQty: newPos.qty,
+          fillPrice: newPos.entryVwap,
+          feeUsdt: entryFeeUsdt,
+          mode: systemState.mode,
+        };
+        systemState.exchangeFills = [botFill, ...(systemState.exchangeFills || [])].slice(0, 200);
+        const syncedAfterEntry = syncVirtualPortfolioAndOwnershipState();
+        const entryVp = syncedAfterEntry.find((vp) => vp.id === targetPortfolioId);
+        systemState.portfolioLedger = [
+          createPortfolioLedgerEntry({
+            virtualPortfolioId: targetPortfolioId,
+            strategyId: actingBot.agentId,
+            symbol: targetSymbol,
+            eventType: 'RESERVE_MARGIN',
+            amountUsdt: -entryMarginUsdt,
+            balanceAfterUsdt: entryVp?.freeCapitalUsdt ?? systemState.capitalUsdt,
+            clientOrderId: posId,
+            exchangeOrderId,
+            description: `Резерв маржи ${side} ${targetSymbol} (${newPos.qty} · ${newPos.leverage}x) [${targetPortfolioId}]`,
+          }),
+          ...(systemState.portfolioLedger || []),
+        ].slice(0, 300);
 
         const xaiRecord: XaiDecisionRecord = {
           id: xaiId,
@@ -7695,6 +8892,8 @@ async function runBotEngineCycle() {
           contributions: evalResult.contributions,
           reasonSummary: evalResult.reasonSummary,
           positionId: posId,
+          virtualPortfolioId: targetPortfolioId,
+          mtfSummary: newPos.mtfSummary,
         };
 
         systemState.xaiDecisions.unshift(xaiRecord);
@@ -7702,8 +8901,6 @@ async function runBotEngineCycle() {
           systemState.xaiDecisions.pop();
         }
 
-        const so1Price = finalGridPlan.safetyOrders[0]?.triggerPrice ?? entryPrice;
-        const so2Price = finalGridPlan.safetyOrders[1]?.triggerPrice ?? entryPrice;
         const envPrefix =
           systemState.mode === 'LIVE'
             ? activeEx === 'OKX'
@@ -7720,7 +8917,7 @@ async function runBotEngineCycle() {
           symbol: targetSymbol,
           side,
           price: newPos.entryVwap,
-          message: `Сетка [${envPrefix} · Шаг 1/3 · ${newPos.leverage}x]: Вход ${side} ${targetSymbol} (${newPos.qty}) по $${newPos.entryVwap.toFixed(priceDecimals)}. Доборы: SO1 $${so1Price.toFixed(priceDecimals)}, SO2 $${so2Price.toFixed(priceDecimals)}. Стоп: $${finalGridPlan.catastrophicSlPrice.toFixed(priceDecimals)}. TP: $${finalGridPlan.initialTpPrice.toFixed(priceDecimals)} (+${finalGridPlan.tpTargetPct}%).`,
+          message: `Вход [${envPrefix} · DCA OFF · ${newPos.leverage}x]: ${side} ${targetSymbol} (${newPos.qty}) по $${newPos.entryVwap.toFixed(priceDecimals)}. Стоп: $${finalGridPlan.catastrophicSlPrice.toFixed(priceDecimals)}. TP: $${finalGridPlan.initialTpPrice.toFixed(priceDecimals)} (+${finalGridPlan.tpTargetPct}%).`,
           rttMs: activeEx === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
         });
 
@@ -7728,7 +8925,7 @@ async function runBotEngineCycle() {
           category: 'TRADE_OPEN',
           severity: 'INFO',
           title: `🟢 ${envPrefix}: ${targetSymbol} ${side} ${newPos.leverage}x`,
-          message: `${actingBot.name}: Вход $${newPos.entryVwap.toFixed(priceDecimals)} (${newPos.qty}), SO1 $${so1Price.toFixed(priceDecimals)} / SO2 $${so2Price.toFixed(priceDecimals)}, SL $${finalGridPlan.catastrophicSlPrice.toFixed(priceDecimals)}, TP $${finalGridPlan.initialTpPrice.toFixed(priceDecimals)} (+${finalGridPlan.tpTargetPct}%)`,
+          message: `${actingBot.name}: Вход $${newPos.entryVwap.toFixed(priceDecimals)} (${newPos.qty}), DCA=OFF, SL $${finalGridPlan.catastrophicSlPrice.toFixed(priceDecimals)}, TP $${finalGridPlan.initialTpPrice.toFixed(priceDecimals)} (+${finalGridPlan.tpTargetPct}%)`,
           symbol: targetSymbol,
           botName: actingBot.name,
           isUrgent: systemState.mode === 'LIVE',
@@ -8394,6 +9591,7 @@ export async function runAiConductorCycle(options?: {
       const freeAiRes = await callFreeCloudLlmFallback(prompt, {
         timeoutMs: 14000,
         jsonMode: true,
+        isBackgroundConductor: !options?.manualTrigger,
       });
       if (freeAiRes && freeAiRes.ok && freeAiRes.text) {
         decision = parseAiConductorResponse(freeAiRes.text, strategiesPerf, snapshot, {
@@ -8413,7 +9611,34 @@ export async function runAiConductorCycle(options?: {
       });
     }
 
-    const applied = applyConductorDecisionToAgents(systemState.agents, decision);
+    const contractValidation = validateAiCoordinatorContractV1({
+      timestamp: decision.timestamp,
+      primaryEvent: decision.primaryEvent,
+      allowedDirectionMode: decision.allowedDirectionMode,
+      blockedSymbols: decision.blockedSymbols,
+      selectedComboIds: decision.activeComboIds,
+      conflictResolutionNote: 'Single symbol owner selected by confidence & portfolio risk budget',
+      summary: decision.summary,
+      mutations: (decision.mutations || []).map((m) => ({
+        agentId: m.agentId,
+        reason: m.reason,
+        confidenceThresholdDelta: m.confidenceThresholdDelta,
+        riskPerTradePct: m.riskPerTradePct,
+        targetTpPct: m.targetTpPct,
+        atrMultiplier: m.atrMultiplier,
+      })),
+    });
+    if (!contractValidation.valid) {
+      recordRiskEvent({
+        severity: 'WARNING',
+        code: 'AI_CONTRACT_VALIDATION_FAILED',
+        reason: contractValidation.errors.join(', '),
+        actionTaken: 'FALLBACK_CONSERVATIVE_RULE',
+      });
+    }
+    const applied = contractValidation.valid
+      ? applyConductorDecisionToAgents(systemState.agents, decision)
+      : { mutatedIds: [] as string[] };
     systemState.lastAiConductorRunAt = decision.timestamp;
     systemState.currentAiConductorDecision = decision;
     systemState.aiConductorHistory = [decision, ...(systemState.aiConductorHistory || [])].slice(0, 24);
@@ -8586,6 +9811,14 @@ app.post('/api/bots/reset-brain', (req: Request, res: Response) => {
 
 // Update individual bot configuration (pause/resume, risk %, leverage, allowed symbols, TP/SL ratio, brain hyperparameters)
 app.post('/api/bots/config', (req: Request, res: Response) => {
+  const { sanitized, rejectedDcaAttempt } = enforceDcaDisabledPatch(req.body || {});
+  if (rejectedDcaAttempt) {
+    res.status(400).json({
+      error: 'DCA / усреднение (SO1/SO2) системно отключено на Stage 1/3 и не может быть включено через API.',
+      dcaEnabled: false,
+    });
+    return;
+  }
   const {
     agentId,
     isEnabled,
@@ -8599,7 +9832,7 @@ app.post('/api/bots/config', (req: Request, res: Response) => {
     learningRate,
     atrMultiplier,
     weights,
-  } = req.body;
+  } = sanitized as any;
 
   const bot = systemState.agents.find((a) => a.agentId === agentId);
   if (!bot) {
@@ -8676,14 +9909,15 @@ app.post('/api/bots/config', (req: Request, res: Response) => {
     botName: bot.name,
     action: 'SCAN_PASS',
     symbol: 'CONFIG',
-    message: `Обновлены параметры стратегии ${bot.name}: Статус=${bot.isEnabled ? 'АКТИВЕН' : 'ПАУЗА'}, Риск=${bot.riskPerTradePct}%, Плечо=${bot.leverage}x, RR=1:${bot.tpSlRatio}, Порог=${bot.brain.confidenceThreshold}, ATRx=${bot.brain.atrMultiplier}.`,
-    rttMs: systemState.pings.bybit,
+    message: `Обновлены параметры стратегии ${bot.name}: Статус=${bot.isEnabled ? 'АКТИВЕН' : 'ПАУЗА'}, Риск=${bot.riskPerTradePct}%, Плечо=${bot.leverage}x, RR=1:${bot.tpSlRatio}, Порог=${bot.brain.confidenceThreshold}, ATRx=${bot.brain.atrMultiplier} (DCA=OFF).`,
+    rttMs: systemState.activeExchange === 'OKX' ? systemState.pings.okx : systemState.pings.bybit,
   });
 
   savePersistedState();
 
   res.json({
     success: true,
+    dcaEnabled: false,
     bot,
     bots: systemState.agents,
   });
@@ -9067,6 +10301,7 @@ function buildWalletRiskTelemetry(summary: ReturnType<typeof calculatePortfolioS
 
 // Wallet, Portfolio & Trade History API
 app.get('/api/wallet', (_req: Request, res: Response) => {
+  const syncedPortfolios = syncVirtualPortfolioAndOwnershipState();
   const summary = calculatePortfolioSummary(
     systemState.capitalUsdt,
     systemState.activePositions,
@@ -9074,6 +10309,10 @@ app.get('/api/wallet', (_req: Request, res: Response) => {
     systemState.totalRealizedPnlUsdt
   );
   const riskTelemetry = buildWalletRiskTelemetry(summary);
+  const reconciliation = verifyPortfoliosReconcileWithAccount({
+    portfolios: syncedPortfolios,
+    totalAccountCapitalUsdt: systemState.capitalUsdt,
+  });
 
   res.json({
     mode: systemState.mode,
@@ -9083,6 +10322,11 @@ app.get('/api/wallet', (_req: Request, res: Response) => {
     ledger: systemState.walletLedger,
     activePositions: systemState.activePositions,
     agents: systemState.agents,
+    virtualPortfolios: syncedPortfolios,
+    portfolioLedger: systemState.portfolioLedger || [],
+    positionOwnership: systemState.positionOwnership || [],
+    riskEvents: systemState.riskEvents || [],
+    reconciliation,
     persistence: {
       enabled: true,
       storageFile: 'data/runtime_state.json',
@@ -10456,8 +11700,22 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
   const tgIdSet = isKeyValid(process.env.TG_API_ID);
   const tgHashSet = isKeyValid(process.env.TG_API_HASH);
 
+  const runtimeCfg = buildRuntimeSafetyConfig({
+    activeExchange: systemState.activeExchange,
+    mode: systemState.mode,
+    okxDemoTrading: systemState.okxDemoTrading,
+  });
+  const isOkxPrimary = (systemState.activeExchange || 'OKX') === 'OKX';
+
   res.json({
     activeExchange: systemState.activeExchange || 'OKX',
+    runtimePhase: systemState.runtimePhase,
+    dcaEnabled: false,
+    okxMarketDataHealthy: systemState.okxMarketDataHealthy,
+    okxInstrumentCatalogVerified: okxInstrumentRegistry.lastRefreshOk,
+    orphanedSymbols: systemState.orphanedSymbols || [],
+    unverifiedProtectionSymbols: systemState.unverifiedProtectionSymbols || [],
+    runtimeSafetyConfig: runtimeCfg,
     okxDemoTrading: systemState.okxDemoTrading !== false,
     okxPosMode: systemState.okxPosMode || 'net_mode',
     okxAccountEquityUsdt: systemState.okxAccountEquityUsdt,
@@ -10486,17 +11744,19 @@ app.get('/api/config/status', (_req: Request, res: Response) => {
     goldTradingEnabled: systemState.goldTradingEnabled !== false,
     dataSources: {
       marketData: {
-        provider: 'OKX V5 & Bybit V5 Multi-Exchange Gateway',
+        provider: isOkxPrimary ? 'OKX V5 Strict Gateway (Single Owner)' : 'Bybit V5 Public Gateway',
         type: 'REAL_LIVE_STREAM',
         requiresKey: false,
-        status: 'CONNECTED',
-        description: 'Реальные котировки, живой стакан L2-50, тикеры 24ч и ставки фандинга берутся напрямую с OKX V5 и Bybit V5.',
+        status: systemState.okxMarketDataHealthy ? 'CONNECTED' : 'DEGRADED',
+        description: isOkxPrimary
+          ? 'В LIVE на OKX используются строго свежие котировки, L2-50 стакан и спецификации OKX V5 (без fallback на Bybit или синтетические свечи).'
+          : 'Реальные котировки, живой стакан L2-50, тикеры 24ч и ставки фандинга.',
       },
       backupMarketData: {
-        provider: 'Bybit V5 & MEXC Public Gateway',
+        provider: isOkxPrimary ? 'Shadow Only Fallback (Disabled in LIVE)' : 'Bybit V5 & MEXC Public Gateway',
         type: 'REAL_LIVE_STREAM',
         requiresKey: false,
-        status: 'CONNECTED',
+        status: isOkxPrimary && systemState.mode === 'LIVE' ? 'ISOLATED_OFF' : 'CONNECTED',
       },
     },
     credentials: {
@@ -10758,6 +12018,162 @@ app.post('/api/config/gold-mode', (req: Request, res: Response) => {
     goldTradingEnabled: systemState.goldTradingEnabled,
     health: buildFullSystemHealthPayload(),
   });
+});
+
+// Stage 2: Virtual Portfolios, Position Ownership & Ledger API
+app.get('/api/portfolios', (_req: Request, res: Response) => {
+  const portfolios = syncVirtualPortfolioAndOwnershipState();
+  const reconciliation = verifyPortfoliosReconcileWithAccount({
+    portfolios,
+    totalAccountCapitalUsdt: systemState.capitalUsdt,
+  });
+  res.json({
+    ok: true,
+    accountEquityUsdt: systemState.okxAccountEquityUsdt ?? systemState.capitalUsdt,
+    workingCapitalUsdt: systemState.capitalUsdt,
+    okxPosMode: systemState.okxPosMode || 'net_mode',
+    killSwitchPolicy: systemState.killSwitchPolicy || 'BLOCK_NEW_ENTRIES_ONLY',
+    totalOpenStopRiskPct: computeTotalOpenStopRiskPct(),
+    portfolios,
+    ledger: (systemState.portfolioLedger || []).slice(0, 80),
+    exchangeFills: (systemState.exchangeFills || []).slice(0, 50),
+    positionOwnership: systemState.positionOwnership || [],
+    riskEvents: (systemState.riskEvents || []).slice(0, 50),
+    reconciliation,
+  });
+});
+
+app.post('/api/portfolios/allocations', (req: Request, res: Response) => {
+  const incoming = Array.isArray(req.body?.allocations) ? req.body.allocations : [];
+  const check = validatePortfolioAllocations(incoming);
+  if (!check.valid) {
+    res.status(400).json({ ok: false, error: check.error, totalPct: check.totalPct });
+    return;
+  }
+
+  const patchMap = new Map<string, { allocationPct: number; isTradingEnabled?: boolean }>();
+  for (const item of incoming) {
+    patchMap.set(String(item.id), {
+      allocationPct: Number(item.allocationPct),
+      isTradingEnabled: typeof item.isTradingEnabled === 'boolean' ? item.isTradingEnabled : undefined,
+    });
+  }
+
+  const current = syncVirtualPortfolioAndOwnershipState();
+  systemState.virtualPortfolios = current.map((vp) => {
+    const patch = patchMap.get(vp.id);
+    if (!patch) return vp;
+    return {
+      ...vp,
+      allocationPct: patch.allocationPct,
+      isTradingEnabled: patch.isTradingEnabled ?? vp.isTradingEnabled,
+    };
+  });
+
+  const portfolios = syncVirtualPortfolioAndOwnershipState();
+  const reconciliation = verifyPortfoliosReconcileWithAccount({
+    portfolios,
+    totalAccountCapitalUsdt: systemState.capitalUsdt,
+  });
+  systemState.portfolioLedger = [
+    createPortfolioLedgerEntry({
+      virtualPortfolioId: 'vp-reserve',
+      strategyId: 'operator',
+      symbol: 'USDT',
+      eventType: 'REBALANCE',
+      amountUsdt: 0,
+      balanceAfterUsdt: systemState.capitalUsdt,
+      description: `Обновлены доли виртуальных портфелей (сумма: ${check.totalPct}%)`,
+    }),
+    ...(systemState.portfolioLedger || []),
+  ].slice(0, 300);
+
+  savePersistedState(true);
+  res.json({ ok: true, totalPct: check.totalPct, portfolios, reconciliation });
+});
+
+// Stage 5: Shadow Learning & Candidate Evaluation API (Zero auto-mutation of production bots)
+app.get('/api/shadow/learning', (_req: Request, res: Response) => {
+  res.json({
+    ok: true,
+    autoMutationAllowed: false,
+    pythonContourMode: 'SHADOW_ONLY',
+    candidates: systemState.shadowCandidates || [],
+    trades: (systemState.shadowTrades || []).slice(0, 80),
+    evaluations: systemState.shadowEvaluations || [],
+  });
+});
+
+app.post('/api/shadow/candidates', (req: Request, res: Response) => {
+  const baseStrategyId = String(req.body?.baseStrategyId || 'agent-onnx-ppo-v2');
+  const agent = systemState.agents.find((a) => a.agentId === baseStrategyId) || systemState.agents[0];
+  const versionLabel = String(req.body?.versionLabel || `shadow-${Date.now().toString().slice(-4)}`).slice(0, 48);
+  const nowTs = Date.now();
+  const candidate: ShadowCandidate = {
+    id: `cand-${nowTs}-${Math.random().toString(36).slice(2, 5)}`,
+    baseStrategyId: agent?.agentId || baseStrategyId,
+    baseStrategyName: agent?.name || baseStrategyId,
+    versionLabel,
+    params: {
+      confidenceThreshold: Number(req.body?.confidenceThreshold ?? agent?.brain?.confidenceThreshold ?? 0.24),
+      atrMultiplier: Number(req.body?.atrMultiplier ?? agent?.brain?.atrMultiplier ?? 1.4),
+      targetTpPct: Number(req.body?.targetTpPct ?? agent?.targetTpPct ?? 2.8),
+      leverage: Math.max(2, Math.min(5, Number(req.body?.leverage ?? agent?.leverage ?? 4))),
+      dcaEnabled: false,
+    },
+    status: 'TESTING',
+    autoApplyAllowed: false,
+    createdAt: nowTs,
+    updatedAt: nowTs,
+  };
+  systemState.shadowCandidates = [candidate, ...(systemState.shadowCandidates || [])].slice(0, 30);
+  savePersistedState(true);
+  res.json({
+    ok: true,
+    candidate,
+    candidates: systemState.shadowCandidates,
+  });
+});
+
+app.post('/api/shadow/evaluate', (_req: Request, res: Response) => {
+  const nowTs = Date.now();
+  const candidates = systemState.shadowCandidates || [];
+  const trades = systemState.shadowTrades || [];
+  const evaluations: ShadowEvaluationReport[] = candidates.map((cand) => {
+    const report = evaluateShadowCandidate({
+      candidate: cand,
+      trades,
+      baselineCapitalUsdt: Math.max(10, systemState.capitalUsdt),
+      nowTs,
+    });
+    cand.status =
+      report.recommendation === 'KEEP'
+        ? 'RECOMMEND_KEEP'
+        : report.recommendation === 'REJECT'
+        ? 'RECOMMEND_REJECT'
+        : 'NEEDS_MORE_DATA';
+    cand.updatedAt = nowTs;
+    return report;
+  });
+  systemState.shadowEvaluations = evaluations;
+  savePersistedState(true);
+  res.json({
+    ok: true,
+    autoMutationAllowed: false,
+    candidates,
+    evaluations,
+  });
+});
+
+// Stage 4: Multi-Timeframe Context (1m - 1D) Inspector API
+app.get('/api/mtf/context', async (req: Request, res: Response) => {
+  try {
+    const symbol = String(req.query.symbol || 'BTCUSDT').toUpperCase();
+    const snapshot = await buildSymbolMtfContext(symbol);
+    res.json({ ok: true, symbol, snapshot });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err?.message || 'MTF context error' });
+  }
 });
 
 // Test Connectivity Probe
@@ -11992,25 +13408,141 @@ app.post('/api/updates/github/rollback', async (req: Request, res: Response) => 
   }
 });
 
+function collectSyncableWorkspaceFiles(rootDir: string, currentDir = rootDir, acc: string[] = []): string[] {
+  const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const absPath = path.join(currentDir, entry.name);
+    const relPath = path.relative(rootDir, absPath).replace(/\\/g, '/');
+    if (entry.isDirectory()) {
+      if (!shouldSyncFileToRepo(`${relPath}/__probe__`)) continue;
+      collectSyncableWorkspaceFiles(rootDir, absPath, acc);
+    } else if (entry.isFile()) {
+      if (shouldSyncFileToRepo(relPath)) {
+        acc.push(relPath);
+      }
+    }
+  }
+  return acc;
+}
+
 // Commit and Push local changes to GitHub from UI
 app.post('/api/updates/github/commit-push', async (req: Request, res: Response) => {
-  const { message } = req.body;
-  const commitMsg = (message || 'Auto-sync from ZimaTrade Web Terminal').replace(/"/g, '\\"');
+  const rawMessage = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+  const commitMsg = (rawMessage || 'Auto-sync from ZimaTrade Web Terminal').slice(0, 240);
   const cwd = process.cwd();
+  const { token: ghToken } = resolveGitHubTokenFromEnv(process.env);
+  const authArgs = ghToken ? ['-c', `http.extraHeader=${buildGitBasicAuthHeader(ghToken)}`] : [];
+
+  const runGit = async (args: string[], targetDir: string, timeout = 30000) => {
+    return execFilePromise('git', args, {
+      cwd: targetDir,
+      timeout,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+  };
+
+  let tempRepoDir: string | null = null;
   try {
     savePersistedState();
-    await execPromise('git add .', { cwd });
-    await execPromise(`git commit -m "${commitMsg}"`, { cwd });
-    const pushRes = await execPromise('git push origin main', { cwd, timeout: 25000 });
-    const newStatus = await getLiveGitStatus(false);
+    const hasLocalGit = fs.existsSync(path.join(cwd, '.git'));
+
+    if (hasLocalGit) {
+      await runGit(['add', '.'], cwd);
+      const statusRes = await runGit(['status', '--porcelain'], cwd);
+      if (!statusRes.stdout.trim()) {
+        const newStatus = await getLiveGitStatus(true);
+        res.json({
+          success: true,
+          message: 'Локальных изменений для отправки нет — репозиторий уже актуален.',
+          currentCommit: newStatus.currentCommit,
+          changedFilesCount: 0,
+        });
+        return;
+      }
+      await runGit(['commit', '-m', commitMsg], cwd);
+      const pushRes = await runGit([...authArgs, 'push', 'origin', 'main'], cwd, 35000);
+      const newStatus = await getLiveGitStatus(true);
+      res.json({
+        success: true,
+        message: 'Изменения успешно зафиксированы и выгружены на GitHub!',
+        currentCommit: newStatus.currentCommit,
+        stdout: redactGitHubSecrets(pushRes.stdout || pushRes.stderr, ghToken),
+      });
+      return;
+    }
+
+    if (!ghToken) {
+      res.status(400).json({
+        error:
+          'В контейнере нет локального .git и не найден секрет GITHUB_TOKEN (или GitHub). Добавьте токен в Settings → Secrets и нажмите Apply changes, либо используйте кнопку GitHub в верхней панели AI Studio.',
+      });
+      return;
+    }
+
+    tempRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zima-gh-sync-'));
+    await runGit([...authArgs, 'clone', '--depth=1', '--branch', 'main', GITHUB_REPO_URL, tempRepoDir], os.tmpdir(), 45000);
+
+    // Remove previously tracked files in temp clone before copying current clean workspace files
+    const existingEntries = fs.readdirSync(tempRepoDir);
+    for (const entry of existingEntries) {
+      if (entry === '.git' || entry === '.github') continue;
+      fs.rmSync(path.join(tempRepoDir, entry), { recursive: true, force: true });
+    }
+
+    const syncFiles = collectSyncableWorkspaceFiles(cwd);
+    for (const relPath of syncFiles) {
+      const srcPath = path.join(cwd, relPath);
+      const destPath = path.join(tempRepoDir, relPath);
+      fs.mkdirSync(path.dirname(destPath), { recursive: true });
+      fs.copyFileSync(srcPath, destPath);
+    }
+
+    await runGit(['config', 'user.name', 'zimaaa-dev'], tempRepoDir);
+    await runGit(['config', 'user.email', 'zimaaalab@gmail.com'], tempRepoDir);
+    await runGit(['add', '-A'], tempRepoDir);
+
+    const statusRes = await runGit(['status', '--porcelain'], tempRepoDir);
+    const changedLines = statusRes.stdout
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    if (changedLines.length === 0) {
+      const newStatus = await getLiveGitStatus(true);
+      res.json({
+        success: true,
+        message: 'Изменений относительно GitHub main не найдено — репозиторий уже актуален.',
+        currentCommit: newStatus.currentCommit,
+        changedFilesCount: 0,
+      });
+      return;
+    }
+
+    await runGit(['commit', '-m', commitMsg], tempRepoDir);
+    const revRes = await runGit(['rev-parse', '--short', 'HEAD'], tempRepoDir);
+    const commitHash = revRes.stdout.trim();
+    const pushRes = await runGit([...authArgs, 'push', 'origin', 'main'], tempRepoDir, 45000);
+    const newStatus = await getLiveGitStatus(true);
+
     res.json({
       success: true,
-      message: `Изменения успешно зафиксированы и выгружены на GitHub!`,
+      message: `Изменения (${changedLines.length} файлов) отправлены в GitHub main (коммит ${commitHash})!`,
+      commitHash,
+      changedFilesCount: changedLines.length,
       currentCommit: newStatus.currentCommit,
-      stdout: pushRes.stdout,
+      stdout: redactGitHubSecrets(pushRes.stdout || pushRes.stderr, ghToken),
     });
   } catch (err: any) {
-    res.status(500).json({ error: `Ошибка commit/push: ${err.message}` });
+    const safeMsg = redactGitHubSecrets(err?.stderr || err?.message || String(err), ghToken);
+    res.status(500).json({ error: `Ошибка commit/push: ${safeMsg}` });
+  } finally {
+    if (tempRepoDir && fs.existsSync(tempRepoDir)) {
+      try {
+        fs.rmSync(tempRepoDir, { recursive: true, force: true });
+      } catch {
+        // ignore temp cleanup error
+      }
+    }
   }
 });
 
@@ -12448,34 +13980,21 @@ ${JSON.stringify(recentNewsFeed, null, 2)}
     }
   }
 
-  // 2. Secondary fallback: Google Gemini (gemini-4-hydrogen) or Groq/OpenRouter if Ollama did not answer
-  if (!responseText && geminiAi && isKeyValid(process.env.GEMINI_API_KEY)) {
-    try {
-      const formattedContents = messages.map((m: any) => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }],
-      }));
-
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Gemini API call timed out after 7000ms')), 7000)
-      );
-
-      const genAiResult = await Promise.race([
-        geminiAi.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: formattedContents,
-          config: {
-            systemInstruction,
-          },
-        }),
-        timeoutPromise,
-      ]);
-
-      responseText = genAiResult.text || '';
+  // 2. Secondary fallback: Google Gemini with 429 quota guard, or Groq/OpenRouter if Ollama did not answer
+  if (!responseText) {
+    const formattedContents = messages.map((m: any) => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.content }],
+    }));
+    const geminiChatRes = await callGeminiWithQuotaGuard(formattedContents, {
+      systemInstruction,
+      timeoutMs: 7000,
+      isBackground: false,
+    });
+    if (geminiChatRes && geminiChatRes.ok && geminiChatRes.text) {
+      responseText = geminiChatRes.text;
       latencyMs = Date.now() - t0;
-      modelUsed = 'gemini-4-hydrogen';
-    } catch (err: any) {
-      console.warn('Gemini fallback to Groq/OpenRouter/Quant:', err?.message || err);
+      modelUsed = geminiChatRes.modelUsed;
     }
   }
 
@@ -13150,11 +14669,8 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`ZimaTrade AI Terminal running at http://0.0.0.0:${PORT}`);
-    // Load live OKX SWAP contract specs & sync private OKX account state if keys are configured
-    refreshOkxSwapInstrumentsCache(true).catch(() => {});
-    if (areOkxKeysConfigured()) {
-      syncOkxAccountState({ forceReconcile: true }).catch(() => {});
-    }
+    // Stage 1 Startup Reconciliation Gate (OKX SWAP specs + Exchange vs Terminal state before READY)
+    runStartupReconciliation().catch(() => {});
     setInterval(() => {
       if (areOkxKeysConfigured() && (systemState.activeExchange === 'OKX' || systemState.mode === 'LIVE')) {
         syncOkxAccountState().catch(() => {});

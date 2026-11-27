@@ -68,9 +68,11 @@ class InstrumentCache:
 
 instrument_cache = InstrumentCache()
 
-# Seed top tier pairs
-instrument_cache.set_rule("bybit", "BTCUSDT", "FUTURES", "0.1", "0.001", "0.001", "5.0", 10)
-instrument_cache.set_rule("bybit", "ETHUSDT", "FUTURES", "0.01", "0.01", "0.01", "5.0", 10)
-instrument_cache.set_rule("bybit", "SOLUSDT", "FUTURES", "0.01", "0.1", "0.1", "5.0", 10)
-instrument_cache.set_rule("okx", "BTC-USDT-SWAP", "FUTURES", "0.1", "0.01", "0.01", "5.0", 10)
+# Seed top tier pairs (OKX USDT-SWAP primary)
+instrument_cache.set_rule("okx", "BTC-USDT-SWAP", "FUTURES", "0.1", "0.01", "0.01", "5.0", 5)
+instrument_cache.set_rule("okx", "ETH-USDT-SWAP", "FUTURES", "0.01", "0.01", "0.01", "5.0", 5)
+instrument_cache.set_rule("okx", "SOL-USDT-SWAP", "FUTURES", "0.01", "0.1", "0.1", "5.0", 5)
+instrument_cache.set_rule("bybit", "BTCUSDT", "FUTURES", "0.1", "0.001", "0.001", "5.0", 5)
+instrument_cache.set_rule("bybit", "ETHUSDT", "FUTURES", "0.01", "0.01", "0.01", "5.0", 5)
+instrument_cache.set_rule("bybit", "SOLUSDT", "FUTURES", "0.01", "0.1", "0.1", "5.0", 5)
 instrument_cache.set_rule("mexc", "BTCUSDT", "SPOT", "0.01", "0.0001", "0.0001", "5.0", 1)

@@ -5,18 +5,19 @@ Immutable rules that cannot be bypassed or modified by any AI model or runtime c
 from typing import Tuple, Optional
 from decimal import Decimal
 import logging
+from zima_trade_ai.config.settings import settings
 from zima_trade_ai.core.instrument_cache import InstrumentSpec
 
 logger = logging.getLogger(__name__)
 
 
 class RiskFirewall:
-    MAX_RISK_PER_TRADE_PCT = 0.015  # 1.5% max risk of equity per trade
-    MAX_DAILY_DRAWDOWN_PCT = 0.050  # 5.0% rolling 24h Kill-Switch
-    MAX_HARD_LEVERAGE = 10          # 10x hard ceiling
-    SPREAD_GUARD_MAX_PCT = 0.0025   # 0.25% max allowable spread
-    FUNDING_GUARD_MINUTES = 15      # 15 minutes before settlement
-    FUNDING_GUARD_MAX_RATE = 0.001  # 0.10%
+    MAX_RISK_PER_TRADE_PCT = settings.MAX_RISK_PER_TRADE_PCT  # 0.5% trial default (settings-driven)
+    MAX_DAILY_DRAWDOWN_PCT = settings.MAX_DAILY_DRAWDOWN_PCT  # 2.0% rolling 24h trial limit
+    MAX_HARD_LEVERAGE = settings.MAX_HARD_LEVERAGE            # 5x hard ceiling
+    SPREAD_GUARD_MAX_PCT = settings.SPREAD_GUARD_MAX_PCT      # 0.25% max allowable spread
+    FUNDING_GUARD_MINUTES = settings.FUNDING_GUARD_MINUTES    # 15 minutes before settlement
+    FUNDING_GUARD_MAX_RATE = settings.FUNDING_GUARD_MAX_RATE  # 0.10%
 
     def __init__(self) -> None:
         self.is_global_kill_switch_active: bool = False

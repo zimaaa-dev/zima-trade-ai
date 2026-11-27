@@ -126,6 +126,34 @@ export const IntelligenceView: React.FC = () => {
   const [newInfluenceWeight, setNewInfluenceWeight] = useState<number>(0.8);
   const [addingSource, setAddingSource] = useState<boolean>(false);
 
+  // Stage 4: Multi-Timeframe (1m-1D) & AI Coordinator Contract v1.0 Inspector
+  const [mtfSymbol, setMtfSymbol] = useState<string>('BTCUSDT');
+  const [mtfSnapshot, setMtfSnapshot] = useState<any>(null);
+  const [loadingMtf, setLoadingMtf] = useState<boolean>(false);
+  const [conductorDecision, setConductorDecision] = useState<any>(null);
+
+  const fetchMtfAndContract = async (targetSym: string = mtfSymbol) => {
+    setLoadingMtf(true);
+    try {
+      const [mtfRes, aiRes] = await Promise.all([
+        fetch(`/api/mtf/context?symbol=${encodeURIComponent(targetSym)}`).catch(() => null),
+        fetch('/api/ai/conductor').catch(() => null),
+      ]);
+      if (mtfRes && mtfRes.ok) {
+        const mtfJson = await mtfRes.json();
+        if (mtfJson?.snapshot) setMtfSnapshot(mtfJson.snapshot);
+      }
+      if (aiRes && aiRes.ok) {
+        const aiJson = await aiRes.json();
+        setConductorDecision(aiJson?.latestDecision || aiJson);
+      }
+    } catch {
+      // ignore MTF/contract load errors
+    } finally {
+      setLoadingMtf(false);
+    }
+  };
+
   const fetchNewsSources = async () => {
     try {
       const safeParse = async (r: Response | null) => {
@@ -164,6 +192,7 @@ export const IntelligenceView: React.FC = () => {
 
   useEffect(() => {
     fetchNewsSources();
+    fetchMtfAndContract('BTCUSDT');
     handleParse(PRESET_SIGNALS[0].text);
     const timer = setInterval(fetchNewsSources, 15000);
     return () => clearInterval(timer);
@@ -980,6 +1009,127 @@ export const IntelligenceView: React.FC = () => {
               })}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* Stage 4: Multi-Timeframe Context (1m–1D) & AI Coordinator Contract v1.0 */}
+      <div
+        data-testid="mtf-context-panel"
+        className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 sm:p-5 space-y-4"
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-bold text-white">
+                Мультитаймфрейм-контекст (1m–1D) и Контракт ИИ v1.0
+              </h3>
+              <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-950 border border-slate-700 text-cyan-300">
+                Closed-Bar Only
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Согласованность трендов от 1D/4H до 5m/1m (только закрытые свечи) и валидированная схема решений ИИ-Дирижёра.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0 font-mono text-xs">
+            {(['BTCUSDT', 'ETHUSDT', 'SOLUSDT'] as const).map((sym) => (
+              <button
+                key={sym}
+                type="button"
+                onClick={() => {
+                  setMtfSymbol(sym);
+                  fetchMtfAndContract(sym);
+                }}
+                className={`px-2.5 py-1 rounded-lg border transition whitespace-nowrap shrink-0 ${
+                  mtfSymbol === sym
+                    ? 'bg-cyan-500 text-slate-950 border-cyan-400 font-bold'
+                    : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-700'
+                }`}
+              >
+                {sym}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => fetchMtfAndContract(mtfSymbol)}
+              disabled={loadingMtf}
+              className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 transition whitespace-nowrap shrink-0"
+            >
+              {loadingMtf ? 'Загрузка...' : 'Обновить MTF'}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 font-mono text-xs tabular-nums">
+          {(['1D', '4H', '1H', '15m', '5m', '1m'] as const).map((tf) => {
+            const tfState = mtfSnapshot?.timeframes?.[tf];
+            const bias = tfState?.trend || 'NEUTRAL';
+            return (
+              <div
+                key={tf}
+                className="bg-slate-950/90 border border-slate-800 rounded-lg p-3 space-y-1"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400 font-bold">{tf}</span>
+                  <span
+                    className={`font-bold text-[11px] ${
+                      bias === 'BULLISH'
+                        ? 'text-emerald-400'
+                        : bias === 'BEARISH'
+                        ? 'text-rose-400'
+                        : 'text-slate-300'
+                    }`}
+                  >
+                    {bias}
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-300">
+                  RSI: <strong>{tfState?.rsi14 ?? '—'}</strong> · ATR:{' '}
+                  <strong>{tfState?.atrPct ?? '—'}%</strong>
+                </div>
+                <div className="text-[10px] text-slate-500">
+                  Свечей: {tfState?.barsCount ?? 0} · {tfState?.isFresh ? 'Свежий' : 'Ожидание'}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 font-mono text-xs tabular-nums">
+          <div className="bg-slate-950/80 border border-slate-800 rounded-lg px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-slate-400">
+              Alignment Score ({mtfSymbol}):{' '}
+              <strong
+                className={
+                  (mtfSnapshot?.alignmentScore ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                }
+              >
+                {mtfSnapshot ? Number(mtfSnapshot.alignmentScore).toFixed(2) : '—'}
+              </strong>
+            </span>
+            <span className="text-slate-300">
+              Counter-Trend MR:{' '}
+              <strong className={mtfSnapshot?.allowCounterTrendMeanReversion !== false ? 'text-emerald-400' : 'text-amber-300'}>
+                {mtfSnapshot?.allowCounterTrendMeanReversion !== false ? 'РАЗРЕШЁН' : 'ЗАБЛОКИРОВАН'}
+              </strong>
+            </span>
+          </div>
+
+          <div className="bg-slate-950/80 border border-slate-800 rounded-lg px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-slate-400">
+              AI Coordinator Contract v1.0:{' '}
+              <strong className="text-cyan-300">
+                {conductorDecision?.primaryEvent || conductorDecision?.currentEvent || 'LOW_VOL_RANGE'}
+              </strong>
+            </span>
+            <span className="text-slate-300">
+              Режим:{' '}
+              <strong className="text-emerald-400">
+                {conductorDecision?.allowedDirectionMode || 'BOTH'}
+              </strong>
+            </span>
+          </div>
         </div>
       </div>
 

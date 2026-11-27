@@ -14,7 +14,7 @@ class VirtualExecutionResult(BaseModel):
     executed_qty: float
     vwap_price: float
     slippage_pct: float
-    fee_usdt: float  # Bybit Taker 0.055%
+    fee_usdt: float  # OKX SWAP Taker 0.05%
     simulated_rtt_ms: float
     reason: str = "FILLED"
 
@@ -31,8 +31,8 @@ class VirtualLimitOrder(BaseModel):
 
 
 class VirtualMatchingEngine:
-    TAKER_FEE_RATE = 0.00055  # 0.055%
-    MAKER_FEE_RATE = 0.00020  # 0.020%
+    TAKER_FEE_RATE = 0.00050  # OKX USDT-SWAP Taker 0.05%
+    MAKER_FEE_RATE = 0.00020  # OKX USDT-SWAP Maker 0.02%
     BASE_EXECUTION_OVERHEAD_MS = 20.0
 
     def __init__(self, live_rtt_ms: float = 25.0):

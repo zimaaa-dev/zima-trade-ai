@@ -104,6 +104,16 @@ export function calculateClosedTradeMetrics(params: {
   };
 }
 
+export function resolveHonestExitReason(params: {
+  requestedReason: 'TP_HIT' | 'SL_HIT' | 'MANUAL_CLOSE';
+  netPnlUsdt: number;
+}): 'TP_HIT' | 'SL_HIT' | 'MANUAL_CLOSE' {
+  if (params.requestedReason === 'TP_HIT' && params.netPnlUsdt <= 0) {
+    return 'SL_HIT';
+  }
+  return params.requestedReason;
+}
+
 export function calculatePortfolioSummary(
   baseCapitalUsdt: number,
   activePositions: ActivePositionInput[],

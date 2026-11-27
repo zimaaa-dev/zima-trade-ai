@@ -10,6 +10,7 @@ import {
   formatTelegramPeriodSummaryHtml,
   shouldSendDailyTelegramDigest,
   computeWorkingCapitalUsdt,
+  resolveHonestExitReason,
   type ClosedTradeRecord,
 } from './wallet-math';
 
@@ -453,4 +454,9 @@ test('computeWorkingCapitalUsdt enforces cap on $5000 OKX Demo, supports uncappe
   );
 });
 
-
+test('resolveHonestExitReason prevents TP_HIT label when net PnL after fees is <= 0', () => {
+  assert.equal(resolveHonestExitReason({ requestedReason: 'TP_HIT', netPnlUsdt: -0.02 }), 'SL_HIT');
+  assert.equal(resolveHonestExitReason({ requestedReason: 'TP_HIT', netPnlUsdt: 0 }), 'SL_HIT');
+  assert.equal(resolveHonestExitReason({ requestedReason: 'TP_HIT', netPnlUsdt: 0.03 }), 'TP_HIT');
+  assert.equal(resolveHonestExitReason({ requestedReason: 'MANUAL_CLOSE', netPnlUsdt: -0.02 }), 'MANUAL_CLOSE');
+});

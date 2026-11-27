@@ -61,6 +61,12 @@ export const RiskFirewallView: React.FC<RiskFirewallViewProps> = ({
   const allPassed = !isKillSwitch && !isInvalidDirection && !isSpreadBlown && !isFundingAdverse && slDistance > 0;
   const actualDrawdownLossPct = drawdownPct < 0 ? Math.abs(drawdownPct) : 0;
   const drawdownBarFillPct = Math.min(100, (actualDrawdownLossPct / 5.0) * 100);
+  const runtimePhase = health?.runtimePhase ?? 'READY';
+  const orphanedSymbols = health?.orphanedSymbols ?? [];
+  const unverifiedProtectionSymbols = health?.unverifiedProtectionSymbols ?? [];
+  const okxDataHealthy = health?.okxMarketDataHealthy !== false;
+  const okxCatalogVerified = health?.okxInstrumentCatalogVerified === true;
+  const exchangeOrdersCount = health?.exchangeOrdersCount ?? 0;
 
   return (
     <div className="p-3 sm:p-4 space-y-6 max-w-[1600px] mx-auto overflow-x-hidden">
@@ -87,11 +93,11 @@ export const RiskFirewallView: React.FC<RiskFirewallViewProps> = ({
                   Процедурный Риск-Файрвол (Risk Management Firewall)
                 </h2>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 whitespace-nowrap shrink-0">
-                  НЕИЗМЕНЯЕМОЕ ЯДРО PYTHON
+                  ЯДРО TYPESCRIPT · OKX SINGLE OWNER
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                Правила жестко зашиты в процедурный код ядра. Ни одна стратегия или внешняя настройка не может отключить или обойти эту защиту.
+                Правила жестко зашиты в процедурный контур исполнения. Ни одна стратегия, ИИ-дирижёр или внешняя настройка не может обойти защиту или включить DCA.
               </p>
             </div>
           </div>
@@ -99,6 +105,7 @@ export const RiskFirewallView: React.FC<RiskFirewallViewProps> = ({
           <div className="flex items-center gap-3 w-full sm:w-auto shrink-0">
             {isKillSwitch ? (
               <button
+                type="button"
                 onClick={onKillSwitchReset}
                 className="w-full sm:w-auto justify-center px-4 py-2.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl shadow-lg transition flex items-center gap-1.5"
               >
@@ -107,6 +114,7 @@ export const RiskFirewallView: React.FC<RiskFirewallViewProps> = ({
               </button>
             ) : (
               <button
+                type="button"
                 onClick={onKillSwitchTrigger}
                 className="w-full sm:w-auto justify-center px-4 py-2.5 bg-rose-900/60 hover:bg-rose-600 text-rose-200 hover:text-white border border-rose-500/40 text-xs font-bold rounded-xl transition flex items-center gap-1.5"
               >
@@ -117,8 +125,94 @@ export const RiskFirewallView: React.FC<RiskFirewallViewProps> = ({
           </div>
         </div>
 
+        {/* Stage 1, 2 & 3 Execution, Ownership & Reconciliation Telemetry Strip */}
+        <div
+          data-testid="firewall-safety-strip"
+          className="mt-4 grid grid-cols-2 lg:grid-cols-6 gap-3 pt-4 border-t border-slate-800/80 font-mono text-xs tabular-nums"
+        >
+          <div className="bg-slate-950/80 border border-slate-800 rounded-xl px-3.5 py-2.5">
+            <span className="text-[10px] text-slate-400 uppercase block">Фаза контура</span>
+            <span
+              className={`font-bold mt-0.5 block ${
+                runtimePhase === 'READY'
+                  ? 'text-emerald-400'
+                  : runtimePhase === 'RECOVERY'
+                  ? 'text-amber-300'
+                  : 'text-rose-400'
+              }`}
+            >
+              {runtimePhase}
+            </span>
+          </div>
+
+          <div className="bg-slate-950/80 border border-slate-800 rounded-xl px-3.5 py-2.5">
+            <span className="text-[10px] text-slate-400 uppercase block">Режим DCA / Усреднение</span>
+            <span className="font-bold text-cyan-300 mt-0.5 block">Выключен (OFF)</span>
+          </div>
+
+          <div className="bg-slate-950/80 border border-slate-800 rounded-xl px-3.5 py-2.5">
+            <span className="text-[10px] text-slate-400 uppercase block">Данные рынка OKX</span>
+            <span className={`font-bold mt-0.5 block ${okxDataHealthy ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {okxDataHealthy ? 'OKX Only · Здоров' : 'Деградация данных'}
+            </span>
+          </div>
+
+          <div className="bg-slate-950/80 border border-slate-800 rounded-xl px-3.5 py-2.5">
+            <span className="text-[10px] text-slate-400 uppercase block">Спецификации SWAP / Ордера</span>
+            <span className={`font-bold mt-0.5 block ${okxCatalogVerified ? 'text-emerald-400' : 'text-amber-300'}`}>
+              {okxCatalogVerified ? 'Каталог OKX OK' : 'Ожидание каталога'} · {exchangeOrdersCount} орд.
+            </span>
+          </div>
+
+          <div className="bg-slate-950/80 border border-slate-800 rounded-xl px-3.5 py-2.5">
+            <span className="text-[10px] text-slate-400 uppercase block">Совокупный стоп-риск</span>
+            <span className="font-bold text-emerald-400 mt-0.5 block">
+              {(health?.totalOpenStopRiskPct ?? 0).toFixed(2)}% / 4.50%
+            </span>
+          </div>
+
+          <div className="bg-slate-950/80 border border-slate-800 rounded-xl px-3.5 py-2.5">
+            <span className="text-[10px] text-slate-400 uppercase block">Блокировки владения</span>
+            <span className="font-bold text-cyan-300 mt-0.5 block">
+              {health?.activeOwnershipCount ?? 0} активов · {health?.okxPosMode || 'net_mode'}
+            </span>
+          </div>
+        </div>
+
+        <div className="mt-3 px-3.5 py-2 rounded-lg bg-slate-950/70 border border-slate-800/80 text-[11px] font-mono text-slate-300 flex flex-wrap items-center justify-between gap-2">
+          <span>
+            Политика Kill-Switch:{' '}
+            <strong className="text-cyan-300">
+              {health?.killSwitchPolicy === 'EMERGENCY_CLOSE_AND_BLOCK'
+                ? 'EMERGENCY_CLOSE_AND_BLOCK (экстренное закрытие + блок)'
+                : 'BLOCK_NEW_ENTRIES_ONLY (блок новых входов, активный SL сохраняется)'}
+            </strong>
+          </span>
+          <span className="text-slate-400">
+            Виртуальных портфелей: <strong className="text-white">{health?.virtualPortfoliosCount ?? 6}</strong> · Событий риска:{' '}
+            <strong className="text-white">{health?.riskEventsCount ?? 0}</strong>
+          </span>
+        </div>
+
+        {(orphanedSymbols.length > 0 || unverifiedProtectionSymbols.length > 0) && (
+          <div className="mt-3 p-3 rounded-xl bg-amber-950/50 border border-amber-500/40 text-xs font-mono text-amber-200 space-y-1">
+            {orphanedSymbols.length > 0 && (
+              <div>
+                ORPHANED позиции на OKX (входы по этим парам заблокированы до ручной сверки):{' '}
+                <strong className="text-white">{orphanedSymbols.join(', ')}</strong>
+              </div>
+            )}
+            {unverifiedProtectionSymbols.length > 0 && (
+              <div className="text-rose-300">
+                Неподтверждённый SL на бирже (новые входы остановлены):{' '}
+                <strong className="text-white">{unverifiedProtectionSymbols.join(', ')}</strong>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* 24h Drawdown Progress Bar */}
-        <div className="mt-5 pt-4 border-t border-slate-800/80">
+        <div className="mt-4 pt-4 border-t border-slate-800/80">
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono mb-2">
             <span className="text-slate-400">Скользящая просадка капитала за 24 часа:</span>
             <div className="flex flex-wrap items-center gap-2">

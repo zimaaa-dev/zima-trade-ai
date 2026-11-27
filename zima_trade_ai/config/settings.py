@@ -10,6 +10,13 @@ class Settings(BaseSettings):
     NODE_ROLE: str = Field(default="NODE_A_CLOUD_CORE")
     ENVIRONMENT: str = Field(default="production")
 
+    # Stage 1 & 3 Isolation Controls (TypeScript server.ts is sole LIVE owner)
+    ACTIVE_EXCHANGE: str = Field(default="OKX")
+    OKX_DEMO_TRADING: bool = Field(default=True)
+    ALLOW_PYTHON_LIVE_EXECUTION: bool = Field(default=False)
+    DCA_ENABLED: bool = Field(default=False)
+    SHADOW_LEARNING_ONLY: bool = Field(default=True)
+
     # Exchange credentials
     BYBIT_API_KEY: str = Field(default="")
     BYBIT_API_SECRET: str = Field(default="")
@@ -35,10 +42,10 @@ class Settings(BaseSettings):
     OLLAMA_MODEL_FAST: str = Field(default="gpt-oss:20b")
     OLLAMA_MODEL_REASONING: str = Field(default="gpt-oss:120b")
 
-    # Risk Firewall (Immutable Hard-limits)
-    MAX_RISK_PER_TRADE_PCT: float = Field(default=0.015)  # 1.5%
-    MAX_DAILY_DRAWDOWN_PCT: float = Field(default=0.050)  # 5.0%
-    MAX_HARD_LEVERAGE: int = Field(default=10)
+    # Risk Firewall (Stage 1 Conservative Trial Hard-limits)
+    MAX_RISK_PER_TRADE_PCT: float = Field(default=0.005)  # 0.5% trial default
+    MAX_DAILY_DRAWDOWN_PCT: float = Field(default=0.020)  # 2.0% rolling 24h trial kill-switch
+    MAX_HARD_LEVERAGE: int = Field(default=5)             # 5x hard ceiling
     SPREAD_GUARD_MAX_PCT: float = Field(default=0.0025)   # 0.25%
     FUNDING_GUARD_MINUTES: int = Field(default=15)
     FUNDING_GUARD_MAX_RATE: float = Field(default=0.001)  # 0.10%

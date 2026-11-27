@@ -192,6 +192,15 @@ export interface XaiDecisionRecord {
   };
   reasonSummary: string;
   positionId?: string;
+  virtualPortfolioId?: string;
+  mtfSummary?: {
+    globalMacroBias: string;
+    primaryTrend4h: string;
+    structure1h: string;
+    setup15m: string;
+    confirm5m: string;
+    alignmentScore: number;
+  };
   rlOutcome?: {
     closedAt: number;
     exitReason: string;
@@ -1780,8 +1789,10 @@ export function buildTrendGridPlan(params: {
   minQty: number;
   priceDecimals: number;
   tpTargetPct?: number;
+  dcaEnabled?: boolean;
 }): TrendGridPlan {
   const { side, entryPrice, totalPlannedQty, atrPct, qtyStep, minQty, priceDecimals } = params;
+  const dcaEnabled = params.dcaEnabled !== false;
   const dirSign = side === 'LONG' ? 1 : -1;
   const qtyDecimals = Math.max(0, -Math.floor(Math.log10(Math.max(1e-8, qtyStep)) + 1e-9));
 
@@ -1796,8 +1807,29 @@ export function buildTrendGridPlan(params: {
       ? Number(clamp(params.tpTargetPct, 2.20, 3.60).toFixed(2))
       : defaultTpTargetPct;
 
-  // Split totalPlannedQty into 40% Base + 30% SO1 + 30% SO2 if divisible into >= 3 * minQty;
-  // otherwise use minQty for Base and minQty for SO1 & SO2 so every coin supports grid averaging.
+  const initialTpPrice = Number(
+    (entryPrice * (1 + dirSign * (tpTargetPct / 100))).toFixed(priceDecimals)
+  );
+  const catastrophicSlPrice = Number(
+    (entryPrice * (1 - dirSign * (catastrophicSlPct / 100))).toFixed(priceDecimals)
+  );
+
+  if (!dcaEnabled) {
+    const singleShotQty = roundQty(totalPlannedQty);
+    return {
+      recommendedLeverage: 4,
+      baseOrderQty: singleShotQty,
+      totalMaxQty: singleShotQty,
+      gridStepPct,
+      tpTargetPct,
+      initialTpPrice,
+      catastrophicSlPct,
+      catastrophicSlPrice,
+      safetyOrders: [],
+    };
+  }
+
+  // Legacy Trend-Grid split (40% Base + 30% SO1 + 30% SO2) when dcaEnabled=true in isolated unit tests
   let baseOrderQty: number;
   let so1Qty: number;
   let so2Qty: number;
@@ -1822,13 +1854,6 @@ export function buildTrendGridPlan(params: {
   );
   const so2TriggerPrice = Number(
     (entryPrice * (1 - dirSign * (so2StepPct / 100))).toFixed(priceDecimals)
-  );
-
-  const initialTpPrice = Number(
-    (entryPrice * (1 + dirSign * (tpTargetPct / 100))).toFixed(priceDecimals)
-  );
-  const catastrophicSlPrice = Number(
-    (entryPrice * (1 - dirSign * (catastrophicSlPct / 100))).toFixed(priceDecimals)
   );
 
   const safetyOrders: TrendGridSafetyOrder[] = [

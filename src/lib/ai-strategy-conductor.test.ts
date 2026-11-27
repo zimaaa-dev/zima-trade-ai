@@ -511,6 +511,19 @@ test('evaluateUnifiedTradePolicy & evaluateCounterTrendDefenseExit enforce Rules
   assert.equal(softExitDefense.blockDca, true);
   assert.equal(softExitDefense.shouldExit, true);
 
+  // Micro-profit below fee breakeven (+0.03%) must NOT panic-close into a fee loss (-$0.02)
+  const microFeeZoneDefense = evaluateCounterTrendDefenseExit({
+    symbol: 'SOLUSDT',
+    side: 'LONG',
+    entryPrice: 100.0,
+    currentPrice: 100.03,
+    openedAt: now - 35 * 60000,
+    nowTs: now,
+    primaryEvent: 'MARKET_FLUSH_SHORT',
+  });
+  assert.equal(microFeeZoneDefense.blockDca, true);
+  assert.equal(microFeeZoneDefense.shouldExit, false);
+
   // Deep loss (-1.5%) does NOT panic-close and keeps DCA blocked while letting hard SL handle risk
   const deepHoldDefense = evaluateCounterTrendDefenseExit({
     symbol: 'DOTUSDT',

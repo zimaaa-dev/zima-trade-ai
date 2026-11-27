@@ -145,25 +145,69 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
   const [dismissedAlertIds, setDismissedAlertIds] = useState<string[]>([]);
   const [isSimulatingStress, setIsSimulatingStress] = useState<boolean>(false);
 
+  // Stage 2: Virtual Portfolios & Ledger state
+  const [virtualPortfolios, setVirtualPortfolios] = useState<any[]>([]);
+  const [portfolioLedger, setPortfolioLedger] = useState<any[]>([]);
+  const [portfolioReconcile, setPortfolioReconcile] = useState<{
+    reconciled: boolean;
+    totalAllocatedBasePct: number;
+    driftUsdt: number;
+  } | null>(null);
+  const [draftAllocPct, setDraftAllocPct] = useState<Record<string, number>>({});
+  const [savingAllocations, setSavingAllocations] = useState<boolean>(false);
+  const [allocNotice, setAllocNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
   const fetchWalletData = async () => {
     try {
-      const res = await fetch('/api/wallet').catch(() => null);
-      if (!res) return;
-      const ct = res.headers.get('content-type') || '';
-      if (res.ok && ct.includes('application/json')) {
-        const data = await res.json();
-        if (data && typeof data === 'object') {
-          setSummary(data.summary);
-          if (data.riskTelemetry) {
-            setRiskTelemetry(data.riskTelemetry);
+      const [res, pfRes] = await Promise.all([
+        fetch('/api/wallet').catch(() => null),
+        fetch('/api/portfolios').catch(() => null),
+      ]);
+      if (res) {
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (data && typeof data === 'object') {
+            setSummary(data.summary);
+            if (data.riskTelemetry) {
+              setRiskTelemetry(data.riskTelemetry);
+            }
+            setClosedTrades(data.closedTrades || []);
+            setLedger(data.ledger || []);
+            setActivePositions(data.activePositions || []);
+            setAgents(data.agents || []);
+            if (Array.isArray(data.virtualPortfolios)) {
+              setVirtualPortfolios(data.virtualPortfolios);
+            }
+            if (Array.isArray(data.portfolioLedger)) {
+              setPortfolioLedger(data.portfolioLedger);
+            }
+            if (data.reconciliation) {
+              setPortfolioReconcile(data.reconciliation);
+            }
+            if (data.persistence) {
+              setPersistence(data.persistence);
+            }
           }
-          setClosedTrades(data.closedTrades || []);
-          setLedger(data.ledger || []);
-          setActivePositions(data.activePositions || []);
-          setAgents(data.agents || []);
-          if (data.persistence) {
-            setPersistence(data.persistence);
+        }
+      }
+      if (pfRes) {
+        const pfCt = pfRes.headers.get('content-type') || '';
+        if (pfRes.ok && pfCt.includes('application/json')) {
+          const pfData = await pfRes.json();
+          if (Array.isArray(pfData?.portfolios)) {
+            setVirtualPortfolios(pfData.portfolios);
+            setDraftAllocPct((prev) => {
+              if (Object.keys(prev).length > 0) return prev;
+              const initMap: Record<string, number> = {};
+              for (const vp of pfData.portfolios) {
+                initMap[vp.id] = Number(vp.allocationPct) || 0;
+              }
+              return initMap;
+            });
           }
+          if (Array.isArray(pfData?.ledger)) setPortfolioLedger(pfData.ledger);
+          if (pfData?.reconciliation) setPortfolioReconcile(pfData.reconciliation);
         }
       }
     } catch {
@@ -384,6 +428,46 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
       console.error('Failed to toggle risk stress simulation:', err);
     } finally {
       setIsSimulatingStress(false);
+    }
+  };
+
+  const handleSavePortfolioAllocations = async () => {
+    if (virtualPortfolios.length === 0) return;
+    setSavingAllocations(true);
+    setAllocNotice(null);
+    try {
+      const allocations = virtualPortfolios.map((vp) => ({
+        id: vp.id,
+        allocationPct: Number(draftAllocPct[vp.id] ?? vp.allocationPct ?? 0),
+        isTradingEnabled: vp.isTradingEnabled,
+      }));
+      const res = await fetch('/api/portfolios/allocations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allocations }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) {
+        setAllocNotice({
+          type: 'error',
+          text: data?.error || 'Не удалось сохранить распределение долей',
+        });
+      } else {
+        if (Array.isArray(data.portfolios)) setVirtualPortfolios(data.portfolios);
+        if (data.reconciliation) setPortfolioReconcile(data.reconciliation);
+        setAllocNotice({
+          type: 'success',
+          text: `Доли виртуальных портфелей обновлены (сумма: ${data.totalPct}%).`,
+        });
+        await fetchWalletData();
+      }
+    } catch (err: any) {
+      setAllocNotice({
+        type: 'error',
+        text: err?.message || 'Ошибка сети при сохранении долей портфелей',
+      });
+    } finally {
+      setSavingAllocations(false);
     }
   };
 
@@ -1117,6 +1201,158 @@ export const WalletPortfolioView: React.FC<WalletPortfolioViewProps> = ({ onRefr
             </div>
           )}
         </div>
+      </div>
+
+      {/* Stage 2: Virtual Portfolios & Single Account Ledger */}
+      <div
+        data-testid="virtual-portfolios-panel"
+        className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 sm:p-5 space-y-4"
+      >
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-800 pb-3.5">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-bold text-white">
+                Виртуальные портфели (1 аккаунт OKX → 6 независимых долей)
+              </h3>
+              <span
+                className={`text-[11px] font-mono px-2 py-0.5 rounded border whitespace-nowrap shrink-0 ${
+                  portfolioReconcile?.reconciled !== false
+                    ? 'bg-emerald-950/60 text-emerald-300 border-emerald-500/40'
+                    : 'bg-rose-950/60 text-rose-300 border-rose-500/40'
+                }`}
+              >
+                {portfolioReconcile?.reconciled !== false ? 'Сверка: OK' : 'Расхождение долей'}
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 mt-1">
+              Лимиты свободного капитала, резерв маржи, PnL и просадка разделены по семействам стратегий без пересечения балансов.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0 font-mono text-xs tabular-nums">
+            <span className="px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-300">
+              Сумма долей:{' '}
+              <strong
+                className={
+                  virtualPortfolios.reduce((s, vp) => s + Number(draftAllocPct[vp.id] ?? vp.allocationPct ?? 0), 0) > 100
+                    ? 'text-rose-400'
+                    : 'text-cyan-300'
+                }
+              >
+                {virtualPortfolios
+                  .reduce((s, vp) => s + Number(draftAllocPct[vp.id] ?? vp.allocationPct ?? 0), 0)
+                  .toFixed(1)}
+                % / 100%
+              </strong>
+            </span>
+            <button
+              type="button"
+              disabled={savingAllocations}
+              onClick={handleSavePortfolioAllocations}
+              className="px-3.5 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 font-bold transition whitespace-nowrap shrink-0"
+            >
+              {savingAllocations ? 'Сохранение...' : 'Сохранить доли'}
+            </button>
+          </div>
+        </div>
+
+        {allocNotice && (
+          <div
+            className={`px-3 py-2 rounded-lg border text-xs font-mono ${
+              allocNotice.type === 'success'
+                ? 'bg-emerald-950/50 border-emerald-500/40 text-emerald-300'
+                : 'bg-rose-950/50 border-rose-500/40 text-rose-300'
+            }`}
+          >
+            {allocNotice.text}
+          </div>
+        )}
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left font-mono text-xs tabular-nums">
+            <thead className="text-[11px] text-slate-400 border-b border-slate-800 bg-slate-950/60">
+              <tr>
+                <th className="py-2 px-3">Портфель / Семейство</th>
+                <th className="py-2 px-3">Доля (%)</th>
+                <th className="py-2 px-3">Выделено</th>
+                <th className="py-2 px-3">Свободно</th>
+                <th className="py-2 px-3">Резерв маржи</th>
+                <th className="py-2 px-3">Realized PnL</th>
+                <th className="py-2 px-3">Drawdown</th>
+                <th className="py-2 px-3 text-right">Сделок</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/60">
+              {virtualPortfolios.map((vp) => {
+                const draftVal = draftAllocPct[vp.id] ?? vp.allocationPct ?? 0;
+                const pnlVal = Number(vp.realizedPnlUsdt || 0);
+                return (
+                  <tr key={vp.id} className="hover:bg-slate-800/30 transition-colors">
+                    <td className="py-2 px-3">
+                      <div className="font-bold text-white">{vp.label}</div>
+                      <div className="text-[10px] text-slate-400">
+                        {vp.strategyFamily} · {vp.isTradingEnabled ? 'Активен' : 'Резерв'}
+                      </div>
+                    </td>
+                    <td className="py-2 px-3">
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={5}
+                        value={draftVal}
+                        onChange={(e) =>
+                          setDraftAllocPct((prev) => ({
+                            ...prev,
+                            [vp.id]: Number(e.target.value),
+                          }))
+                        }
+                        className="w-16 bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-cyan-300 focus:outline-none focus:border-cyan-500"
+                      />
+                    </td>
+                    <td className="py-2 px-3 text-slate-200">${Number(vp.allocatedCapitalUsdt || 0).toFixed(2)}</td>
+                    <td className="py-2 px-3 text-emerald-300 font-semibold">${Number(vp.freeCapitalUsdt || 0).toFixed(2)}</td>
+                    <td className="py-2 px-3 text-amber-300">${Number(vp.reservedMarginUsdt || 0).toFixed(2)}</td>
+                    <td className={`py-2 px-3 font-bold ${pnlVal >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {pnlVal >= 0 ? '+' : ''}${pnlVal.toFixed(2)}
+                    </td>
+                    <td className="py-2 px-3 text-slate-300">{Number(vp.drawdownPct || 0).toFixed(2)}%</td>
+                    <td className="py-2 px-3 text-right text-slate-300">
+                      {vp.closedTradesCount || 0} ({vp.winningTradesCount || 0}W)
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {portfolioLedger.length > 0 && (
+          <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
+            <div className="text-[11px] font-mono text-slate-400 uppercase">
+              Последние проводки портфельного леджера ({portfolioLedger.length})
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] font-mono tabular-nums">
+              {portfolioLedger.slice(0, 4).map((entry) => (
+                <div
+                  key={entry.id}
+                  className="bg-slate-950/80 border border-slate-800 rounded-lg px-3 py-2 flex items-center justify-between gap-2"
+                >
+                  <div className="min-w-0 truncate text-slate-300">
+                    <span className="text-cyan-300 font-semibold">{entry.eventType}</span> · {entry.description}
+                  </div>
+                  <span
+                    className={`font-bold shrink-0 ${
+                      Number(entry.amountUsdt) >= 0 ? 'text-emerald-400' : 'text-amber-300'
+                    }`}
+                  >
+                    {Number(entry.amountUsdt) >= 0 ? '+' : ''}${Number(entry.amountUsdt).toFixed(2)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Interactive Recharts Equity Curve & Risk Firewall Protection Chart */}

@@ -52,7 +52,7 @@ def train_policy_gpu():
     loss.backward()
     optimizer.step()
 
-    logger.info("Epoch completed. Loss: %.4f", loss.item())
+    logger.info("Epoch completed. Loss: %.4f (Shadow Candidate only; auto-promotion to Production disabled).", loss.item())
     return model
 
 

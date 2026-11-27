@@ -11,6 +11,8 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "test": "tsx --test src/lib/*.test.ts",
+    "test:safety": "tsx --test src/lib/stage1-safety.test.ts",
+    "test:python": "python3 -m unittest discover -s zima_trade_ai/tests -t . -v",
     "pm2:start": "npx pm2 start ecosystem.config.cjs",
     "pm2:restart": "npx pm2 restart ecosystem.config.cjs",
     "pm2:logs": "npx pm2 logs zima-core",

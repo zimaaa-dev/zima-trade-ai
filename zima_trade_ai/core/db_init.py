@@ -98,6 +98,102 @@ CREATE TABLE IF NOT EXISTS positions (
     opened_ts INTEGER NOT NULL,
     closed_ts INTEGER
 );
+
+-- 6. Virtual Portfolios (Single OKX Account Capital Slices)
+CREATE TABLE IF NOT EXISTS virtual_portfolios (
+    portfolio_id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    owner_bot_id TEXT,
+    allocation_pct REAL NOT NULL,
+    allocated_capital_usdt REAL NOT NULL,
+    free_capital_usdt REAL NOT NULL,
+    reserved_margin_usdt REAL NOT NULL DEFAULT 0.0,
+    realized_pnl_usdt REAL NOT NULL DEFAULT 0.0,
+    unrealized_pnl_usdt REAL NOT NULL DEFAULT 0.0,
+    fees_paid_usdt REAL NOT NULL DEFAULT 0.0,
+    funding_paid_usdt REAL NOT NULL DEFAULT 0.0,
+    drawdown_pct REAL NOT NULL DEFAULT 0.0,
+    max_risk_per_trade_pct REAL NOT NULL DEFAULT 1.5,
+    updated_at INTEGER NOT NULL
+);
+
+-- 7. Portfolio Ledger & Position Ownership Locks
+CREATE TABLE IF NOT EXISTS portfolio_ledger (
+    ledger_id TEXT PRIMARY KEY,
+    timestamp INTEGER NOT NULL,
+    virtual_portfolio_id TEXT NOT NULL,
+    strategy_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    amount_usdt REAL NOT NULL,
+    balance_after_usdt REAL NOT NULL,
+    client_order_id TEXT,
+    exchange_order_id TEXT,
+    description TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS position_ownership (
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    owner_strategy_id TEXT NOT NULL,
+    owner_portfolio_id TEXT NOT NULL,
+    client_order_id TEXT,
+    exchange_order_id TEXT,
+    status TEXT NOT NULL CHECK(status IN ('ACTIVE', 'CLOSING', 'ORPHANED')),
+    acquired_at INTEGER NOT NULL,
+    PRIMARY KEY (symbol, side)
+);
+
+-- 8. Shadow Learning Isolation (Production vs Shadow Candidate vs Evaluation Report)
+CREATE TABLE IF NOT EXISTS shadow_candidates (
+    candidate_id TEXT PRIMARY KEY,
+    base_strategy_id TEXT NOT NULL,
+    version_label TEXT NOT NULL,
+    params_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    auto_apply_allowed INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS shadow_trades (
+    shadow_trade_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    regime TEXT NOT NULL,
+    qty REAL NOT NULL,
+    entry_price REAL NOT NULL,
+    exit_price REAL NOT NULL,
+    fee_usdt REAL NOT NULL,
+    funding_usdt REAL NOT NULL,
+    net_pnl_usdt REAL NOT NULL,
+    is_out_of_sample INTEGER NOT NULL DEFAULT 1,
+    closed_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS shadow_evaluations (
+    evaluation_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    trades_count INTEGER NOT NULL,
+    net_pnl_usdt REAL NOT NULL,
+    max_drawdown_pct REAL NOT NULL,
+    profit_factor REAL NOT NULL,
+    expectancy_usdt REAL NOT NULL,
+    recommendation TEXT NOT NULL CHECK(recommendation IN ('KEEP', 'REJECT', 'EXTEND_TEST')),
+    promotion_eligible INTEGER NOT NULL DEFAULT 0,
+    auto_applied INTEGER NOT NULL DEFAULT 0,
+    evaluated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS risk_events (
+    event_id TEXT PRIMARY KEY,
+    timestamp INTEGER NOT NULL,
+    severity TEXT NOT NULL,
+    code TEXT NOT NULL,
+    symbol TEXT,
+    strategy_id TEXT,
+    reason TEXT NOT NULL
+);
 """
 
 

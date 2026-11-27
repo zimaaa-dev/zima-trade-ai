@@ -85,12 +85,19 @@ class OnnxModelRunner:
             return
 
         model.trades_count += 1
-        # Update metrics and check promotion criteria
-        # Promotion: >= 30 trades, profit_factor >= 1.5, max_drawdown < 5.0%
+        # Stage 5 Shadow Learning isolation: never auto-promote models into LIVE production
+        from zima_trade_ai.config.settings import settings
         if model.mode == "QUARANTINE":
             if model.trades_count >= 30 and model.profit_factor >= 1.5 and model.max_drawdown_pct < 5.0:
-                model.mode = "LIVE"
-                logger.info(f"Model {model_id} PROMOTED to LIVE mode!")
+                if settings.SHADOW_LEARNING_ONLY:
+                    model.mode = "SHADOW_ELIGIBLE"
+                    logger.info(
+                        f"Model {model_id} passed shadow criteria (recommendation=KEEP), "
+                        "auto-promotion to LIVE blocked by SHADOW_LEARNING_ONLY."
+                    )
+                else:
+                    model.mode = "LIVE"
+                    logger.info(f"Model {model_id} PROMOTED to LIVE mode!")
 
 
 onnx_runner = OnnxModelRunner()

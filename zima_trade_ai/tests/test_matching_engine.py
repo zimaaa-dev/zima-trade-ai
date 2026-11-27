@@ -1,6 +1,12 @@
 """
 Unit tests for Matching Engine: VWAP slippage, limit order queue, and fees.
 """
+import unittest
+try:
+    import zima_trade_ai.tests  # noqa: F401
+except Exception:
+    pass
+
 from zima_trade_ai.engine.matching_engine import VirtualMatchingEngine
 
 
@@ -17,7 +23,7 @@ def test_vwap_slippage_calculation():
     assert res.filled is True
     assert res.executed_qty == 1.0
     assert res.vwap_price == 60005.0
-    assert abs(res.fee_usdt - (60005.0 * 0.00055)) < 1e-4
+    assert abs(res.fee_usdt - (60005.0 * 0.00050)) < 1e-4
     assert res.simulated_rtt_ms == 45.0  # 25ms + 20ms
 
 
@@ -54,3 +60,15 @@ def test_penetration_instant_fill():
     assert len(fills) == 1
     assert fills[0][0] == "ord_2"
     assert "PENETRATION" in fills[0][1].reason
+
+
+class MatchingEngineUnitTests(unittest.TestCase):
+    def test_vwap_slippage(self):
+        test_vwap_slippage_calculation()
+
+    def test_limit_queue_penetration(self):
+        test_limit_queue_and_penetration()
+
+    def test_penetration_fill(self):
+        test_penetration_instant_fill()
+

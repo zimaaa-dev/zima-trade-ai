@@ -39,9 +39,9 @@ class NightlyLGBMTrainer:
             }
 
             model = lgb.train(params, train_data, num_boost_round=50)
-            os.makedirs("/app/data/models", exist_ok=True)
-            model.save_model("/app/data/models/lgbm_nightly.txt")
-            logger.info("Nightly LightGBM training completed successfully.")
+            os.makedirs("/app/data/models/shadow_candidates", exist_ok=True)
+            model.save_model("/app/data/models/shadow_candidates/lgbm_shadow_candidate.txt")
+            logger.info("Nightly LightGBM Shadow Candidate saved (SHADOW_LEARNING_ONLY: no production mutation).")
             return True
         except Exception as e:
             logger.error(f"Nightly training failed: {e}")

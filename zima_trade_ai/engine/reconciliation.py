@@ -1,8 +1,8 @@
 """
-Exchange State Reconciliation & Disconnect Cancel All (DCP)
-Runs on startup to synchronize positions/orders. Configures Bybit v5 DCP (10s timeWindow).
+Exchange State Reconciliation (Python Read-Only Isolation)
+TypeScript server.ts owns OKX V5 LIVE state, startup reconciliation, and order tracking.
+Python contour MUST NEVER claim LIVE reconciliation success or drive Bybit DCP.
 """
-import asyncio
 import logging
 from typing import Dict, Any, List
 import aiohttp
@@ -16,49 +16,32 @@ class ExchangeReconciliation:
         self.is_reconciled: bool = False
         self.live_positions: List[Dict[str, Any]] = []
         self.live_orders: List[Dict[str, Any]] = []
+        self.ownership_note: str = "TS_EXECUTION_OWNER_ONLY"
 
-    async def reconcile_startup_state(self, session: aiohttp.ClientSession) -> bool:
+    async def reconcile_startup_state(self, session: aiohttp.ClientSession | None = None) -> bool:
         """
-        Polls Bybit REST API v5 for all open positions, pending orders, and wallet balance.
-        Reconciles local SQLite state with exchange state (Exchange = Single Source of Truth).
+        Python contour is isolated from LIVE exchange execution (ALLOW_PYTHON_LIVE_EXECUTION=False).
+        Always refuses LIVE ownership and keeps is_reconciled=False when Python LIVE is disabled.
         """
-        if not settings.BYBIT_API_KEY:
-            logger.info("Reconciliation: Dry-run mode (no API key configured). Local state considered synced.")
-            self.is_reconciled = True
-            return True
-
-        logger.info("Executing startup state reconciliation with Bybit v5...")
-        # Query positions
-        # In production this issues signed GET /v5/position/list?category=linear&settleCoin=USDT
-        try:
-            # Simulation of clean sync
+        if not settings.ALLOW_PYTHON_LIVE_EXECUTION:
+            self.is_reconciled = False
             self.live_positions = []
             self.live_orders = []
-            self.is_reconciled = True
-            logger.info("Reconciliation successful: 0 orphan orders detected.")
-            return True
-        except Exception as e:
-            logger.critical(f"Fatal error during state reconciliation: {e}")
-            self.is_reconciled = False
+            logger.warning(
+                "Python reconciliation skipped: TypeScript server.ts is sole OKX LIVE execution owner."
+            )
             return False
 
-    async def configure_bybit_dcp(self, ws: Any) -> bool:
-        """
-        Bybit v5 DCP (Disconnect Cancel All):
-        Sends op: 'dcp.setWindow' with timeWindow=10s.
-        If WebSocket disconnects, Bybit automatically cancels all resting limit orders after 10s.
-        """
-        try:
-            dcp_payload = {
-                "op": "dcp.setWindow",
-                "args": [10],  # 10 seconds disconnect window
-            }
-            # await ws.send(json.dumps(dcp_payload))
-            logger.info("Bybit v5 DCP (Disconnect Cancel All) armed with 10s timeWindow.")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to configure Bybit DCP: {e}")
-            return False
+        self.is_reconciled = False
+        return False
+
+    def get_read_only_snapshot(self) -> Dict[str, Any]:
+        return {
+            "active_exchange": settings.ACTIVE_EXCHANGE,
+            "allow_python_live_execution": settings.ALLOW_PYTHON_LIVE_EXECUTION,
+            "is_reconciled": self.is_reconciled,
+            "ownership_note": self.ownership_note,
+        }
 
 
 reconciliation = ExchangeReconciliation()

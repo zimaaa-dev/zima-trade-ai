@@ -258,6 +258,75 @@ export const AiArenaView: React.FC = () => {
   const [loadingConductor, setLoadingConductor] = useState<boolean>(true);
   const [runningConductor, setRunningConductor] = useState<boolean>(false);
   const [conductorError, setConductorError] = useState<string | null>(null);
+
+  // Stage 5: Shadow Learning Candidates & Evaluation State
+  const [shadowCandidates, setShadowCandidates] = useState<any[]>([]);
+  const [shadowTrades, setShadowTrades] = useState<any[]>([]);
+  const [shadowEvaluations, setShadowEvaluations] = useState<any[]>([]);
+  const [evaluatingShadow, setEvaluatingShadow] = useState<boolean>(false);
+  const [creatingShadowCand, setCreatingShadowCand] = useState<boolean>(false);
+  const [newShadowBaseId, setNewShadowBaseId] = useState<string>('agent-onnx-ppo-v2');
+  const [newShadowLabel, setNewShadowLabel] = useState<string>('v3-shadow-test');
+
+  const fetchShadowLearning = async () => {
+    try {
+      const res = await fetch('/api/shadow/learning').catch(() => null);
+      if (!res || !res.ok) return;
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) return;
+      const data = await res.json();
+      if (data?.ok) {
+        setShadowCandidates(data.candidates || []);
+        setShadowTrades(data.trades || []);
+        setShadowEvaluations(data.evaluations || []);
+      }
+    } catch {
+      // ignore fetch error
+    }
+  };
+
+  useEffect(() => {
+    fetchShadowLearning();
+  }, []);
+
+  const handleRunShadowEvaluation = async () => {
+    setEvaluatingShadow(true);
+    try {
+      const res = await fetch('/api/shadow/evaluate', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data?.ok) {
+        setShadowCandidates(data.candidates || []);
+        setShadowEvaluations(data.evaluations || []);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setEvaluatingShadow(false);
+    }
+  };
+
+  const handleCreateShadowCandidate = async () => {
+    setCreatingShadowCand(true);
+    try {
+      const res = await fetch('/api/shadow/candidates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          baseStrategyId: newShadowBaseId,
+          versionLabel: newShadowLabel.trim() || `shadow-${Date.now().toString().slice(-4)}`,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.ok) {
+        setShadowCandidates(data.candidates || []);
+        setNewShadowLabel(`v${(data.candidates?.length || 2) + 1}-shadow-test`);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setCreatingShadowCand(false);
+    }
+  };
   const [showConductorHistory, setShowConductorHistory] = useState<boolean>(false);
   const [strategyFilter, setStrategyFilter] = useState<'ALL' | 'COMBO' | 'STANDBY'>('ALL');
 
@@ -2655,6 +2724,126 @@ export const AiArenaView: React.FC = () => {
             </div>
           );
         })}
+      </div>
+
+      {/* Stage 5: Isolated Shadow Learning & Candidate Promotion Gate */}
+      <div
+        data-testid="shadow-learning-panel"
+        className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 sm:p-5 space-y-4"
+      >
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-800 pb-3.5">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-bold text-white">
+                Shadow Learning · Тестирование кандидатов стратегий (OKX 0.05% + OOS)
+              </h3>
+              <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-cyan-950/70 text-cyan-300 border border-cyan-500/40 whitespace-nowrap shrink-0">
+                autoAppliedToProduction: FALSE
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 mt-1">
+              Кандидаты проверяются параллельно на реальных закрытиях сделок с комиссиями OKX без авто-мутации боевых параметров.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <select
+              value={newShadowBaseId}
+              onChange={(e) => setNewShadowBaseId(e.target.value)}
+              className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
+            >
+              {(agents.length > 0 ? agents : [{ agentId: 'agent-onnx-ppo-v2', name: 'Delta-L2' }]).map((a) => (
+                <option key={a.agentId} value={a.agentId}>
+                  {a.name.split('·')[0].trim()}
+                </option>
+              ))}
+            </select>
+            <input
+              type="text"
+              value={newShadowLabel}
+              onChange={(e) => setNewShadowLabel(e.target.value)}
+              placeholder="Версия кандидата"
+              className="w-36 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500"
+            />
+            <button
+              type="button"
+              disabled={creatingShadowCand}
+              onClick={handleCreateShadowCandidate}
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-mono text-slate-200 font-semibold transition whitespace-nowrap shrink-0"
+            >
+              {creatingShadowCand ? 'Создание...' : '+ Кандидат'}
+            </button>
+            <button
+              type="button"
+              disabled={evaluatingShadow}
+              onClick={handleRunShadowEvaluation}
+              className="px-3.5 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-mono font-bold transition whitespace-nowrap shrink-0"
+            >
+              {evaluatingShadow ? 'Оценка...' : 'Оценить кандидатов'}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 font-mono text-xs tabular-nums">
+          {shadowCandidates.map((cand) => {
+            const report = shadowEvaluations.find((e) => e.candidateId === cand.id);
+            const candTradesCount = shadowTrades.filter((t) => t.candidateId === cand.id).length;
+            const rec = report?.recommendation || 'EXTEND_TEST';
+            return (
+              <div
+                key={cand.id}
+                className="bg-slate-950/90 border border-slate-800 rounded-lg p-3.5 space-y-2"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="font-bold text-white truncate">{cand.baseStrategyName}</div>
+                    <div className="text-[11px] text-cyan-300">
+                      {cand.versionLabel} · DCA: OFF · Lev {cand.params?.leverage ?? 4}x
+                    </div>
+                  </div>
+                  <span
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold border whitespace-nowrap shrink-0 ${
+                      rec === 'KEEP'
+                        ? 'bg-emerald-950/70 text-emerald-300 border-emerald-500/40'
+                        : rec === 'REJECT'
+                        ? 'bg-rose-950/70 text-rose-300 border-rose-500/40'
+                        : 'bg-amber-950/60 text-amber-300 border-amber-500/40'
+                    }`}
+                  >
+                    {rec}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-4 gap-2 bg-slate-900/70 border border-slate-800/80 rounded px-2.5 py-2 text-[11px]">
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">Сделок</span>
+                    <span className="text-white font-bold">{report?.tradesCount ?? candTradesCount}/30</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">Net PnL</span>
+                    <span className={`font-bold ${(report?.netPnlUsdt ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      ${Number(report?.netPnlUsdt ?? 0).toFixed(2)}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">Profit Factor</span>
+                    <span className="text-white font-bold">{Number(report?.profitFactor ?? 0).toFixed(2)}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">Max DD</span>
+                    <span className="text-amber-300 font-bold">{Number(report?.maxDrawdownPct ?? 0).toFixed(2)}%</span>
+                  </div>
+                </div>
+
+                {report?.blockingReasons && report.blockingReasons.length > 0 && (
+                  <div className="text-[10px] text-slate-400 truncate">
+                    Критерии допуска: {report.blockingReasons.slice(0, 2).join(' · ')}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* Bottom Studio: Decision Journal & Raw Bot Logs */}

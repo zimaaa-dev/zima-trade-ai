@@ -23,6 +23,12 @@ import type { TelegramBotStatus, TelegramNotificationToggles } from '../types.ts
 
 interface ConfigStatus {
   activeExchange?: string;
+  runtimePhase?: 'RECOVERY' | 'READY' | 'DEGRADED';
+  dcaEnabled?: boolean;
+  okxMarketDataHealthy?: boolean;
+  okxInstrumentCatalogVerified?: boolean;
+  orphanedSymbols?: string[];
+  unverifiedProtectionSymbols?: string[];
   okxDemoTrading?: boolean;
   okxPosMode?: string;
   okxAccountEquityUsdt?: number;
@@ -724,16 +730,64 @@ export const SettingsConfigView: React.FC = () => {
           <div className="flex items-center gap-2">
             <Key className="w-5 h-5 text-cyan-400" />
             <h3 className="font-extrabold text-sm text-white uppercase tracking-wider">
-              Статус подключений и биржевых шлюзов (Bybit V5 & OKX V5)
+              Статус подключений и шлюзов (OKX V5 Primary · Single Account)
             </h3>
           </div>
           <button
+            type="button"
             onClick={fetchStatus}
             className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-mono transition flex items-center gap-1"
           >
             <RefreshCw className="w-3 h-3" />
             <span>Обновить статус</span>
           </button>
+        </div>
+
+        {/* Stage 1 & 3 System Safety Invariants Bar */}
+        <div
+          data-testid="settings-safety-invariants"
+          className="mb-4 grid grid-cols-2 md:grid-cols-4 gap-2.5 bg-slate-950/90 border border-slate-800 rounded-xl p-3 font-mono text-xs"
+        >
+          <div>
+            <span className="text-[10px] text-slate-500 uppercase block">Контур исполнения</span>
+            <span
+              className={`font-bold mt-0.5 block ${
+                config?.runtimePhase === 'DEGRADED'
+                  ? 'text-rose-400'
+                  : config?.runtimePhase === 'RECOVERY'
+                  ? 'text-amber-300'
+                  : 'text-emerald-400'
+              }`}
+            >
+              {config?.runtimePhase || 'READY'} · TS Owner
+            </span>
+          </div>
+          <div>
+            <span className="text-[10px] text-slate-500 uppercase block">Усреднение (DCA)</span>
+            <span className="font-bold text-cyan-300 mt-0.5 block">
+              Выключен (OFF)
+            </span>
+          </div>
+          <div>
+            <span className="text-[10px] text-slate-500 uppercase block">OKX Market Data (LIVE)</span>
+            <span
+              className={`font-bold mt-0.5 block ${
+                config?.okxMarketDataHealthy === false ? 'text-rose-400' : 'text-emerald-400'
+              }`}
+            >
+              {config?.okxMarketDataHealthy === false ? 'Нестабильно / Стоп' : 'Только OKX · OK'}
+            </span>
+          </div>
+          <div>
+            <span className="text-[10px] text-slate-500 uppercase block">Каталог OKX SWAP</span>
+            <span
+              className={`font-bold mt-0.5 block ${
+                config?.okxInstrumentCatalogVerified ? 'text-emerald-400' : 'text-amber-300'
+              }`}
+            >
+              {config?.okxInstrumentCatalogVerified ? 'Спецификации OK' : 'Синхронизация'}
+            </span>
+          </div>
         </div>
 
         {/* Credentials Status Table */}
@@ -1813,10 +1867,10 @@ export const SettingsConfigView: React.FC = () => {
           <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3.5 space-y-1.5">
             <div className="flex items-center gap-1.5 font-bold text-amber-300">
               <AlertTriangle className="w-4 h-4 shrink-0" />
-              <span>3. Запрет догона свечи</span>
+              <span>3. Запрет догона и усреднения</span>
             </div>
             <p className="text-[11px] text-slate-400 leading-relaxed">
-              Не заходите вручную в ушедший импульс после +3–5% движения и при сильном перекосе толпы. Лучшие точки входа — откат по сетке (SO1/SO2), а не FOMO на хаях.
+              Не входите в ушедший импульс на хаях и не усредняйте убыточную позицию: система работает строго в режиме DCA=OFF — один подтверждённый вход с биржевым Stop-Loss.
             </p>
           </div>
 
@@ -1826,7 +1880,7 @@ export const SettingsConfigView: React.FC = () => {
               <span>4. Плечо 4x и дневной стоп -5%</span>
             </div>
             <p className="text-[11px] text-slate-400 leading-relaxed">
-              Низкое изолированное плечо 4x выдерживает рыночные «прострелы» до сетки усреднения без ликвидации, а дневной Kill-Switch -5% гарантированно останавливает серию неудач.
+              Низкое изолированное плечо 4x–5x защищает от резких «прострелов» без усреднения, а дневной Kill-Switch гарантированно останавливает серию неудач.
             </p>
           </div>
         </div>

@@ -7,6 +7,7 @@ import asyncio
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple, Any
 from pydantic import BaseModel
+from zima_trade_ai.config.settings import settings
 from zima_trade_ai.core.instrument_cache import instrument_cache, InstrumentSpec
 from zima_trade_ai.engine.risk_firewall import risk_firewall
 from zima_trade_ai.engine.matching_engine import matching_engine
@@ -20,13 +21,15 @@ class TPOrder(BaseModel):
 
 class ExecutionRouter:
     def __init__(self) -> None:
-        self.mode: str = "SHADOW"  # "SHADOW" | "LIVE"
+        self.mode: str = "SHADOW"  # Python contour is isolated to SHADOW-only execution
         self.symbol_locks: Dict[str, str] = {}  # symbol -> agent_id
         self.live_orders: Dict[str, Any] = {}
 
     def set_mode(self, new_mode: str) -> None:
         if new_mode not in ("SHADOW", "LIVE"):
             raise ValueError("Mode must be SHADOW or LIVE")
+        if new_mode == "LIVE" and not settings.ALLOW_PYTHON_LIVE_EXECUTION:
+            raise PermissionError("PYTHON_LIVE_DISABLED_USE_TS_EXECUTION_SERVICE")
         self.mode = new_mode
 
     def acquire_symbol_lock(self, symbol: str, agent_id: str) -> bool:
@@ -100,10 +103,30 @@ class ExecutionRouter:
         stop_loss: float,
         tp_grid: List[Dict[str, float]],
         l2_snapshot: Optional[dict] = None,
+        is_dca_order: bool = False,
     ) -> Dict[str, Any]:
         """
-        Routes order to either Mode 1 (Virtual Matching Engine) or Mode 2 (Live Exchange Gateway)
+        Routes order strictly to SHADOW L2 simulation.
+        Python LIVE execution and DCA averaging orders are hard-disabled by Stage 1/3 policy.
         """
+        if is_dca_order and not settings.DCA_ENABLED:
+            return {
+                "status": "REJECTED",
+                "reason": "DCA_DISABLED_BY_SYSTEM_POLICY",
+            }
+
+        if self.mode == "LIVE" or not settings.ALLOW_PYTHON_LIVE_EXECUTION and exchange.upper() == "OKX" and self.mode != "SHADOW":
+            return {
+                "status": "REJECTED",
+                "reason": "PYTHON_LIVE_DISABLED_USE_TS_EXECUTION_SERVICE",
+            }
+
+        if self.mode != "SHADOW":
+            return {
+                "status": "REJECTED",
+                "reason": "PYTHON_LIVE_DISABLED_USE_TS_EXECUTION_SERVICE",
+            }
+
         if not self.acquire_symbol_lock(symbol, agent_id):
             return {"status": "REJECTED", "reason": f"Symbol {symbol} locked by another live agent"}
 
@@ -111,40 +134,26 @@ class ExecutionRouter:
         if not spec:
             return {"status": "REJECTED", "reason": f"No instrument spec found for {symbol}"}
 
-        # Check TP Collapse
         collapsed_tps = self.collapse_tp_grid(Decimal(str(qty)), tp_grid, spec)
 
-        if self.mode == "SHADOW":
-            # Mode 1: Virtual L2 matching
-            asks = l2_snapshot.get("asks", []) if l2_snapshot else []
-            bids = l2_snapshot.get("bids", []) if l2_snapshot else []
-            exec_res = matching_engine.execute_market_order(
-                side="BUY" if side == "LONG" else "SELL",
-                target_qty=qty,
-                l2_asks=asks,
-                l2_bids=bids,
-            )
-            return {
-                "status": "FILLED" if exec_res.filled else "PARTIAL",
-                "mode": "SHADOW",
-                "vwap_price": exec_res.vwap_price,
-                "executed_qty": exec_res.executed_qty,
-                "slippage_pct": exec_res.slippage_pct,
-                "fee_usdt": exec_res.fee_usdt,
-                "simulated_rtt_ms": exec_res.simulated_rtt_ms,
-                "tp_orders": [t.dict() for t in collapsed_tps],
-            }
-        else:
-            # Mode 2: Live execution with attached SL/TP
-            # In live mode, request includes stopLoss and takeProfit directly to eliminate latency window
-            return {
-                "status": "LIVE_SUBMITTED",
-                "mode": "LIVE",
-                "symbol": symbol,
-                "qty": qty,
-                "attached_sl": stop_loss,
-                "attached_tp_grid": [t.dict() for t in collapsed_tps],
-            }
+        asks = l2_snapshot.get("asks", []) if l2_snapshot else []
+        bids = l2_snapshot.get("bids", []) if l2_snapshot else []
+        exec_res = matching_engine.execute_market_order(
+            side="BUY" if side == "LONG" else "SELL",
+            target_qty=qty,
+            l2_asks=asks,
+            l2_bids=bids,
+        )
+        return {
+            "status": "FILLED" if exec_res.filled else "PARTIAL",
+            "mode": "SHADOW",
+            "vwap_price": exec_res.vwap_price,
+            "executed_qty": exec_res.executed_qty,
+            "slippage_pct": exec_res.slippage_pct,
+            "fee_usdt": exec_res.fee_usdt,
+            "simulated_rtt_ms": exec_res.simulated_rtt_ms,
+            "tp_orders": [t.model_dump() if hasattr(t, "model_dump") else t.dict() for t in collapsed_tps],
+        }
 
 
 execution_router = ExecutionRouter()

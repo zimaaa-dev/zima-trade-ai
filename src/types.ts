@@ -11,6 +11,32 @@ export interface SystemHealth {
   okxPosMode?: 'net_mode' | 'long_short_mode';
   okxAccountEquityUsdt?: number;
   okxAvailableBalanceUsdt?: number;
+  runtimePhase?: 'RECOVERY' | 'READY' | 'DEGRADED';
+  dcaEnabled?: false;
+  okxMarketDataHealthy?: boolean;
+  okxInstrumentCatalogVerified?: boolean;
+  lastRecoveryAt?: number | null;
+  orphanedPositionsCount?: number;
+  orphanedSymbols?: string[];
+  unverifiedProtectionSymbols?: string[];
+  exchangeOrdersCount?: number;
+  virtualPortfoliosCount?: number;
+  activeOwnershipCount?: number;
+  shadowCandidatesCount?: number;
+  mtfServiceReady?: boolean;
+  totalOpenStopRiskPct?: number;
+  killSwitchPolicy?: 'BLOCK_NEW_ENTRIES_ONLY' | 'EMERGENCY_CLOSE_AND_BLOCK';
+  riskEventsCount?: number;
+  systemRecoveryLog?: Array<{
+    timestamp: number;
+    phase: 'RECOVERY' | 'READY' | 'DEGRADED';
+    okxSynced: boolean;
+    instrumentCatalogVerified: boolean;
+    matchedPositionsCount: number;
+    orphanedExchangePositions: string[];
+    missingLocalPositions: string[];
+    note: string;
+  }>;
   isKillSwitchActive: boolean;
   killSwitchTriggerReason: string | null;
   capitalUsdt: number;
@@ -80,6 +106,16 @@ export const DEFAULT_SYSTEM_HEALTH: SystemHealth = {
   okxDemoTrading: true,
   okxKeysConfigured: false,
   okxPosMode: 'net_mode',
+  runtimePhase: 'RECOVERY',
+  dcaEnabled: false,
+  okxMarketDataHealthy: true,
+  okxInstrumentCatalogVerified: false,
+  lastRecoveryAt: null,
+  orphanedPositionsCount: 0,
+  orphanedSymbols: [],
+  unverifiedProtectionSymbols: [],
+  exchangeOrdersCount: 0,
+  systemRecoveryLog: [],
   isKillSwitchActive: false,
   killSwitchTriggerReason: null,
   capitalUsdt: 10,
@@ -184,6 +220,15 @@ export interface Position {
   openedAt: number;
   botId?: string;
   botName?: string;
+  virtualPortfolioId?: string;
+  mtfSummary?: {
+    globalMacroBias: string;
+    primaryTrend4h: string;
+    structure1h: string;
+    setup15m: string;
+    confirm5m: string;
+    alignmentScore: number;
+  };
   isBreakEven?: boolean;
   isTrailing?: boolean;
 }
@@ -316,6 +361,15 @@ export interface XaiDecisionRecord {
   };
   reasonSummary: string;
   positionId?: string;
+  virtualPortfolioId?: string;
+  mtfSummary?: {
+    globalMacroBias: string;
+    primaryTrend4h: string;
+    structure1h: string;
+    setup15m: string;
+    confirm5m: string;
+    alignmentScore: number;
+  };
   rlOutcome?: {
     closedAt: number;
     exitReason: string;
