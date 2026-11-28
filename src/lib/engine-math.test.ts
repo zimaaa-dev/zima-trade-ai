@@ -274,6 +274,60 @@ test('High-Water-Mark Trailing Stop: never fires instant SL when DCA averaging s
   assert.equal(dcaTick.isTrailing, false);
 });
 
+test('Two-Stage Trailing Stop: moves to fee-safe Break-Even at +1.15% without choking, and activates trailing at +1.65%', () => {
+  // Stage 0: +0.85% move — neither BE nor trail triggers
+  const stage0 = computeTrailingStopPrice({
+    side: 'LONG',
+    entryPrice: 100.0,
+    currentPrice: 100.85,
+    currentSlPrice: 98.5,
+    priceDecimals: 2,
+    breakEvenActivationPct: 1.15,
+    activationPct: 1.65,
+    feeBufferPct: 0.25,
+    lockFraction: 0.58,
+  });
+  assert.equal(stage0.updated, false);
+  assert.equal(stage0.isBreakEven, false);
+  assert.equal(stage0.isTrailing, false);
+
+  // Stage 1: +1.25% move — moves SL cleanly to +0.25% BE cushion (leaves 1.0% room to breathe toward TP)
+  const stage1 = computeTrailingStopPrice({
+    side: 'LONG',
+    entryPrice: 100.0,
+    currentPrice: 101.25,
+    currentSlPrice: 98.5,
+    previousPeakPrice: stage0.newPeakPrice,
+    priceDecimals: 2,
+    breakEvenActivationPct: 1.15,
+    activationPct: 1.65,
+    feeBufferPct: 0.25,
+    lockFraction: 0.58,
+  });
+  assert.equal(stage1.updated, true);
+  assert.equal(stage1.newSlPrice, 100.25);
+  assert.equal(stage1.isBreakEven, true);
+  assert.equal(stage1.isTrailing, false);
+
+  // Stage 2: +1.70% move — activates trailing at 58% of peak (+0.99%)
+  const stage2 = computeTrailingStopPrice({
+    side: 'LONG',
+    entryPrice: 100.0,
+    currentPrice: 101.7,
+    currentSlPrice: stage1.newSlPrice,
+    previousPeakPrice: stage1.newPeakPrice,
+    priceDecimals: 2,
+    breakEvenActivationPct: 1.15,
+    activationPct: 1.65,
+    feeBufferPct: 0.25,
+    lockFraction: 0.58,
+  });
+  assert.equal(stage2.updated, true);
+  assert.equal(stage2.newSlPrice, 100.99);
+  assert.equal(stage2.isBreakEven, true);
+  assert.equal(stage2.isTrailing, true);
+});
+
 test('MSK Night Mode: applies stricter spread, 0.75x risk in Asia night, 0.5x around 03:00 MSK rollover, and 1.0x in daytime or when disabled', () => {
   // Daytime 14:30 MSK = 11:30 UTC
   const day = getMskSessionRiskProfile({

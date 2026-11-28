@@ -1727,7 +1727,10 @@ export const TREND_GRID_CORE_SYMBOLS = [
   'XAUUSDT',
 ] as const;
 
-export function computeEffectiveGridRiskStopPct(atrPct: number): {
+export function computeEffectiveGridRiskStopPct(
+  atrPct: number,
+  dcaEnabled = true
+): {
   gridStepPct: number;
   tpTargetPct: number;
   catastrophicSlPct: number;
@@ -1735,7 +1738,22 @@ export function computeEffectiveGridRiskStopPct(atrPct: number): {
 } {
   const safeAtr = Number.isFinite(atrPct) && atrPct > 0 ? atrPct : 1.35;
   const gridStepPct = Number(clamp(safeAtr * 0.75, 0.85, 1.10).toFixed(2));
-  // Realistic +9.6%..+13.0% ROE target at 4x leverage (+2.40%..+3.25% spot move) so winners harvest reliably before reversals
+
+  if (!dcaEnabled) {
+    // Single-shot mode (DCA=OFF): tight structural Stop-Loss (1.25%..1.65% spot = -5%..-6.6% ROE at 4x)
+    // and exact 1:1.85..1:2.0 Risk/Reward target (2.40%..3.25% spot = +9.6%..+13% ROE at 4x).
+    // Sizing SL and real exchange SL are 100% identical so losses never overshoot riskPerTradePct.
+    const singleShotSlPct = Number(clamp(safeAtr * 1.15, 1.25, 1.65).toFixed(2));
+    const tpTargetPct = Number(clamp(singleShotSlPct * 1.9, 2.40, 3.25).toFixed(2));
+    return {
+      gridStepPct,
+      tpTargetPct,
+      catastrophicSlPct: singleShotSlPct,
+      effectiveWorstCaseStopPct: singleShotSlPct,
+    };
+  }
+
+  // Legacy Trend-Grid mode (DCA=ON): +9.6%..+13.0% ROE target at 4x leverage (+2.40%..+3.25% spot move)
   const tpTargetPct = Number(clamp(gridStepPct * 2.75, 2.40, 3.25).toFixed(2));
   // Cap hard catastrophic SL at 2.20%–2.75% (-8.8%..-11.0% ROE at 4x), strictly behind SO2 (1.85 * step <= 2.04%)
   const catastrophicSlPct = Number(clamp(gridStepPct * 2.45, 2.20, 2.75).toFixed(2));
@@ -1801,7 +1819,10 @@ export function buildTrendGridPlan(params: {
     return Number(Math.max(minQty, stepped).toFixed(qtyDecimals));
   };
 
-  const { gridStepPct, tpTargetPct: defaultTpTargetPct, catastrophicSlPct } = computeEffectiveGridRiskStopPct(atrPct);
+  const { gridStepPct, tpTargetPct: defaultTpTargetPct, catastrophicSlPct } = computeEffectiveGridRiskStopPct(
+    atrPct,
+    dcaEnabled
+  );
   const tpTargetPct =
     typeof params.tpTargetPct === 'number' && Number.isFinite(params.tpTargetPct)
       ? Number(clamp(params.tpTargetPct, 2.20, 3.60).toFixed(2))

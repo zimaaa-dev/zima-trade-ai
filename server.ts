@@ -7382,7 +7382,9 @@ async function runBotEngineCycle() {
         const diff = (pos.currentPrice - pos.entryVwap) * dirSign;
         pos.unrealizedPnl = Number((diff * pos.qty).toFixed(2));
 
-        // 2a. Early Breakeven & Trailing Stop Protection (activates at +1.05% spot / +4.2% ROE at 4x, locks >= +0.25% above fees and trails 62% of wave)
+        // 2a. Two-Stage Breakeven & Trailing Stop Protection:
+        // Stage 1 (+1.15% spot): moves SL to fee-safe BE (+0.25%), leaving 0.90% room so normal noise never cuts winners early.
+        // Stage 2 (+1.65% spot): trails 58% of peak wave up toward TP (+2.4%..+3.2%).
         const trailUpdate = computeTrailingStopPrice({
           side: pos.side,
           entryPrice: pos.entryVwap,
@@ -7390,9 +7392,10 @@ async function runBotEngineCycle() {
           currentSlPrice: pos.slPrice,
           previousPeakPrice: pos.peakPrice,
           priceDecimals,
-          activationPct: 1.05,
+          breakEvenActivationPct: 1.15,
+          activationPct: 1.65,
           feeBufferPct: 0.25,
-          lockFraction: 0.62,
+          lockFraction: 0.58,
         });
         pos.peakPrice = trailUpdate.newPeakPrice;
         if (trailUpdate.updated) {
@@ -7501,7 +7504,7 @@ async function runBotEngineCycle() {
           }
         }
 
-        // 2d. Trend-Grid Time-Decayed Harvest Check (+3.2% initial -> +2.4% at 90m -> +1.7% at 4h -> +0.7% at 12h)
+        // 2d. Trend-Grid Time-Decayed Harvest Check (+3.2% initial -> +2.5% at 2h -> +2.0% at 4h -> +1.5% at 8h -> +1.1% at 12h)
         const ftExitCheck = evaluateFreqtradeShouldExit({
           side: pos.side,
           entryPrice: pos.entryVwap,
@@ -7512,10 +7515,10 @@ async function runBotEngineCycle() {
           openedAt: pos.openedAt || Date.now(),
           roiTable: {
             0: 0.032,
-            90: 0.024,
-            240: 0.017,
-            480: 0.011,
-            720: 0.007,
+            120: 0.025,
+            240: 0.020,
+            480: 0.015,
+            720: 0.011,
           },
         });
 
@@ -8526,8 +8529,8 @@ async function runBotEngineCycle() {
         const priceDecimals = inst.tickSize < 0.01 ? 4 : inst.tickSize < 0.1 ? 2 : 1;
         const qtyDecimals = Math.max(0, -Math.floor(Math.log10(inst.qtyStep) + 1e-9));
 
-        // Single-shot Stop-Loss sizing (Stage 3 P0: DCA=OFF, no SO1/SO2 averaging)
-        const gridRiskMetrics = computeEffectiveGridRiskStopPct(features.atrPct);
+        // Single-shot Stop-Loss sizing (Stage 3 P0: DCA=OFF, no SO1/SO2 averaging; sizing SL == actual OKX SL)
+        const gridRiskMetrics = computeEffectiveGridRiskStopPct(features.atrPct, false);
         const effectiveSlPct = gridRiskMetrics.effectiveWorstCaseStopPct;
         const slDist = topBookPrice * (effectiveSlPct / 100);
         const slPrice = side === 'LONG' ? topBookPrice - slDist : topBookPrice + slDist;

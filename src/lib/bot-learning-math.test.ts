@@ -527,6 +527,53 @@ test('computeEffectiveGridRiskStopPct caps full-grid SO1+SO2 worst-case SL loss 
   assert.equal(blockShortDca.allowed, false);
 });
 
+test('Single-shot (DCA=OFF) SL sizing aligns 1:1 with real OKX Stop-Loss and enforces >= 1.8x Risk/Reward on $300 capital', async () => {
+  const { calculateRiskFirewallOrderSize } = await import('./engine-math.ts');
+  const { DEFAULT_OKX_SWAP_INSTRUMENTS, buildOkxInstrumentRules } = await import('./okx-exchange.ts');
+  const entryPrice = 100.0;
+  const riskMeta = computeEffectiveGridRiskStopPct(1.25, false);
+
+  assert.equal(riskMeta.catastrophicSlPct, riskMeta.effectiveWorstCaseStopPct);
+  assert.ok(riskMeta.catastrophicSlPct >= 1.25 && riskMeta.catastrophicSlPct <= 1.65);
+  assert.ok(riskMeta.tpTargetPct / riskMeta.catastrophicSlPct >= 1.8);
+
+  const inst = buildOkxInstrumentRules(DEFAULT_OKX_SWAP_INSTRUMENTS.SOLUSDT, entryPrice);
+  const slForSizing = entryPrice * (1 + riskMeta.effectiveWorstCaseStopPct / 100);
+  const sizeCalc = calculateRiskFirewallOrderSize({
+    capital: 300,
+    entryPrice,
+    stopLossPrice: slForSizing,
+    side: 'SHORT',
+    requestedLeverage: 4,
+    instrument: inst,
+    riskPctLimit: 0.012, // 1.2% = $3.60 max risk
+  });
+  assert.equal(sizeCalc.allowed, true);
+
+  const plan = buildTrendGridPlan({
+    side: 'SHORT',
+    entryPrice,
+    totalPlannedQty: sizeCalc.qty,
+    atrPct: 1.25,
+    qtyStep: inst.qtyStep,
+    minQty: inst.minQty,
+    priceDecimals: 2,
+    dcaEnabled: false,
+  });
+  assert.equal(plan.safetyOrders.length, 0);
+  assert.equal(plan.catastrophicSlPct, riskMeta.catastrophicSlPct);
+
+  const grossSlLoss = (plan.catastrophicSlPrice - entryPrice) * plan.baseOrderQty;
+  const feesSl = (entryPrice + plan.catastrophicSlPrice) * plan.baseOrderQty * 0.0005;
+  const netSlLoss = grossSlLoss + feesSl;
+  assert.ok(netSlLoss <= 3.75, `Single-shot SL loss ($${netSlLoss.toFixed(2)}) must stay bounded near $3.60`);
+
+  const grossTpWin = (entryPrice - plan.initialTpPrice) * plan.baseOrderQty;
+  const feesTp = (entryPrice + plan.initialTpPrice) * plan.baseOrderQty * 0.0005;
+  const netTpWin = grossTpWin - feesTp;
+  assert.ok(netTpWin >= netSlLoss * 1.7, `Net TP ($${netTpWin.toFixed(2)}) must be >= 1.7x Net SL ($${netSlLoss.toFixed(2)})`);
+});
+
 test('resolveDynamicVolatilityLimitPct adapts cleanly to high-volatility flushes without blocking majors', () => {
   assert.equal(resolveDynamicVolatilityLimitPct({ currentMarketRegime: 'Боковик', isNightSession: false }), 10.0);
   assert.equal(

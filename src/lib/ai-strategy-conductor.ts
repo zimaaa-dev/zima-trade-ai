@@ -572,24 +572,24 @@ export function evaluateStalePositionExit(params: {
     entryPrice > 0 ? ((currentPrice - entryPrice) / entryPrice) * dirSign * 100 : 0;
   const holdHours = Math.max(0, (nowTs - (openedAt || nowTs)) / (1000 * 3600));
 
-  // 1. 14h+ flat/near-breakeven stagnation: free slot only when net profitable above fees (+0.20% .. +0.65%)
-  if (holdHours >= 14 && rawProfitPct >= 0.20 && rawProfitPct <= 0.65) {
+  // 1. 14h+ flat/near-breakeven stagnation: free slot only when real profit reached (+0.90% .. +1.35%), never micro-TPs
+  if (holdHours >= 14 && rawProfitPct >= 0.90 && rawProfitPct <= 1.35) {
     return {
       shouldExit: true,
-      reason: `Ротация зависшей позиции ${symbol} (${holdHours.toFixed(1)}ч в зоне +${rawProfitPct.toFixed(2)}%): освобождение слота.`,
+      reason: `Ротация зависшей позиции ${symbol} (${holdHours.toFixed(1)}ч в зоне +${rawProfitPct.toFixed(2)}%): фиксация прибыли и освобождение слота.`,
       holdHours,
       rawProfitPct,
     };
   }
 
-  // 2. 20h+ counter-event deadweight: exit cleanly only when net profitable above fees (+0.18% .. +0.50%)
+  // 2. 20h+ counter-event deadweight: exit cleanly only when meaningful profit reached (+0.85% .. +1.25%)
   const isCounterEvent =
     (primaryEvent === 'BULL_EXPANSION' && side === 'SHORT') ||
     (primaryEvent === 'MARKET_FLUSH_SHORT' && side === 'LONG');
-  if (holdHours >= 20 && isCounterEvent && rawProfitPct >= 0.18 && rawProfitPct <= 0.50) {
+  if (holdHours >= 20 && isCounterEvent && rawProfitPct >= 0.85 && rawProfitPct <= 1.25) {
     return {
       shouldExit: true,
-      reason: `Ротация контр-трендовой позиции ${symbol} (${holdHours.toFixed(1)}ч против события ${primaryEvent}).`,
+      reason: `Ротация контр-трендовой позиции ${symbol} (${holdHours.toFixed(1)}ч против события ${primaryEvent}, +${rawProfitPct.toFixed(2)}%).`,
       holdHours,
       rawProfitPct,
     };
@@ -862,11 +862,11 @@ export function evaluateCounterTrendDefenseExit(input: CounterTrendDefenseInput)
   const rawProfitPct = entryPrice > 0 ? ((currentPrice - entryPrice) / entryPrice) * dirSign * 100 : 0;
   const holdMinutes = Math.max(0, (nowTs - (openedAt || nowTs)) / 60000);
 
-  // Require >= +0.22% raw move (above ~0.10% OKX round-trip taker fees + spread) unless critical security/delist news
+  // Require >= +0.85% raw move (no micro-TP exits at +0.22%) unless critical security/delist news
   if (
-    holdMinutes >= 20 &&
-    ((rawProfitPct >= 0.22 && rawProfitPct <= 1.05) ||
-      (hasCriticalRiskNewsOnSymbol && rawProfitPct >= -0.45 && rawProfitPct <= 1.05))
+    holdMinutes >= 30 &&
+    ((rawProfitPct >= 0.85 && rawProfitPct <= 1.35) ||
+      (hasCriticalRiskNewsOnSymbol && rawProfitPct >= -0.45 && rawProfitPct <= 1.35))
   ) {
     return {
       isCounterTrendOrNews: true,
@@ -1195,7 +1195,7 @@ export function applyConductorDecisionToAgents<
       }
       if (typeof mut.targetTpPct === 'number') {
         agent.targetTpPct = Number(clampNum(mut.targetTpPct, 2.2, 3.5).toFixed(2));
-        agent.tpSlRatio = Number(clampNum(agent.targetTpPct / 1.75, 1.2, 2.2).toFixed(1));
+        agent.tpSlRatio = Number(clampNum(agent.targetTpPct / 1.45, 1.4, 2.4).toFixed(1));
       }
       if (typeof mut.atrMultiplier === 'number') {
         agent.brain.atrMultiplier = Number(clampNum(mut.atrMultiplier, 1.2, 1.85).toFixed(2));

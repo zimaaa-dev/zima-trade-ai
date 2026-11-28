@@ -324,8 +324,8 @@ test('resolveCorrelationCapBySlots and evaluateStalePositionExit prevent multi-d
   assert.equal(resolveCorrelationCapBySlots(2, false), 2);
 
   const now = 1795341600000;
-  // 18h held near-flat ETHUSDT (+0.28%) should rotate out to free slot
-  const ethFlatStale = evaluateStalePositionExit({
+  // 18h held ETHUSDT in micro-TP zone (+0.28%) must NOT close in a micro-TP
+  const ethMicroFlat = evaluateStalePositionExit({
     symbol: 'ETHUSDT',
     side: 'LONG',
     entryPrice: 1681.2,
@@ -334,7 +334,19 @@ test('resolveCorrelationCapBySlots and evaluateStalePositionExit prevent multi-d
     nowTs: now,
     primaryEvent: 'BULL_EXPANSION',
   });
-  assert.equal(ethFlatStale.shouldExit, true);
+  assert.equal(ethMicroFlat.shouldExit, false);
+
+  // 18h held ETHUSDT with meaningful >= +0.90% profit (+1.00%) should rotate out to free slot
+  const ethProfitStale = evaluateStalePositionExit({
+    symbol: 'ETHUSDT',
+    side: 'LONG',
+    entryPrice: 1681.2,
+    currentPrice: 1698.1,
+    openedAt: now - 18 * 3600 * 1000,
+    nowTs: now,
+    primaryEvent: 'BULL_EXPANSION',
+  });
+  assert.equal(ethProfitStale.shouldExit, true);
 
   // 40h held XAUUSDT SHORT during BULL_EXPANSION (-0.54%) should rotate out
   const xauCounterStale = evaluateStalePositionExit({
@@ -497,13 +509,13 @@ test('evaluateUnifiedTradePolicy & evaluateCounterTrendDefenseExit enforce Rules
   assert.equal(blockedCriticalNews.allowed, false);
   assert.equal(blockedCriticalNews.vetoSource, 'NEWS');
 
-  // 4. Open counter-trend LONG in MARKET_FLUSH_SHORT blocks DCA and exits gracefully near breakeven after >=20m
+  // 4. Open counter-trend LONG in MARKET_FLUSH_SHORT blocks DCA and exits gracefully only once meaningful profit (+0.95%) is reached after >=30m
   const now = 1795456989000;
   const softExitDefense = evaluateCounterTrendDefenseExit({
     symbol: 'DOTUSDT',
     side: 'LONG',
     entryPrice: 1.0,
-    currentPrice: 1.003,
+    currentPrice: 1.0095,
     openedAt: now - 35 * 60000,
     nowTs: now,
     primaryEvent: 'MARKET_FLUSH_SHORT',
@@ -511,12 +523,12 @@ test('evaluateUnifiedTradePolicy & evaluateCounterTrendDefenseExit enforce Rules
   assert.equal(softExitDefense.blockDca, true);
   assert.equal(softExitDefense.shouldExit, true);
 
-  // Micro-profit below fee breakeven (+0.03%) must NOT panic-close into a fee loss (-$0.02)
+  // Micro-profit (+0.30%) must NOT panic-close into a micro-TP
   const microFeeZoneDefense = evaluateCounterTrendDefenseExit({
     symbol: 'SOLUSDT',
     side: 'LONG',
     entryPrice: 100.0,
-    currentPrice: 100.03,
+    currentPrice: 100.3,
     openedAt: now - 35 * 60000,
     nowTs: now,
     primaryEvent: 'MARKET_FLUSH_SHORT',
