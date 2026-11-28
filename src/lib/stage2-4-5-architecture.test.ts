@@ -254,6 +254,55 @@ test('Stage 2: Global Risk Manager enforces trial limits, portfolio margin, and 
   const ksBlock = resolveKillSwitchPolicyAction('BLOCK_NEW_ENTRIES_ONLY');
   assert.equal(ksBlock.blockNewEntries, true);
   assert.equal(ksBlock.emergencyCloseOpenPositions, false);
+
+  // On $300 working capital, vp-order-flow has $45 slice (15%), which must NOT block a $58 margin trade (1.28% stop risk)
+  const demoCfg = buildRuntimeSafetyConfig({ activeExchange: 'OKX', mode: 'LIVE', okxDemoTrading: true });
+  const smallCapPortfolios = createDefaultVirtualPortfolios(300);
+  const orderFlowVp = smallCapPortfolios.find((p) => p.id === 'vp-order-flow')!; // $45 nominal slice
+  const allowTightSlTrade = evaluateGlobalRiskGate({
+    mode: 'LIVE',
+    runtimePhase: 'READY',
+    runtimeSafetyConfig: demoCfg,
+    isKillSwitchActive: false,
+    totalAccountCapitalUsdt: 300,
+    rolling24hDrawdownPct: 0,
+    portfolio: orderFlowVp,
+    activePositions: [],
+    candidate: {
+      symbol: 'ETHUSDT',
+      side: 'SHORT',
+      entryPrice: 2000,
+      stopLossPrice: 2028, // 1.4% SL
+      qty: 0.116, // $232 notional => $58 margin at 4x (> $45 slice), stop risk ~$3.58 (~1.19%)
+      requestedLeverage: 4,
+    },
+  });
+  assert.equal(allowTightSlTrade.allowed, true, `Expected $58 margin trade to pass shared $300 pool, got: ${allowTightSlTrade.reason}`);
+
+  // Reject when account margin usage exceeds 80% ($240 of $300)
+  const accountMarginReject = evaluateGlobalRiskGate({
+    mode: 'LIVE',
+    runtimePhase: 'READY',
+    runtimeSafetyConfig: demoCfg,
+    isKillSwitchActive: false,
+    totalAccountCapitalUsdt: 300,
+    rolling24hDrawdownPct: 0,
+    portfolio: orderFlowVp,
+    activePositions: [
+      { symbol: 'BTCUSDT', side: 'SHORT', qty: 0.006, entryVwap: 60000, slPrice: 60500, leverage: 4 }, // $90 margin
+      { symbol: 'SOLUSDT', side: 'SHORT', qty: 4.5, entryVwap: 80, slPrice: 80.7, leverage: 4 }, // $90 margin ($180 used, $60 free under 80% cap)
+    ],
+    candidate: {
+      symbol: 'ETHUSDT',
+      side: 'SHORT',
+      entryPrice: 2000,
+      stopLossPrice: 2015,
+      qty: 0.14, // $280 notional => $70 margin (> $60 remaining under 80% cap)
+      requestedLeverage: 4,
+    },
+  });
+  assert.equal(accountMarginReject.allowed, false);
+  assert.equal(accountMarginReject.rejectCode, 'ACCOUNT_FREE_MARGIN_EXCEEDED');
 });
 
 test('Stage 4: MTF Context Service checks closed bars 1m-1D and allows Mean Reversion unless extreme trend', () => {

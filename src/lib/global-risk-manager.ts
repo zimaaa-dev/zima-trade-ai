@@ -141,14 +141,29 @@ export function evaluateGlobalRiskGate(input: GlobalRiskEvaluationInput): Global
     );
   }
 
+  const existingMarginUsedUsdt = input.activePositions.reduce((acc, pos) => {
+    const posLev = Math.max(1, Number(pos.leverage) || 4);
+    const posNotional = Math.max(0, (Number(pos.entryVwap) || 0) * (Number(pos.qty) || 0));
+    return acc + posNotional / posLev;
+  }, 0);
+  const sharedAccountFreeMarginUsdt = Number(Math.max(0, accountCap * 0.80 - existingMarginUsedUsdt).toFixed(2));
+  const maxSinglePositionMarginUsdt = Number((accountCap * 0.35).toFixed(2));
+
   if (!input.portfolio.isTradingEnabled) {
     return reject('PORTFOLIO_TRADING_DISABLED', `Портфель ${input.portfolio.label} находится в резерве/паузе`);
   }
 
-  if (requiredMarginUsdt > input.portfolio.freeCapitalUsdt + 0.05) {
+  if (requiredMarginUsdt > maxSinglePositionMarginUsdt + 0.05) {
     return reject(
-      'PORTFOLIO_FREE_CAPITAL_EXCEEDED',
-      `Недостаточно свободного капитала портфеля ${input.portfolio.label}: нужно $${requiredMarginUsdt.toFixed(2)}, доступно $${input.portfolio.freeCapitalUsdt.toFixed(2)}`
+      'SINGLE_POSITION_MARGIN_CAP_EXCEEDED',
+      `Маржа сделки $${requiredMarginUsdt.toFixed(2)} превышает 35% рабочего капитала ($${maxSinglePositionMarginUsdt.toFixed(2)})`
+    );
+  }
+
+  if (requiredMarginUsdt > sharedAccountFreeMarginUsdt + 0.05) {
+    return reject(
+      'ACCOUNT_FREE_MARGIN_EXCEEDED',
+      `Недостаточно общей свободной маржи счёта для ${input.portfolio.label}: нужно $${requiredMarginUsdt.toFixed(2)}, доступно $${sharedAccountFreeMarginUsdt.toFixed(2)} (лимит загрузки 80%)`
     );
   }
 
